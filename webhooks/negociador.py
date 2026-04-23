@@ -35,8 +35,7 @@ from services.faro import (
     load_history, history_append, save_history, build_card_context, history_to_text,
     load_journey, save_journey,
 )
-from services.whapi import WhapiClient, WhapiError
-from services.zapi import ZAPIClient, ZAPIError, get_zapi_for_card
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 
 logger = logging.getLogger(__name__)
 

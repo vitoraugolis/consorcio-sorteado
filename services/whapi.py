@@ -1,36 +1,66 @@
 """
 services/whapi.py — Cliente assíncrono para Whapi Cloud
-Usado no fluxo de Listas (leads frios em lote).
-Documentação: https://whapi.cloud/docs
+Único provider WhatsApp do sistema (substitui Whapi Listas + Z-API Bazar/Site).
 
-Suporte a dois canais com rotação aleatória:
-  - Canal primário:    WHAPI_TOKEN   (FALCON-9TE4X)
-  - Canal secundário:  WHAPI_TOKEN_2 (DAREDL-F4375)
+Dois pools independentes:
+  LISTA : tokens WHAPI_TOKEN_LISTA_1..5 — rotação aleatória anti-ban
+  BAZAR : token WHAPI_TOKEN_BAZAR       — canal dedicado leads orgânicos
 
-A rotação entre canais distribui os envios e reduz o risco de ban em
-listas frias de alto volume. Se apenas WHAPI_TOKEN estiver configurado,
-o sistema usa somente o canal primário.
+Uso:
+    # Roteamento automático pelo card (recomendado):
+    async with get_whapi_for_card(card) as w:
+        await w.send_text(phone, "Olá!")
+
+    # Pool explícito:
+    async with WhapiClient(canal="lista") as w:
+        await w.send_text(phone, "Mensagem de lista")
 """
 
 import logging
 import random
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
-from config import WHAPI_TOKEN, WHAPI_TOKEN_2, WHAPI_BASE_URL
+from config import WHAPI_BASE_URL, WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN
 
 logger = logging.getLogger(__name__)
 
-
-# Pool de tokens disponíveis (primário sempre presente; secundário opcional)
-_TOKEN_POOL: list[str] = [t for t in [WHAPI_TOKEN, WHAPI_TOKEN_2] if t]
+Canal = Literal["lista", "bazar"]
 
 
-def _pick_token() -> str:
-    """Seleciona aleatoriamente um token do pool para distribuir a carga."""
-    return random.choice(_TOKEN_POOL)
+# ---------------------------------------------------------------------------
+# Pools de tokens
+# ---------------------------------------------------------------------------
 
+def _build_bazar_pool() -> list[str]:
+    """Retorna pool Bazar; usa lista como fallback se token Bazar não configurado."""
+    if WHAPI_BAZAR_TOKEN:
+        return [WHAPI_BAZAR_TOKEN]
+    if WHAPI_LISTA_TOKENS:
+        return WHAPI_LISTA_TOKENS  # fallback silencioso (aviso já emitido no config.py)
+    return []
+
+
+_LISTA_POOL: list[str] = WHAPI_LISTA_TOKENS
+_BAZAR_POOL: list[str] = _build_bazar_pool()
+
+
+def _pick_token(canal: Canal) -> str:
+    pool = _LISTA_POOL if canal == "lista" else _BAZAR_POOL
+    if not pool:
+        raise WhapiError(
+            f"Nenhum token Whapi configurado para o canal '{canal}'. "
+            f"Verifique WHAPI_TOKEN_LISTA_1 / WHAPI_TOKEN_BAZAR no .env."
+        )
+    token = random.choice(pool)
+    logger.debug("WhapiClient[%s]: token ...%s", canal, token[-6:])
+    return token
+
+
+# ---------------------------------------------------------------------------
+# Exceção
+# ---------------------------------------------------------------------------
 
 class WhapiError(Exception):
     def __init__(self, message: str, status_code: int = 0):
@@ -38,21 +68,22 @@ class WhapiError(Exception):
         self.status_code = status_code
 
 
+# ---------------------------------------------------------------------------
+# Cliente
+# ---------------------------------------------------------------------------
+
 class WhapiClient:
     """
-    Cliente assíncrono para Whapi Cloud com rotação de canais.
+    Cliente assíncrono Whapi Cloud com seleção de pool por canal.
 
-    Por padrão seleciona aleatoriamente entre os canais disponíveis.
-    Passe token= para forçar um canal específico.
-
-    Uso:
-        async with WhapiClient() as whapi:
-            await whapi.send_text("5511999999999", "Olá!")
+    Parâmetros:
+        canal  : "lista" (padrão) ou "bazar" — determina qual pool usar
+        token  : força um token específico (ignora canal e pool)
     """
 
-    def __init__(self, token: str = None):
-        chosen = token or _pick_token()
-        logger.debug("WhapiClient: usando canal ...%s", chosen[-6:])
+    def __init__(self, canal: Canal = "lista", token: str = None):
+        chosen = token or _pick_token(canal)
+        self._canal = canal
         self._client = httpx.AsyncClient(
             base_url=WHAPI_BASE_URL,
             headers={
@@ -76,15 +107,9 @@ class WhapiClient:
     # ------------------------------------------------------------------
 
     def _normalize_phone(self, phone: str) -> str:
-        """
-        Garante que o número está no formato internacional sem '+'.
-        Entrada: '11 99999-9999', '+5511999999999', '5511999999999'
-        Saída:   '5511999999999@s.whatsapp.net'
-        """
         digits = "".join(c for c in phone if c.isdigit())
         if not digits.startswith("55"):
             digits = "55" + digits
-        # Whapi aceita número puro — o @s.whatsapp.net é adicionado internamente
         return digits
 
     async def _post(self, endpoint: str, body: dict) -> dict:
@@ -107,11 +132,8 @@ class WhapiClient:
     async def send_text(self, to: str, message: str) -> dict:
         """Envia mensagem de texto simples."""
         phone = self._normalize_phone(to)
-        logger.info("Whapi send_text → %s", phone)
-        return await self._post("/messages/text", {
-            "to": phone,
-            "body": message,
-        })
+        logger.info("Whapi[%s] send_text → %s", self._canal, phone)
+        return await self._post("/messages/text", {"to": phone, "body": message})
 
     async def send_buttons(
         self,
@@ -121,18 +143,9 @@ class WhapiClient:
         header: str = None,
         footer: str = None,
     ) -> dict:
-        """
-        Envia mensagem interativa com botões de resposta rápida.
-
-        buttons: lista de {"id": "btn_id", "title": "Label"}
-        Máximo 3 botões pelo WhatsApp.
-
-        Endpoint Whapi: POST /messages/interactive
-        Formato: type=button, action.buttons com type=quick_reply
-        """
+        """Envia mensagem interativa com botões de resposta rápida (máx 3)."""
         phone = self._normalize_phone(to)
-        logger.info("Whapi send_buttons → %s (%d botões)", phone, len(buttons))
-
+        logger.info("Whapi[%s] send_buttons → %s (%d botões)", self._canal, phone, len(buttons))
         body: dict[str, Any] = {
             "to": phone,
             "type": "button",
@@ -152,7 +165,6 @@ class WhapiClient:
             body["header"] = {"type": "text", "text": header}
         if footer:
             body["footer"] = footer
-
         return await self._post("/messages/interactive", body)
 
     async def send_list(
@@ -164,38 +176,24 @@ class WhapiClient:
         header: str = None,
         footer: str = None,
     ) -> dict:
-        """
-        Envia mensagem com lista de opções.
-
-        sections: [{"title": "Seção", "rows": [{"id": "...", "title": "...", "description": "..."}]}]
-        """
+        """Envia mensagem com lista de opções."""
         phone = self._normalize_phone(to)
-        logger.info("Whapi send_list → %s", phone)
-
+        logger.info("Whapi[%s] send_list → %s", self._canal, phone)
         body: dict[str, Any] = {
             "to": phone,
             "body": message,
-            "action": {
-                "button": button_label,
-                "sections": sections,
-            },
+            "action": {"button": button_label, "sections": sections},
         }
         if header:
             body["header"] = {"type": "text", "text": header}
         if footer:
             body["footer"] = footer
-
         return await self._post("/messages/interactive/list", body)
 
-    async def send_image(
-        self,
-        to: str,
-        image_url: str,
-        caption: str = "",
-    ) -> dict:
+    async def send_image(self, to: str, image_url: str, caption: str = "") -> dict:
         """Envia imagem com legenda opcional."""
         phone = self._normalize_phone(to)
-        logger.info("Whapi send_image → %s", phone)
+        logger.info("Whapi[%s] send_image → %s", self._canal, phone)
         return await self._post("/messages/image", {
             "to": phone,
             "media": image_url,
@@ -211,10 +209,29 @@ class WhapiClient:
     ) -> dict:
         """Envia documento (PDF, etc.)."""
         phone = self._normalize_phone(to)
-        logger.info("Whapi send_document → %s (%s)", phone, filename)
+        logger.info("Whapi[%s] send_document → %s (%s)", self._canal, phone, filename)
         return await self._post("/messages/document", {
             "to": phone,
             "media": document_url,
             "filename": filename,
             "caption": caption,
         })
+
+
+# ---------------------------------------------------------------------------
+# Função de roteamento automático por card
+# ---------------------------------------------------------------------------
+
+def get_whapi_for_card(card: dict) -> WhapiClient:
+    """
+    Retorna WhapiClient com o canal correto baseado na origem do lead.
+    - Lead de Lista  → canal "lista" (pool anti-ban)
+    - Lead Bazar/Site → canal "bazar" (token dedicado)
+
+    Uso:
+        async with get_whapi_for_card(card) as w:
+            await w.send_text(phone, mensagem)
+    """
+    from services.faro import is_lista
+    canal: Canal = "lista" if is_lista(card) else "bazar"
+    return WhapiClient(canal=canal)

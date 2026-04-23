@@ -1,23 +1,8 @@
 """
 webhooks/qualificador.py — Qualificação de leads Bazar/Site via análise de extrato
-
-Fluxo completo:
-  1. Lead é ativado pelo job ativacao_bazar_site → stage PRIMEIRA_ATIVACAO
-  2. Lead responde (texto ou documento/imagem) → router encaminha para cá
-  3. Este módulo analisa:
-       a) Se recebeu mídia → analisa o extrato via IA com visão
-       b) Se recebeu só texto → orienta a enviar o extrato
-  4. Resultado da análise de extrato:
-       QUALIFICADO       → move para PRECIFICACAO (proposta disparada automaticamente)
-       NAO_QUALIFICADO   → envia mensagem gentil de dispensa, move para NAO_QUALIFICADO
-       EXTRATO_INCORRETO → orienta o lead sobre como obter o extrato correto (mantém stage)
-       RECUSAR_TEXTO     → lead indicou verbalmente que não tem mais cota → PERDIDO
-  5. Em caso de erro técnico na análise, notifica equipe e mantém stage atual.
-
-Stages atendidos: PRIMEIRA_ATIVACAO, SEGUNDA_ATIVACAO, TERCEIRA_ATIVACAO, QUARTA_ATIVACAO
-Apenas para leads Bazar/Site (is_lista(card) == False).
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -38,14 +23,9 @@ from services.faro import (
     load_journey, save_journey,
 )
 from services.slack import slack_error, slack_warning
-from services.whapi import WhapiClient, WhapiError
-from services.zapi import ZAPIError, get_zapi_for_card
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Stages atendidos pelo qualificador
-# ---------------------------------------------------------------------------
 
 QUALIFICATION_STAGES = {
     Stage.PRIMEIRA_ATIVACAO,
@@ -54,34 +34,33 @@ QUALIFICATION_STAGES = {
     Stage.QUARTA_ATIVACAO,
 }
 
-
 # ---------------------------------------------------------------------------
 # Resultado da análise
 # ---------------------------------------------------------------------------
 
 class ExtratoResultado(str, Enum):
-    QUALIFICADO        = "QUALIFICADO"
-    NAO_QUALIFICADO    = "NAO_QUALIFICADO"
-    EXTRATO_INCORRETO  = "EXTRATO_INCORRETO"
+    QUALIFICADO = "QUALIFICADO"
+    NAO_QUALIFICADO = "NAO_QUALIFICADO"
+    EXTRATO_INCORRETO = "EXTRATO_INCORRETO"
 
 
 @dataclass
 class ExtratoAnalise:
-    resultado:          ExtratoResultado
-    administradora:     Optional[str] = None
-    valor_credito:      float = 0.0
-    valor_pago:         float = 0.0
-    parcelas_pagas:     int = 0
-    total_parcelas:     int = 0
-    motivo:             str = ""
-    tipo_contemplacao:  Optional[str] = None   # "Lance" ou "Sorteio"
-    tipo_bem:           Optional[str] = None   # "Imóvel", "Veículo", "Moto", etc.
-    grupo:              Optional[str] = None   # ex: "A123"
-    cota:               Optional[str] = None   # ex: "042"
+    resultado: ExtratoResultado
+    administradora: Optional[str] = None
+    valor_credito: float = 0.0
+    valor_pago: float = 0.0
+    parcelas_pagas: int = 0
+    total_parcelas: int = 0
+    motivo: str = ""
+    tipo_contemplacao: Optional[str] = None
+    tipo_bem: Optional[str] = None
+    grupo: Optional[str] = None
+    cota: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
-# Prompt de análise de extrato
+# Prompts
 # ---------------------------------------------------------------------------
 
 EXTRATO_SYSTEM_PROMPT = """
@@ -98,16 +77,14 @@ REGRAS DE QUALIFICAÇÃO:
   E valor pago ≤ R$ {valor_max:,.0f}
 - A cota é NAO_QUALIFICADA se o valor pago exceder qualquer um desses limites
 - O extrato é INCORRETO se:
-    • O documento não é um extrato de consórcio (é boleto, contrato ou outro)
-    • O extrato está ilegível, cortado ou com informações essenciais ausentes
-    • Não é possível identificar o valor do crédito ou o valor pago
+  • O documento não é um extrato de consórcio
+  • O extrato está ilegível, cortado ou com informações essenciais ausentes
+  • Não é possível identificar o valor do crédito ou o valor pago
 
 NORMALIZAÇÃO DE CAMPOS:
-- administradora: "Santander", "Bradesco", "Itaú", "Caixa", "Porto Seguro", "Embracon", "Sicoob", etc.
+- administradora: "Santander", "Bradesco", "Itaú", "Caixa", "Porto Seguro", etc.
 - tipo_contemplacao: APENAS "Lance" ou "Sorteio"
 - tipo_bem: APENAS "Imóvel", "Veículo", "Moto", "Caminhão" ou "Serviço"
-- grupo: código alfanumérico do grupo (ex: "A123", "0456")
-- cota: número da cota (ex: "042", "1234")
 
 Retorne EXCLUSIVAMENTE um JSON válido (sem markdown, sem texto extra):
 {{
@@ -130,9 +107,8 @@ Campos numéricos devem ser números (não strings com R$).
     valor_max=QUALIFICACAO_VALOR_PAGO_MAXIMO,
 )
 
-
 # ---------------------------------------------------------------------------
-# Mensagens enviadas ao lead
+# Mensagens
 # ---------------------------------------------------------------------------
 
 MSG_PEDE_EXTRATO = (
@@ -185,7 +161,6 @@ MSG_ERRO_ANALISE = (
     "em contato em breve! 🙏"
 )
 
-# Palavras-chave que indicam recusa verbal (lead não tem mais a cota)
 _RECUSA_KEYWORDS = [
     "vendi", "vender", "já vendi", "ja vendi",
     "não tenho mais", "nao tenho mais",
@@ -194,58 +169,47 @@ _RECUSA_KEYWORDS = [
     "me remova", "me tire", "para de enviar", "parem",
 ]
 
+# Pré-compila padrões com word boundary para evitar falsos positivos
+import re as _re
+_RECUSA_PATTERNS = [_re.compile(r'\b' + _re.escape(kw) + r'\b') for kw in _RECUSA_KEYWORDS]
+
 
 # ---------------------------------------------------------------------------
-# Extração de URL de mídia do payload raw
+# Extração de URL de mídia
 # ---------------------------------------------------------------------------
 
 def _extract_media_url(raw: dict, media_type: str) -> Optional[str]:
-    """
-    Extrai a URL de download da mídia do payload bruto do Z-API.
-
-    Z-API retorna a URL no campo:
-      raw.message.document.url  (para PDF)
-      raw.message.image.url     (para imagem)
-      raw.image.url             (formato alternativo)
-      raw.document.url          (formato alternativo)
-    """
-    # Tenta via message object
     message_obj = raw.get("message") or raw.get("messageData") or {}
     if isinstance(message_obj, dict):
         for mtype in ("document", "image", "video"):
             obj = message_obj.get(mtype, {})
             if isinstance(obj, dict) and obj.get("url"):
                 return obj["url"]
-
-    # Tenta direto no payload (alguns formatos do Z-API)
     for mtype in ("document", "image"):
         obj = raw.get(mtype, {})
         if isinstance(obj, dict) and obj.get("url"):
             return obj["url"]
-
-    # Tenta campo genérico "mediaUrl" ou "fileUrl"
     return raw.get("mediaUrl") or raw.get("fileUrl") or None
 
 
 # ---------------------------------------------------------------------------
-# Análise de extrato via IA com visão
+# Análise via IA — com timeout
 # ---------------------------------------------------------------------------
 
 async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
-    """
-    Chama a IA com visão para analisar o extrato.
-    Faz fallback para EXTRATO_INCORRETO em caso de erro técnico da IA.
-    """
+    """Analisa extrato via IA com timeout de 90s para evitar travar o event loop."""
     async with AIClient() as ai:
         try:
-            raw_response = await ai.complete_with_image(
-                prompt=EXTRATO_PROMPT_TEMPLATE,
-                media_url=media_url,
-                system=EXTRATO_SYSTEM_PROMPT,
-                max_tokens=500,
+            raw_response = await asyncio.wait_for(
+                ai.complete_with_image(
+                    prompt=EXTRATO_PROMPT_TEMPLATE,
+                    media_url=media_url,
+                    system=EXTRATO_SYSTEM_PROMPT,
+                    max_tokens=500,
+                ),
+                timeout=90.0,
             )
 
-            # Extrai JSON da resposta
             json_match = re.search(r"\{.*\}", raw_response, re.DOTALL)
             if not json_match:
                 raise AIError("Resposta sem JSON válido")
@@ -274,49 +238,41 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
 
             logger.info(
                 "Qualificador IA: resultado=%s adm=%s credito=%.0f pago=%.0f | %s",
-                resultado.value,
-                analise.administradora,
-                analise.valor_credito,
-                analise.valor_pago,
-                analise.motivo[:80],
+                resultado.value, analise.administradora,
+                analise.valor_credito, analise.valor_pago, analise.motivo[:80],
             )
             return analise
 
+        except asyncio.TimeoutError:
+            raise AIError("Timeout na análise de extrato (>90s)")
         except (AIError, json.JSONDecodeError, ValueError, KeyError) as e:
             logger.error("Qualificador: erro ao analisar extrato via IA: %s", e)
-            raise  # Repassa para o caller decidir o fallback
+            raise
 
 
 # ---------------------------------------------------------------------------
-# Detecção de recusa verbal por texto
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _is_verbal_refusal(text: str) -> bool:
-    """Retorna True se o texto indica que o lead não tem mais a cota."""
     lower = text.lower()
-    return any(kw in lower for kw in _RECUSA_KEYWORDS)
+    return any(p.search(lower) for p in _RECUSA_PATTERNS)
 
-
-# ---------------------------------------------------------------------------
-# Envio de mensagem
-# ---------------------------------------------------------------------------
 
 async def _send_message(card: dict, phone: str, message: str) -> None:
-    """Envia mensagem ao lead via Z-API (leads Bazar/Site nunca usam Whapi)."""
+    """Envia mensagem ao lead via Whapi (canal correto pelo tipo de lead)."""
     try:
-        zapi = get_zapi_for_card(card)
-        async with zapi as z:
-            await z.send_text(phone, message)
-    except ZAPIError as e:
-        logger.error("Qualificador: erro Z-API ao enviar para %s: %s", phone, e)
+        async with get_whapi_for_card(card) as w:
+            await w.send_text(phone, message)
+    except WhapiError as e:
+        logger.error("Qualificador: erro Whapi ao enviar para %s: %s", phone, e)
 
 
 async def _notify_team(message: str) -> None:
-    """Notifica a equipe interna via Whapi."""
     if not NOTIFY_PHONES:
         return
     try:
-        async with WhapiClient() as w:
+        async with WhapiClient(canal="lista") as w:
             for phone in NOTIFY_PHONES:
                 await w.send_text(phone, message)
     except WhapiError as e:
@@ -328,18 +284,10 @@ async def _notify_team(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def handle_qualification(card: dict, msg) -> None:
-    """
-    Entry point do qualificador. Chamado pelo router para leads Bazar/Site
-    em stages de ativação (PRIMEIRA → QUARTA_ATIVACAO).
-
-    Args:
-        card: Dict completo do card FARO.
-        msg:  IncomingMessage normalizado pelo router.
-    """
     card_id = card.get("id", "")
-    nome    = get_name(card)
-    phone   = get_phone(card)
-    adm     = get_adm(card)
+    nome = get_name(card)
+    phone = get_phone(card)
+    adm = get_adm(card)
 
     if not phone:
         logger.warning("Qualificador: card %s sem telefone, ignorando.", card_id[:8])
@@ -347,17 +295,13 @@ async def handle_qualification(card: dict, msg) -> None:
 
     logger.info(
         "Qualificador: card=%s | has_media=%s | media_type=%s | text='%s'",
-        card_id[:8],
-        msg.media_type is not None,
-        msg.media_type,
-        (msg.text or "")[:60],
+        card_id[:8], msg.media_type is not None, msg.media_type, (msg.text or "")[:60],
     )
 
-    # Carrega histórico uma vez — todos os branches gravam ao final
     history = load_history(card)
     user_text = msg.text or f"[Enviou {msg.media_type or 'mídia'}]"
 
-    # ── Caso 1: Recusa verbal por texto ──────────────────────────────────────
+    # ── Caso 1: Recusa verbal ────────────────────────────────────────────────
     if msg.text and _is_verbal_refusal(msg.text):
         logger.info("Qualificador: recusa verbal detectada para card %s", card_id[:8])
         bot_msg = (
@@ -375,15 +319,14 @@ async def handle_qualification(card: dict, msg) -> None:
             await save_history(faro, card_id, history)
         return
 
-    # ── Caso 2: Lead enviou mídia → analisa extrato ───────────────────────────
+    # ── Caso 2: Mídia → analisa extrato ──────────────────────────────────────
     if msg.media_type in ("image", "document", "video"):
         media_url = _extract_media_url(msg.raw, msg.media_type)
 
         if not media_url:
             logger.warning(
-                "Qualificador: mídia sem URL no payload (card %s). "
-                "Solicitando extrato novamente.",
-                card_id[:8],
+                "Qualificador: mídia sem URL no payload (card %s). raw[:200]=%s",
+                card_id[:8], str(msg.raw)[:200],
             )
             bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
             await _send_message(card, phone, bot_msg)
@@ -397,7 +340,6 @@ async def handle_qualification(card: dict, msg) -> None:
         try:
             analise = await _analyze_extrato(media_url)
         except Exception as e:
-            # Erro técnico: alerta Slack (Guará Lab) e pede paciência ao lead
             logger.error("Qualificador: erro técnico na análise: %s", e)
             bot_msg = MSG_ERRO_ANALISE.format(nome=nome)
             await _send_message(card, phone, bot_msg)
@@ -409,27 +351,25 @@ async def handle_qualification(card: dict, msg) -> None:
                 "Falha na análise de extrato (IA Visão)",
                 exception=e,
                 context={
-                    "Cliente": nome,
-                    "Telefone": phone,
-                    "Administradora": get_adm(card),
-                    "Card ID": card.get("id", "")[:12],
+                    "Cliente": nome, "Telefone": phone,
+                    "Administradora": adm, "Card ID": card_id[:12],
                     "Ação": "Analise manualmente o extrato enviado pelo lead.",
                 },
             )
             return
 
-        # ── EXTRATO_INCORRETO ────────────────────────────────────────────────
+        # ── EXTRATO_INCORRETO ─────────────────────────────────────────────
         if analise.resultado == ExtratoResultado.EXTRATO_INCORRETO:
             logger.info("Qualificador: extrato incorreto para card %s — %s", card_id[:8], analise.motivo)
             bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
             await _send_message(card, phone, bot_msg)
-            history = history_append(history, "user", "[Enviou documento — não é extrato de consórcio ou ilegível]")
+            history = history_append(history, "user", "[Enviou documento — não é extrato ou ilegível]")
             history = history_append(history, "assistant", bot_msg)
             async with FaroClient() as faro:
                 await save_history(faro, card_id, history)
             return
 
-        # ── NAO_QUALIFICADO ──────────────────────────────────────────────────
+        # ── NAO_QUALIFICADO ───────────────────────────────────────────────
         if analise.resultado == ExtratoResultado.NAO_QUALIFICADO:
             logger.info(
                 "Qualificador: cota NÃO qualificada — card %s | pago=%.0f | credito=%.0f | %s",
@@ -439,7 +379,7 @@ async def handle_qualification(card: dict, msg) -> None:
             await _send_message(card, phone, bot_msg)
             history = history_append(
                 history, "user",
-                f"[Enviou extrato — cota {analise.administradora or adm}, "
+                f"[Extrato — cota {analise.administradora or adm}, "
                 f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}]",
             )
             history = history_append(history, "assistant", bot_msg)
@@ -456,7 +396,7 @@ async def handle_qualification(card: dict, msg) -> None:
                 await save_history(faro, card_id, history)
             return
 
-        # ── QUALIFICADO ──────────────────────────────────────────────────────
+        # ── QUALIFICADO ───────────────────────────────────────────────────
         if analise.resultado == ExtratoResultado.QUALIFICADO:
             logger.info(
                 "Qualificador: cota QUALIFICADA — card %s | pago=%.0f | credito=%.0f | adm=%s",
@@ -466,20 +406,18 @@ async def handle_qualification(card: dict, msg) -> None:
             await _send_message(card, phone, bot_msg)
             history = history_append(
                 history, "user",
-                f"[Enviou extrato — cota {analise.administradora or adm}, "
+                f"[Extrato — cota {analise.administradora or adm}, "
                 f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}, "
                 f"{analise.parcelas_pagas}/{analise.total_parcelas} parcelas]",
             )
             history = history_append(history, "assistant", bot_msg)
 
-            # Atualiza CRM com dados extraídos e move para PRECIFICACAO
             update_fields: dict = {
                 "Valor pago extrato": str(analise.valor_pago) if analise.valor_pago else "",
-                "Parcelas pagas":     str(analise.parcelas_pagas) if analise.parcelas_pagas else "",
-                "Total parcelas":     str(analise.total_parcelas) if analise.total_parcelas else "",
+                "Parcelas pagas": str(analise.parcelas_pagas) if analise.parcelas_pagas else "",
+                "Total parcelas": str(analise.total_parcelas) if analise.total_parcelas else "",
             }
             if analise.valor_credito:
-                # "Crédito" é o campo correto no FARO (usado por build_form_fields no ZapSign)
                 update_fields["Crédito"] = str(analise.valor_credito)
             if analise.administradora:
                 update_fields["Adm"] = analise.administradora
@@ -492,14 +430,13 @@ async def handle_qualification(card: dict, msg) -> None:
             if analise.cota:
                 update_fields["Cota"] = analise.cota
 
-            # Registra snapshot da jornada na transição para PRECIFICACAO
             journey = load_journey(card)
             journey.update({
-                "origem":         get_fonte(card) or "desconhecida",
-                "adm":            analise.administradora or adm,
-                "credito":        analise.valor_credito,
-                "pago_pct":       round(analise.valor_pago / analise.valor_credito * 100, 1)
-                                  if analise.valor_credito else 0,
+                "origem": get_fonte(card) or "desconhecida",
+                "adm": analise.administradora or adm,
+                "credito": analise.valor_credito,
+                "pago_pct": round(analise.valor_pago / analise.valor_credito * 100, 1)
+                if analise.valor_credito else 0,
                 "qualificado_em": __import__("datetime").date.today().isoformat(),
             })
             if analise.tipo_contemplacao:
@@ -507,17 +444,26 @@ async def handle_qualification(card: dict, msg) -> None:
             if analise.tipo_bem:
                 journey["tipo_bem"] = analise.tipo_bem
 
+            # Tudo num único FaroClient — fix do bug de cliente fechado
             async with FaroClient() as faro:
                 try:
                     await faro.update_card(card_id, update_fields)
                     await faro.move_card(card_id, Stage.PRECIFICACAO)
                 except FaroError as e:
-                    logger.error("Qualificador: erro ao mover card para PRECIFICACAO: %s", e)
+                    logger.error("Qualificador: erro CRÍTICO ao mover para PRECIFICACAO: %s", e)
+                    await slack_error(
+                        "Falha crítica: lead qualificado não moveu para PRECIFICACAO",
+                        exception=e,
+                        context={"Card": card_id[:12], "Cliente": nome, "Telefone": phone},
+                    )
+                    # Não salva histórico se o CRM está com problema — evita estado inconsistente
+                    return
+                # save_history e save_journey dentro do mesmo FaroClient
                 await save_history(faro, card_id, history)
                 await save_journey(faro, card_id, journey)
             return
 
-    # ── Caso 3: Lead enviou texto sem extrato → solicita ─────────────────────
+    # ── Caso 3: Texto sem extrato ─────────────────────────────────────────────
     logger.info("Qualificador: lead %s enviou texto sem extrato. Solicitando.", card_id[:8])
     bot_msg = MSG_PEDE_EXTRATO.format(nome=nome, adm=adm)
     await _send_message(card, phone, bot_msg)
