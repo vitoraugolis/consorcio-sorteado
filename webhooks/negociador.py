@@ -155,9 +155,18 @@ def _parse_br_number(raw: str) -> float:
     return float(raw)
 
 
-def _extract_lead_value(mensagem: str) -> float:
-    """Tenta extrair o primeiro valor monetário mencionado pelo lead na mensagem."""
+def _extract_lead_value(mensagem: str, proposta_atual: float = 0.0) -> float:
+    """
+    Extrai valor monetário mencionado pelo lead.
+
+    Usa proposta_atual como âncora de contexto:
+    se o número extraído for menor que 1% da proposta vigente,
+    interpreta como estando na mesma ordem de grandeza (multiplica por 1000).
+
+    Ex: proposta=200.000 + lead diz "320" → 320 < 2.000 → retorna 320.000
+    """
     texto = mensagem.lower()
+
     # R$ 350.000 / R$350.000,00 / R$350000
     m = re.search(r"r\$\s*([\d.,]+)", texto)
     if m:
@@ -180,10 +189,27 @@ def _extract_lead_value(mensagem: str) -> float:
             return base * 1000
         except ValueError:
             pass
+    # "31k" / "31 k" / "50k" — abreviação comum no WhatsApp
+    m = re.search(r"(\d[\d.,]*)\s*k\b", texto)
+    if m:
+        try:
+            base = float(m.group(1).replace(".", "").replace(",", "."))
+            return base * 1000
+        except ValueError:
+            pass
     # número solto com 4+ dígitos (ex: "350000")
     m = re.search(r"\b(\d{4,})\b", texto)
     if m:
         return float(m.group(1))
+    # número curto (ex: "320") — usa proposta_atual como âncora
+    m = re.search(r"\b(\d{2,3})\b", texto)
+    if m:
+        val = float(m.group(1))
+        if proposta_atual > 0 and val < proposta_atual * 0.01:
+            # "320" com proposta de 200k → 320 < 2.000 → interpreta como 320.000
+            val = val * 1000
+        if val > 0:
+            return val
     return 0.0
 
 
@@ -214,7 +240,7 @@ def _build_contraproposta_notification(card: dict, mensagem: str) -> tuple[str, 
     phone    = get_phone(card) or "não informado"
     credito  = card.get("Crédito") or "a consultar"
     proposta = card.get("Proposta Realizada") or "a consultar"
-    lead_val = _extract_lead_value(mensagem)
+    lead_val = _extract_lead_value(mensagem, _parse_currency_value(card.get("Proposta Realizada") or "0"))
     lead_val_fmt = _fmt_currency(lead_val) if lead_val else mensagem[:80]
 
     history = load_history(card)
@@ -455,8 +481,10 @@ COMO CONSTRUIR A RESPOSTA (campo "response"):
   NÃO cite valores na resposta — o sistema insere a nova proposta depois.
   Apenas prepare uma abertura que reconheça o que o lead disse e sinalize movimento.
   Ex.: "Entendo você, [nome]! Deixa eu ver aqui o que consigo fazer..." (curto, empático)
-- Para OFERECERAM_MAIS sem valor: seja curiosa e confiante — pergunte qual foi o valor,
-  mencione que pode levar ao diretor. Tom: "que ótimo que você me contou!" não "concorrência".
+- Para OFERECERAM_MAIS sem valor: pergunte o valor de forma direta e confiante.
+  NÃO diga "que bom" ou "que ótimo" — não celebre o concorrente.
+  Tom: "Entendo. Que valor foi esse? Quero ver o que consigo fazer por você."
+  Se o valor já foi informado em mensagem anterior (está no histórico), não pergunte de novo —
 - Para ACEITAR: seja genuinamente entusiasmada, curta, direta.
 - Para DESCONFIANCA: valide o cuidado do lead antes de dar os dados concretos.
 - Para OUTRO: mantenha a conversa com naturalidade, não force o tema da proposta.
@@ -605,7 +633,8 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
 
     # ── OFERECERAM_MAIS — extrai valor do concorrente se já informado ─────────
     if intent == Intent.OFERECERAM_MAIS:
-        competitor_value = _extract_lead_value(mensagem)
+        proposta_val = _parse_currency_value(card.get("Proposta Realizada") or "0")
+        competitor_value = _extract_lead_value(mensagem, proposta_val)
         if competitor_value > 0:
             # Lead já informou o valor — trata como contraproposta diretamente
             logger.info(
@@ -636,7 +665,8 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
     # ── CONTRA_PROPOSTA com valor — árvore de decisão completa ───────────────
     if intent == Intent.CONTRA_PROPOSTA and _message_has_value(mensagem):
         import random as _random
-        lead_value   = _extract_lead_value(mensagem)
+        proposta_ctx = _parse_currency_value(card.get("Proposta Realizada") or "0")
+        lead_value   = _extract_lead_value(mensagem, proposta_ctx)
         credito_val  = _parse_currency_value(card.get("Crédito") or "0")
         teto_val     = credito_val * _TETO_PCT    if credito_val > 0 else 0.0
         absurdo_val  = credito_val * _ABSURDO_PCT if credito_val > 0 else 0.0
@@ -769,9 +799,8 @@ def _fallback_classify(mensagem: str, card: dict) -> NegotiationResult:
         ]),
         Intent.CONTRA_PROPOSTA: f"Anotei, {primeiro}. Vou verificar se consigo chegar aí pra você.",
         Intent.OFERECERAM_MAIS: (
-            f"Que bom que você me contou, {primeiro}! "
-            f"Qual foi o valor que te ofereceram? Com esse número em mãos consigo levar "
-            f"pro nosso diretor e ver se a gente consegue igualar. 😊"
+            f"Entendo, {primeiro}. Que valor foi esse? "
+            f"Quero levar pro nosso diretor e ver o que consigo fazer por você. 💪"
         ),
         Intent.NEGOCIAR:        f"Entendo, {primeiro}. Deixa eu verificar o que consigo melhorar pra você.",
         Intent.DUVIDA:          f"Boa pergunta! Vou te explicar direitinho.",
