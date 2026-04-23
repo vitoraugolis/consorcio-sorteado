@@ -2,7 +2,6 @@
 webhooks/agente_listas.py — Agente SDR para leads do fluxo Listas
 """
 
-import asyncio
 import json
 import logging
 import random
@@ -50,8 +49,13 @@ CONSULTOR RESPONSÁVEL: {consultor_info}
 DADOS DO LEAD:
 {dados_card}
 
-OBJETIVO: Gerar interesse em receber uma proposta. Não negocie valores aqui.
-Respostas curtas (máx 3 linhas). Nunca revele ser IA.
+OBJETIVO: Confirmar recebimento do interesse e informar que a proposta chegará em instantes.
+NÃO faça perguntas. NÃO peça confirmação. Apenas informe com entusiasmo que a proposta será enviada.
+Respostas curtas (máx 2 linhas). Nunca revele ser IA.
+
+QUANDO O LEAD DEMONSTRAR INTERESSE (botão ou texto positivo):
+- Classifique como INTERESSE
+- Responda de forma entusiasmada que a proposta chegará em instantes no WhatsApp
 
 QUANDO RECUSAR: convide para o grupo: {group_link}
 QUANDO QUISER FALAR COM HUMANO: classifique como REDIRECIONAR.
@@ -64,8 +68,8 @@ FORMATO JSON puro:
 """.strip()
 
 _FALLBACKS_INTERESSE = [
-    "Oba, que ótima notícia! 😊 Já estou encaminhando para análise — em breve você recebe a proposta.",
-    "Ótimo! Vou mandar pra frente agora mesmo. A proposta chega em breve! 😊",
+    "Oba! 🎉 Que ótima notícia! Sua proposta está sendo preparada e chegará aqui em instantes!",
+    "Perfeito! 🙌 Já encaminhei para nosso time — sua proposta personalizada chegará em instantes!",
 ]
 
 _FALLBACKS_OUTRO = [
@@ -95,8 +99,9 @@ async def _handle_intent(intent: str, card: dict) -> None:
             except FaroError as e:
                 logger.error("Erro ao mover %s para PRECIFICACAO: %s", card_id[:8], e)
                 return
-        from jobs.precificacao import send_proposal_now
-        asyncio.create_task(send_proposal_now(card))
+        # Listas: proposta enviada pelo job de precificação quando
+        # a equipe preencher "Proposta Realizada" no FARO.
+        logger.info("Agente Listas: card %s → PRECIFICACAO (aguarda proposta manual)", card_id[:8])
     elif intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
         async with FaroClient() as faro:
             try:
