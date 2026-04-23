@@ -323,3 +323,9 @@ async def send_proposal_now(card: dict) -> None:
             await _process_card(faro, fresh)
     except Exception as e:
         logger.error("Precificação imediata: erro card %s: %s", card.get("id", "")[:8], e)
+
+
+async def process_precificacao_card(card: dict) -> bool:
+    """Ponto de entrada público para o webhook FARO — processa um card específico."""
+    async with FaroClient() as faro:
+        return await _process_card(faro, card)

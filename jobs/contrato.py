@@ -272,3 +272,8 @@ async def run_contrato() -> None:
         except Exception as e:
             logger.exception("Job contrato: erro inesperado card %s: %s", card.get("id", "?")[:8], e)
         await asyncio.sleep(3)
+
+
+async def process_contrato_card(card: dict) -> None:
+    """Ponto de entrada público para o webhook FARO — processa um card específico."""
+    await _process_card(card)

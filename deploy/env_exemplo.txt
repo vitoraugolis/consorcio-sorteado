@@ -43,3 +43,14 @@ ZAPI_INSTANCE_DEFAULT=3E1E234073A4F045CF922E7FADD21987:SEU_TOKEN
 
 # ── Consultor(es) para notificações ───────────────────────────────────────────
 CONSULTANT_PHONES=Nome:5511999990001,Outro:5511999990002
+
+# ── Webhook FARO ───────────────────────────────────────────────────────────────
+# Secret para validar o HMAC-SHA256 do header X-Webhook-Signature.
+# Configure no painel FARO ao criar o webhook.
+# Se deixar em branco, a validação de assinatura é desativada (não recomendado em produção).
+FARO_WEBHOOK_SECRET=seu_secret_aqui
+
+# URL do webhook FARO a configurar no painel:
+#   http://SEU_IP_VPS:8000/webhook/faro
+# Eventos a assinar:
+#   card.entered_stage  (stages: Precificação + Aceito)
