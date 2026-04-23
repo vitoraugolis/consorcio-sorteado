@@ -963,15 +963,10 @@ async def _handle_assinatura_message(card: dict, mensagem: str) -> str:
 
 async def _send_response(card: dict, phone: str, message: str) -> bool:
     try:
-        if is_lista(card):
-            async with WhapiClient() as w:
-                await w.send_text(phone, message)
-        else:
-            zapi = get_zapi_for_card(card)
-            async with zapi as z:
-                await z.send_text(phone, message)
+        async with get_whapi_for_card(card) as w:
+            await w.send_text(phone, message)
         return True
-    except (WhapiError, ZAPIError) as e:
+    except WhapiError as e:
         logger.error("Erro ao enviar resposta para %s: %s", phone, e)
         return False
 
@@ -981,7 +976,7 @@ async def _notify_team(message: str, target_phones: list[str] | None = None) -> 
     if not phones:
         return
     try:
-        async with WhapiClient() as w:
+        async with WhapiClient(canal="lista") as w:
             for phone in phones:
                 await w.send_text(phone, message)
     except WhapiError as e:
