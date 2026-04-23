@@ -262,10 +262,6 @@ async def _handle_zapsign_signed(doc_token: str, doc_name: str) -> None:
             logger.error("ZapSign: falha ao notificar agente: %s", e)
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
-
 
 # ---------------------------------------------------------------------------
 # Webhook FARO (card.entered_stage)
@@ -276,19 +272,20 @@ async def webhook_faro(request: Request):
     try:
         payload = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Payload inválido")
+        raise HTTPException(status_code=400, detail="Payload invalido")
 
-    event      = payload.get("event", "")
-    card_id    = payload.get("card_id", "")
+    event       = payload.get("event", "")
+    card_id     = payload.get("card_id", "")
     to_stage_id = payload.get("to_stage_id", "")
 
     logger.info("Webhook FARO: event=%s card=%s to_stage=%s",
-                event, card_id[:8] if card_id else "", to_stage_id[:8] if to_stage_id else "")
+                event,
+                card_id[:8] if card_id else "",
+                to_stage_id[:8] if to_stage_id else "")
 
     if event != "card.entered_stage" or not card_id:
         return JSONResponse({"status": "ignored", "reason": f"event={event}"})
 
-    # ── Card entrou em Precificação → dispara proposta imediatamente ─────────
     if to_stage_id == Stage.PRECIFICACAO:
         asyncio.create_task(_guarded_task(
             _faro_trigger_precificacao(card_id),
@@ -296,20 +293,6 @@ async def webhook_faro(request: Request):
         ))
         return JSONResponse({"status": "received", "action": "precificacao"})
 
-    # ── Card entrou em Aceito → dispara fluxo de contrato ───────────────────
-    if to_stage_id == Stage.ACEITO:
-        asyncio.create_task(_guarded_task(
-            _faro_trigger_aceito(card_id),
-            f"faro aceito: {card_id[:8]}",
-        ))
-        return JSONResponse({"status": "received", "action": "aceito"})
-
-    return JSONResponse({"status": "ignored", "reason": f"to_stage={to_stage_id}"})
-
-        ))
-        return JSONResponse({"status": "received", "action": "precificacao"})
-
-    # ── Card entrou em Aceito → dispara fluxo de assinatura ─────────────────
     if to_stage_id == Stage.ACEITO:
         asyncio.create_task(_guarded_task(
             _faro_trigger_aceito(card_id),
@@ -321,10 +304,8 @@ async def webhook_faro(request: Request):
 
 
 async def _faro_trigger_precificacao(card_id: str) -> None:
-    """Dispara run_precificacao para um card específico assim que entra em Precificação."""
-    from services.faro import FaroClient, FaroError
+    from services.faro import FaroClient
     from jobs.precificacao import process_precificacao_card
-
     logger.info("FARO webhook: disparando precificacao para card %s...", card_id[:8])
     try:
         async with FaroClient() as faro:
@@ -332,16 +313,14 @@ async def _faro_trigger_precificacao(card_id: str) -> None:
         if card:
             await process_precificacao_card(card)
         else:
-            logger.warning("FARO webhook: card %s não encontrado no FARO.", card_id[:8])
+            logger.warning("FARO webhook: card %s nao encontrado.", card_id[:8])
     except Exception as exc:
-        logger.error("FARO webhook precificacao: erro card %s: %s", card_id[:8], exc)
+        logger.error("FARO webhook precificacao erro card %s: %s", card_id[:8], exc)
 
 
 async def _faro_trigger_aceito(card_id: str) -> None:
-    """Dispara run_contrato para um card específico assim que entra em Aceito."""
-    from services.faro import FaroClient, FaroError
+    from services.faro import FaroClient
     from jobs.contrato import process_contrato_card
-
     logger.info("FARO webhook: disparando contrato para card %s...", card_id[:8])
     try:
         async with FaroClient() as faro:
@@ -349,6 +328,11 @@ async def _faro_trigger_aceito(card_id: str) -> None:
         if card:
             await process_contrato_card(card)
         else:
-            logger.warning("FARO webhook: card %s não encontrado no FARO.", card_id[:8])
+            logger.warning("FARO webhook: card %s nao encontrado.", card_id[:8])
     except Exception as exc:
-        logger.error("FARO webhook contrato: erro card %s: %s", card_id[:8], exc)
+        logger.error("FARO webhook contrato erro card %s: %s", card_id[:8], exc)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
