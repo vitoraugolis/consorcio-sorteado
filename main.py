@@ -268,36 +268,22 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Webhook FARO (card.entered_stage / card.field_changed)
+# Webhook FARO (card.entered_stage)
 # ---------------------------------------------------------------------------
 
 @app.post("/webhook/faro")
 async def webhook_faro(request: Request):
-    import hashlib
-    import hmac
-
-    raw_body = await request.body()
-
-    # ── Validação HMAC-SHA256 ────────────────────────────────────────────────
-    faro_secret = os.environ.get("FARO_WEBHOOK_SECRET", "")
-    if faro_secret:
-        sig_header = request.headers.get("X-Webhook-Signature", "")
-        expected = hmac.new(faro_secret.encode(), raw_body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(sig_header, expected):
-            logger.warning("Webhook FARO: assinatura inválida — rejeitado.")
-            raise HTTPException(status_code=401, detail="Assinatura inválida")
-
     try:
-        import json as _json
-        payload = _json.loads(raw_body)
+        payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Payload inválido")
 
-    event = payload.get("event", "")
-    card_id = payload.get("card_id", "")
+    event      = payload.get("event", "")
+    card_id    = payload.get("card_id", "")
     to_stage_id = payload.get("to_stage_id", "")
 
-    logger.info("Webhook FARO: event=%s card=%s to_stage=%s", event, card_id[:8] if card_id else "", to_stage_id[:8] if to_stage_id else "")
+    logger.info("Webhook FARO: event=%s card=%s to_stage=%s",
+                event, card_id[:8] if card_id else "", to_stage_id[:8] if to_stage_id else "")
 
     if event != "card.entered_stage" or not card_id:
         return JSONResponse({"status": "ignored", "reason": f"event={event}"})
@@ -307,6 +293,19 @@ async def webhook_faro(request: Request):
         asyncio.create_task(_guarded_task(
             _faro_trigger_precificacao(card_id),
             f"faro precificacao: {card_id[:8]}",
+        ))
+        return JSONResponse({"status": "received", "action": "precificacao"})
+
+    # ── Card entrou em Aceito → dispara fluxo de contrato ───────────────────
+    if to_stage_id == Stage.ACEITO:
+        asyncio.create_task(_guarded_task(
+            _faro_trigger_aceito(card_id),
+            f"faro aceito: {card_id[:8]}",
+        ))
+        return JSONResponse({"status": "received", "action": "aceito"})
+
+    return JSONResponse({"status": "ignored", "reason": f"to_stage={to_stage_id}"})
+
         ))
         return JSONResponse({"status": "received", "action": "precificacao"})
 
