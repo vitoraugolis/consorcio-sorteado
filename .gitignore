@@ -25,6 +25,9 @@ venv/
 env/
 ENV/
 
+# Claude Code (configuração local — não commitar)
+.claude/settings.local.json
+
 # IDEs
 .idea/
 .vscode/
