@@ -99,10 +99,6 @@ async def _process_card(card: dict, whapi: WhapiClient, faro: FaroClient) -> boo
     adm = get_adm(card)
     message = ACTIVATION_MESSAGE.format(nome=nome, adm=adm)
 
-    # Guarda de idempotência: se já foi ativado, ignora
-    if card.get("Data de primeira ativação"):
-        logger.info("Card %s já ativado anteriormente, pulando.", card_id[:8])
-        return False
 
     sent = False
     try:
