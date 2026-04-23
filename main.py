@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import PORT, SECRET_KEY, NOTIFY_PHONES
+from config import PORT, SECRET_KEY, NOTIFY_PHONES, Stage
 from services.slack import slack_error, slack_info
 from jobs.reativador import run_reativador
 from jobs.ativacao_listas import run_ativacao_listas
@@ -235,16 +235,15 @@ async def _handle_zapsign_signed(doc_token: str, doc_name: str) -> None:
                 logger.error("ZapSign: falha ao notificar equipe: %s", e)
         return
 
-    from config import Stage as _Stage
     card_id = card.get("id", "")
     nome = get_name(card)
     phone = get_phone(card)
 
     try:
         async with FaroClient() as faro:
-            await faro.move_card(card_id, _Stage.SUCESSO)
+            await faro.move_card(card_id, Stage.SUCESSO)
             await asyncio.sleep(1)
-            await faro.move_card(card_id, _Stage.FINALIZACAO_COMERCIAL)
+            await faro.move_card(card_id, Stage.FINALIZACAO_COMERCIAL)
     except FaroError as e:
         logger.error("ZapSign: erro ao mover card %s: %s", card_id[:8], e)
 
