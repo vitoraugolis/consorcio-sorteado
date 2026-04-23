@@ -126,13 +126,14 @@ async def _respond(card: dict, texto: str) -> None:
 
     intent = "OUTRO"
     texto_resposta = _fallback_response("OUTRO", nome)
-
     try:
         async with AIClient() as ai:
             resposta_raw = await ai.complete_with_history(
                 history=history,
                 system=system,
                 max_tokens=350,
+                model="gpt-4o-mini",
+                fallback_model="gpt-4o-mini",
             )
             m = re.search(r"\{.*\}", resposta_raw, re.DOTALL)
             if m:

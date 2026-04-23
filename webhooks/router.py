@@ -161,21 +161,23 @@ async def route_message(msg: IncomingMessage) -> None:
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
 
     # Listas em stages de ativação → agente SDR Listas
-    if current_stage in ACTIVATION_STAGES and is_lista(card):
+    # Regra: is_lista()==True OU Fonte não definida (sem origem = lista fria)
+    _fonte = str(card.get("Fonte") or "").strip().lower()
+    _is_lista_card = is_lista(card) or (not _fonte)
+    if current_stage in ACTIVATION_STAGES and _is_lista_card:
         if msg.is_processable:
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=agente_listas.handle_message)
         return
 
-    # Qualificação: stages de ativação, apenas Bazar/Site
-    if current_stage in QUALIFICATION_STAGES and not is_lista(card):
+    # Qualificação: stages de ativação, apenas Bazar/Site (Fonte definida)
+    if current_stage in QUALIFICATION_STAGES and not _is_lista_card:
         if msg.is_media_message:
             await handle_qualification(card=card, msg=msg)
         elif msg.is_processable:
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=agente_bazar.handle_message)
         return
-
     # Lista em ASSINATURA coletando dados/extrato (ZapSign ainda não gerado)
     if current_stage == Stage.ASSINATURA and is_lista(card) and not card.get("ZapSign Token"):
         if msg.is_media_message:
