@@ -34,6 +34,8 @@ from services.ai import AIClient, AIError
 
 logger = logging.getLogger(__name__)
 
+_processing: set[str] = set()  # mutex em memória para evitar disparo duplo
+
 # ---------------------------------------------------------------------------
 # Mensagem de ativação de listas
 # Whapi suporta mensagens interativas — usamos botões para aumentar resposta
@@ -82,8 +84,21 @@ async def _normalize_phone(raw_phone: str) -> str:
 
 
 async def _process_card(card: dict, whapi: WhapiClient, faro: FaroClient) -> bool:
-    """Processa um card da etapa Listas. Retorna True se OK."""
     card_id = card["id"]
+
+    # Mutex em memória — evita disparo duplo no mesmo ciclo
+    if card_id in _processing:
+        logger.debug("Card %s já em processamento, pulando.", card_id[:8])
+        return False
+    _processing.add(card_id)
+    try:
+        return await _process_card_inner(card, whapi, faro, card_id)
+    finally:
+        _processing.discard(card_id)
+
+
+async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, card_id: str) -> bool:
+    """Lógica interna de processamento — chamada apenas pelo mutex de _process_card."""
     raw_phone = card.get("Telefone") or card.get("Telefone alternativo") or ""
 
     if not raw_phone:
