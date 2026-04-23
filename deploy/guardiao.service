@@ -1,0 +1,20 @@
+[Unit]
+Description=Guardião — Monitor Inteligente do Consórcio Sorteado
+After=network-online.target consorcio-sorteado.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=APP_USER
+Group=APP_USER
+WorkingDirectory=/opt/consorcio-sorteado
+EnvironmentFile=/opt/consorcio-sorteado/.env
+ExecStart=/opt/consorcio-sorteado/.venv/bin/python deploy/guardiao.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=guardiao
+
+[Install]
+WantedBy=multi-user.target

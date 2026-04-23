@@ -1,0 +1,9 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+apscheduler==3.10.4
+python-dotenv==1.0.1
+playwright==1.51.0
+# Guardião
+slack-bolt>=1.18
+anthropic>=0.25

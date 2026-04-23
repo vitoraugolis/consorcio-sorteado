@@ -1,0 +1,45 @@
+# Variáveis adicionais necessárias para o VPS (adicionar ao .env existente)
+# As demais variáveis (FARO, WHAPI, ZAPI, etc.) já estão no .env atual.
+
+# ── Slack App — Guardião ───────────────────────────────────────────────────────
+# Criar em: https://api.slack.com/apps → Create App → From Scratch → Socket Mode
+
+SLACK_BOT_TOKEN=xoxb-          # Settings → OAuth & Permissions → Bot User OAuth Token
+SLACK_APP_TOKEN=xapp-          # Settings → Basic Information → App-Level Tokens (scope: connections:write)
+SLACK_GUARDIAN_CHANNEL=        # ID do canal de alertas (ex: C0XXXXXXXXX — clique no canal → About → Channel ID)
+
+# ── Guardião — comportamento ───────────────────────────────────────────────────
+APP_URL=http://127.0.0.1:8000  # URL interna da aplicação (não mude)
+SERVICE_NAME=consorcio-sorteado
+GUARDIAN_CHECK_INTERVAL=120    # segundos entre health checks
+GUARDIAN_MAX_RESTARTS=3        # máximo de restarts automáticos por sessão
+
+# ── Aplicação ──────────────────────────────────────────────────────────────────
+TEST_MODE=false                # IMPORTANTE: false em produção
+PUBLIC_URL=http://SEU_IP_VPS  # IP público do VPS (para links de proposta)
+PORT=8000
+
+# Linux:
+IMAGES_DIR=/opt/consorcio-sorteado/images
+# Windows:
+# IMAGES_DIR=C:\consorcio-sorteado\images
+
+# ── Guardião — logs (necessário apenas no Windows) ─────────────────────────────
+# No Linux, o guardião lê via journalctl (não precisa configurar).
+# No Windows, aponte para o arquivo de log gerado pelo NSSM:
+# LOG_FILE=C:\consorcio-sorteado\logs\app.log
+
+# ── Z-API (instância única) ────────────────────────────────────────────────────
+# Uma só instância para todos os fluxos (bazar, site, administradoras).
+# Formato: <instance_id>:<token>
+ZAPI_INSTANCE_DEFAULT=3E1E234073A4F045CF922E7FADD21987:SEU_TOKEN
+
+# ── Filtros de ativação Bazar/Site ─────────────────────────────────────────────
+# Altere sem redeploy. Separados por vírgula, case-insensitive, match parcial.
+# Deixe em branco para desativar o filtro.
+# ATIVACAO_ADM_EXCLUSOES=bamaq,promove,honda,disal,remaza,primo rossi,yamaha,ancora,enviado,embracon,volkswagen,iveco,comauto,magalu,groscon,banrisul,simpala,unifisa,multimarcas,canopus,rodobens,cnp,servopa,volks,chevrolet,poupex,hs,consorcio santa emilia,vida nova
+# ATIVACAO_CONTEMPLACAO_EXCLUSOES=lance,nao-cont
+# ATIVACAO_TIPO_BEM_EXCLUSOES=veiculo,moto,caminh
+
+# ── Consultor(es) para notificações ───────────────────────────────────────────
+CONSULTANT_PHONES=Nome:5511999990001,Outro:5511999990002

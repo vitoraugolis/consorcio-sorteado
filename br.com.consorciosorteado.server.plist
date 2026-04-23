@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>br.com.consorciosorteado.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/vitoraugolis/Documents/CS/consorcio-sorteado/start_server.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/vitoraugolis/Documents/CS/consorcio-sorteado</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/vitoraugolis/Documents/CS/consorcio-sorteado/logs/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/vitoraugolis/Documents/CS/consorcio-sorteado/logs/server.log</string>
+
+    <!-- Reinicia automaticamente se o processo morrer -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Inicia junto com o login do usuário -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Throttle: não reinicia mais de 1x a cada 10s (evita loop de crash) -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

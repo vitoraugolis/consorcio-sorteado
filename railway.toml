@@ -1,0 +1,21 @@
+# ============================================================
+# railway.toml — Configuração de deploy no Railway
+# Documentação: https://docs.railway.app/reference/config-as-code
+# ============================================================
+
+[build]
+# Usa o Dockerfile presente na raiz do projeto
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Comando de inicialização (redundante com CMD do Dockerfile, mas explícito)
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"
+
+# Health check — Railway reinicia o container se /health não responder
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+# Política de restart em caso de falha
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
