@@ -25,7 +25,7 @@ from services.slack import slack_error
 
 logger = logging.getLogger(__name__)
 
-_processing: set[str] = set()
+_processing: dict[str, asyncio.Lock] = {}
 
 # ---------------------------------------------------------------------------
 # Formatação
@@ -199,15 +199,17 @@ async def _send_proposal(phone: str, card: dict) -> bool:
 # Processamento de um card
 # ---------------------------------------------------------------------------
 
+
 async def _process_card(faro: FaroClient, card: dict) -> bool:
     card_id = card.get("id", "")
-    if card_id in _processing:
+    if card_id not in _processing:
+        _processing[card_id] = asyncio.Lock()
+    lock = _processing[card_id]
+    if lock.locked():
+        logger.info("Precificacao: card %s ja em processamento -- ignorado.", card_id[:8])
         return False
-    _processing.add(card_id)
-    try:
+    async with lock:
         return await _process_card_locked(faro, card_id)
-    finally:
-        _processing.discard(card_id)
 
 
 async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:

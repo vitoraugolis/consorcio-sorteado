@@ -9,7 +9,7 @@ from datetime import datetime
 
 from config import NOTIFY_PHONES, Stage, TEST_MODE, filter_test_cards
 
-_processing: set[str] = set()
+_processing: dict[str, asyncio.Lock] = {}
 
 from services.faro import (
     FaroClient, FaroError, get_phone, get_name, get_adm, is_lista,
@@ -88,17 +88,17 @@ async def _notify_team(text: str) -> None:
                 await w.send_text(phone, text)
     except WhapiError as e:
         logger.warning("Falha ao notificar equipe: %s", e)
-
-
 async def _process_card(card: dict) -> None:
     card_id = card.get("id", "")
-    if card_id in _processing:
+    if card_id not in _processing:
+        _processing[card_id] = asyncio.Lock()
+    lock = _processing[card_id]
+    if lock.locked():
+        logger.info("Contrato: card %s ja em processamento -- ignorado.", card_id[:8])
         return
-    _processing.add(card_id)
-    try:
+    async with lock:
         await _process_card_locked(card)
-    finally:
-        _processing.discard(card_id)
+
 
 
 async def _process_card_locked(card: dict) -> None:
