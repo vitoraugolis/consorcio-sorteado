@@ -65,10 +65,10 @@ def setup_scheduler():
     scheduler.add_job(run_follow_up, IntervalTrigger(minutes=30),
                       id="follow_up", name="Follow-up Propostas",
                       max_instances=1, misfire_grace_time=120)
-    scheduler.add_job(run_contrato, IntervalTrigger(minutes=5),
+    scheduler.add_job(run_contrato, IntervalTrigger(minutes=30),
                       id="contrato", name="Geração de Contratos",
                       max_instances=1, misfire_grace_time=60)
-    scheduler.add_job(run_precificacao, IntervalTrigger(minutes=5),
+    scheduler.add_job(run_precificacao, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
