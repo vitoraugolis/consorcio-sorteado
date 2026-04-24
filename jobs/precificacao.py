@@ -85,39 +85,174 @@ def _build_proposal_html(card: dict) -> str:
     proposta = _fmt_currency(card.get("Proposta Realizada", ""))
     tipo_contemplacao = _fmt_contemplacao(card.get("Tipo contemplação", ""))
     tipo_bem = (card.get("Tipo de bem") or "bem").capitalize()
-    now = datetime.now()
-    data_str = f", {now.day:02d} de {_MESES_BR[now.month - 1]} de {now.year}"
-    return f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
-<style>* {{margin:0;padding:0;box-sizing:border-box}}
-body {{font-family:Arial,sans-serif;background:white;padding:40px}}
-h1 {{font-size:26px;font-weight:bold;color:#000;margin-bottom:20px}}
-.row {{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}}
-.block {{background:#f9f9f9;padding:16px;border-radius:8px}}
-.label {{color:#5fb3d9;font-size:11px;font-weight:bold;text-transform:uppercase;margin-bottom:6px}}
-.value {{color:#333;font-size:14px}}
-.highlight {{background:#ffeb3b;padding:2px 4px;font-weight:bold}}
-.footer {{text-align:center;padding-top:30px;border-top:2px solid #f0f0f0;font-weight:bold}}
-</style></head><body>
-<img src="https://www.consorciosorteado.com.br/templates/yootheme/cache/25/logotipo-consorcio-sorteado-2556d1fd.png" style="height:55px;margin-bottom:30px">
-<h1>ANÁLISE DEPARTAMENTO<br>DE PRECIFICAÇÃO</h1>
-<div class="row">
-  <div class="block"><div class="label">Nome do Cliente</div><div class="value">{title}</div></div>
-  <div class="block"><div class="label">Administradora</div><div class="value">{adm}</div></div>
-</div>
-<div class="row">
-  <div class="block"><div class="label">Grupo</div><div class="value">{grupo}</div></div>
-  <div class="block"><div class="label">Cota</div><div class="value">{cota}</div></div>
-</div>
-<div class="row">
-  <div class="block"><div class="label">Tipo de Bem</div><div class="value">{tipo_bem}</div></div>
-  <div class="block"><div class="label">Contemplação</div><div class="value">{tipo_contemplacao}</div></div>
-</div>
-<div class="block" style="margin-bottom:20px">
-  <div class="label">Valor da Proposta</div>
-  <div class="value" style="font-size:20px;font-weight:bold"><span class="highlight">{proposta}</span></div>
-</div>
-<div class="footer">São Paulo{data_str}</div>
-</body></html>"""
+    now = datetime.now(TZ_BRASILIA)
+    data_str = f"São Paulo, {now.day:02d} de {_MESES_BR[now.month - 1]} de {now.year}"
+    logo_url = "https://www.consorciosorteado.com.br/templates/yootheme/cache/25/logotipo-consorcio-sorteado-2556d1fd.png"
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{
+  font-family: Arial, sans-serif;
+  background-color: #f0f2f5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  color: #333;
+}}
+.document-container {{
+  background-color: #fff;
+  width: 800px;
+  padding: 50px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+  position: relative;
+  border-top: 10px solid #0097a7;
+}}
+.logo {{
+  margin-bottom: 30px;
+}}
+.logo img {{
+  height: 55px;
+}}
+.title {{
+  font-size: 28px;
+  font-weight: 800;
+  text-transform: uppercase;
+  line-height: 1.2;
+  margin-bottom: 40px;
+  width: 350px;
+}}
+.info-grid {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 30px;
+}}
+.info-box {{
+  background-color: #f8f9fa;
+  padding: 15px 20px;
+  border-radius: 8px;
+}}
+.label {{
+  color: #00bcd4;
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}}
+.value {{
+  font-size: 16px;
+  font-weight: 500;
+}}
+.proposal-value-box {{
+  background-color: #f8f9fa;
+  padding: 20px;
+  border-radius: 8px;
+  margin-bottom: 30px;
+}}
+.highlight {{
+  background-color: #ffff00;
+  font-weight: bold;
+  font-size: 22px;
+  padding: 2px 5px;
+}}
+.body-text {{
+  background-color: #f2f7f2;
+  padding: 30px;
+  border-radius: 8px;
+  line-height: 1.6;
+  font-size: 14px;
+  margin-bottom: 40px;
+}}
+.signature {{
+  font-size: 14px;
+  line-height: 1.8;
+  margin-top: 16px;
+}}
+.footer {{
+  text-align: center;
+  font-size: 14px;
+  font-weight: bold;
+  border-top: 1px solid #eee;
+  padding-top: 20px;
+}}
+.checkmark-bg {{
+  position: absolute;
+  top: 20px;
+  right: 40px;
+  font-size: 150px;
+  color: #8bc34a;
+  opacity: 0.8;
+  font-weight: bold;
+  transform: rotate(10deg);
+  pointer-events: none;
+  line-height: 1;
+}}
+</style>
+</head>
+<body>
+  <div class="document-container">
+    <div class="checkmark-bg">✓</div>
+
+    <div class="logo">
+      <img src="{logo_url}" alt="Consórcio Sorteado">
+    </div>
+
+    <div class="title">Análise Departamento<br>de Precificação</div>
+
+    <div class="info-grid">
+      <div class="info-box">
+        <div class="label">Nome do Cliente:</div>
+        <div class="value">{title}</div>
+      </div>
+      <div class="info-box">
+        <div class="label">Administradora:</div>
+        <div class="value">{adm}</div>
+      </div>
+      <div class="info-box">
+        <div class="label">Grupo:</div>
+        <div class="value">{grupo}</div>
+      </div>
+      <div class="info-box">
+        <div class="label">Cota:</div>
+        <div class="value">{cota}</div>
+      </div>
+      <div class="info-box">
+        <div class="label">Tipo de Bem:</div>
+        <div class="value">{tipo_bem}</div>
+      </div>
+      <div class="info-box">
+        <div class="label">Forma de Contemplação:</div>
+        <div class="value">{tipo_contemplacao}</div>
+      </div>
+    </div>
+
+    <div class="proposal-value-box">
+      <div class="label">Valor da Proposta:</div>
+      <div class="value"><span class="highlight">{proposta}</span></div>
+    </div>
+
+    <div class="body-text">
+      Prezado(a),<br><br>
+      Nós analisamos o consórcio e verificamos que a cota <strong>{cota}</strong> do grupo <strong>{grupo}</strong>
+      foi contemplada por <strong>{tipo_contemplacao}</strong>. Nossa proposta de compra do consórcio de
+      <strong>{tipo_bem}</strong> é no valor de <strong>{proposta}</strong>. Todas as despesas relativas à
+      transferência e às parcelas futuras do consórcio são de nossa responsabilidade. Aceitando a proposta,
+      solicitamos os dados pessoais para formalizar o contrato eletrônico de compra e venda — após a assinatura,
+      efetuamos o pagamento imediato.
+      <div class="signature">
+        Atenciosamente,<br>
+        <strong>Equipe Consórcio Sorteado</strong>
+      </div>
+    </div>
+
+    <div class="footer">{data_str}</div>
+  </div>
+</body>
+</html>"""
 
 
 async def _generate_proposal_image(card: dict) -> str | None:

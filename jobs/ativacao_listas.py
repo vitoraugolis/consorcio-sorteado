@@ -31,10 +31,9 @@ from config import (
 from services.faro import FaroClient, FaroError, get_adm, get_name
 from services.whapi import WhapiClient, WhapiError
 from services.ai import AIClient, AIError
+from services.session_store import acquire_mutex, release_mutex
 
 logger = logging.getLogger(__name__)
-
-_processing: set[str] = set()  # mutex em memória para evitar disparo duplo
 
 # ---------------------------------------------------------------------------
 # Mensagem de ativação de listas
@@ -86,15 +85,15 @@ async def _normalize_phone(raw_phone: str) -> str:
 async def _process_card(card: dict, whapi: WhapiClient, faro: FaroClient) -> bool:
     card_id = card["id"]
 
-    # Mutex em memória — evita disparo duplo no mesmo ciclo
-    if card_id in _processing:
+    # Mutex distribuído via Redis — evita disparo duplo mesmo após reinício
+    acquired = await acquire_mutex(f"ativacao:{card_id}")
+    if not acquired:
         logger.debug("Card %s já em processamento, pulando.", card_id[:8])
         return False
-    _processing.add(card_id)
     try:
         return await _process_card_inner(card, whapi, faro, card_id)
     finally:
-        _processing.discard(card_id)
+        await release_mutex(f"ativacao:{card_id}")
 
 
 async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, card_id: str) -> bool:

@@ -1,0 +1,36 @@
+WHAPI_TOKEN_BAZAR não configurado — usando pool de Listas como fallback. Configure WHAPI_TOKEN_BAZAR no .env para isolar os fluxos.
+INFO:     Started server process [34305]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:48228 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [34305]
+WHAPI_TOKEN_BAZAR não configurado — usando pool de Listas como fallback. Configure WHAPI_TOKEN_BAZAR no .env para isolar os fluxos.
+INFO:     Started server process [34518]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53906 - "GET /health HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     118.194.248.142:59472 - "GET / HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40010 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40012 - "GET /robots.txt HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40018 - "GET /sitemap.xml HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40030 - "GET /sse HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40038 - "GET /mcp HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40046 - "GET /mcp-sse HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:40048 - "GET /get_server_info HTTP/1.1" 404 Not Found
+INFO:     118.194.248.142:34644 - "POST /update_weights_from_tensor HTTP/1.1" 404 Not Found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [34518]
+WHAPI_TOKEN_BAZAR não configurado — usando pool de Listas como fallback. Configure WHAPI_TOKEN_BAZAR no .env para isolar os fluxos.
+INFO:     Started server process [39392]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:49108 - "GET /health HTTP/1.1" 200 OK

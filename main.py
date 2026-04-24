@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import PORT, SECRET_KEY, NOTIFY_PHONES, Stage
 from services.slack import slack_error, slack_info
+from services.session_store import health_check as redis_health, close_redis
 from jobs.reativador import run_reativador
 from jobs.ativacao_listas import run_ativacao_listas
 from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
@@ -23,6 +24,7 @@ from jobs.follow_up import run_follow_up
 from jobs.contrato import run_contrato
 from jobs.precificacao import run_precificacao
 from webhooks.router import handle_whapi_webhook
+from services.safety_car import run_pipeline_monitor
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -71,6 +73,9 @@ def setup_scheduler():
     scheduler.add_job(run_precificacao, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
+    scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
+                      id="safety_car", name="Safety Car — Monitor de Pipeline",
+                      max_instances=1, misfire_grace_time=120)
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
 
 
@@ -81,17 +86,26 @@ def setup_scheduler():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Iniciando sistema Consórcio Sorteado...")
+
+    # Verifica Redis
+    redis_ok = await redis_health()
+    if redis_ok:
+        logger.info("✅ Redis conectado.")
+    else:
+        logger.warning("⚠️  Redis indisponível — debounce e mutex em modo degradado.")
+
     setup_scheduler()
     scheduler.start()
     logger.info("✅ Scheduler iniciado.")
     asyncio.create_task(_guarded_task(
         slack_info("Sistema Consórcio Sorteado iniciado",
-                   context={"Jobs ativos": str(len(scheduler.get_jobs())), "Ambiente": "Produção"}),
+                   context={"Jobs ativos": str(len(scheduler.get_jobs())), "Ambiente": "Produção", "Redis": "✅" if redis_ok else "⚠️ offline"}),
         "slack_info startup",
     ))
     yield
     logger.info("🛑 Encerrando sistema...")
     scheduler.shutdown(wait=False)
+    await close_redis()
 
 
 async def _guarded_task(coro, label: str = "task"):
@@ -123,7 +137,8 @@ async def health():
         {"id": job.id, "name": job.name, "next_run": str(job.next_run_time) if job.next_run_time else None}
         for job in scheduler.get_jobs()
     ]
-    return {"status": "ok", "jobs": jobs}
+    redis_ok = await redis_health()
+    return {"status": "ok", "redis": "ok" if redis_ok else "offline", "jobs": jobs}
 
 
 @app.post("/jobs/pause")

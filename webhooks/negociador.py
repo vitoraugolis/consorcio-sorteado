@@ -32,10 +32,11 @@ from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
     get_name, get_phone, get_adm, get_fonte, is_lista,
-    load_history, history_append, save_history, build_card_context, history_to_text,
+    load_history, history_append, build_card_context, history_to_text,
     load_journey, save_journey,
 )
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.session_store import load_history_smart, save_history_smart
 
 logger = logging.getLogger(__name__)
 
@@ -1043,7 +1044,7 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
     # Carrega card fresco + histórico
     async with FaroClient() as faro:
         card_fresh = await faro.get_card(card_id)
-    history = load_history(card_fresh)
+    history = await load_history_smart(phone, card_fresh)
     history = history_append(history, "user", mensagem)
 
     stage_nome = "Precificação" if current_stage_id == Stage.PRECIFICACAO else "Em Negociação"
@@ -1057,13 +1058,20 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
         result.next_stage[:8] if result.next_stage else "mantém",
     )
 
-    await _send_response(card, phone, result.response_message)
+    # ── Safety Car: audita resposta antes de enviar ──────────────────────────
+    from services.safety_car import audit_response
+    from services.faro import history_to_text
+    historico_txt = history_to_text(history[:-1], max_turns=6)
+    audit = await audit_response(result.response_message, card_fresh, historico_txt, agente="negociador")
+    mensagem_auditada = audit.mensagem_final
 
-    history = history_append(history, "assistant", result.response_message)
+    await _send_response(card, phone, mensagem_auditada)
+
+    history = history_append(history, "assistant", mensagem_auditada)
     agora   = datetime.now(timezone.utc).isoformat()
 
     async with FaroClient() as faro:
-        await save_history(faro, card_id, history)
+        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
 
         # Detecta tom do lead na primeira troca e registra na jornada
         try:
@@ -1132,7 +1140,7 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                 new_history = history_append(_history, "assistant", _msg)
                 agora_delayed = datetime.now(timezone.utc).isoformat()
                 async with FaroClient() as _faro:
-                    await save_history(_faro, _card_id, new_history)
+                    await save_history_smart(_phone, new_history, faro_client=_faro, card_id=_card_id)
                     try:
                         await _faro.update_card(_card_id, {"Ultima atividade": agora_delayed})
                     except FaroError:

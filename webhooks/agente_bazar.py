@@ -13,11 +13,13 @@ from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
     get_name, get_phone, get_adm,
-    load_history, history_append, save_history,
+    history_append, history_to_text,
     build_card_context,
 )
 from services.slack import slack_error
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.session_store import load_history_smart, save_history_smart
+from services.safety_car import audit_response
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +118,7 @@ async def _respond(card: dict, texto: str) -> None:
     async with FaroClient() as faro:
         card_fresh = await faro.get_card(card_id)
 
-    history = load_history(card_fresh)
+    history = await load_history_smart(phone, card_fresh)
     history = history_append(history, "user", texto)
 
     system = SYSTEM_PROMPT.format(
@@ -148,6 +150,11 @@ async def _respond(card: dict, texto: str) -> None:
                           context={"card": card_id[:12], "phone": phone})
         texto_resposta = _fallback_response(intent, nome)
 
+    # ── Safety Car: audita resposta antes de enviar ──────────────────────────
+    historico_txt = history_to_text(history[:-1], max_turns=6)
+    audit = await audit_response(texto_resposta, card_fresh, historico_txt, agente="agente_bazar")
+    texto_resposta = audit.mensagem_final
+
     # Envia via Whapi canal bazar
     try:
         async with get_whapi_for_card(card_fresh) as w:
@@ -161,7 +168,7 @@ async def _respond(card: dict, texto: str) -> None:
 
     # Persiste histórico e atividade num único FaroClient
     async with FaroClient() as faro:
-        await save_history(faro, card_id, history)
+        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
         try:
             await faro.update_card(card_id, {
                 "Ultima atividade": agora,

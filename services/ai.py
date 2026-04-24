@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 AIProvider = Literal["openai", "anthropic", "gemini"]
 
+# Modelos de fallback por provider — usados quando o modelo primário falha
+_VISION_FALLBACK_CHAIN = [
+    # (modelo, aceita_pdf)
+    ("gpt-4o",              False),
+    ("gemini-2.0-flash",    True),
+    ("claude-3-5-sonnet-20241022", False),
+]
+
 
 class AIError(Exception):
     pass
@@ -286,6 +294,9 @@ class AIClient:
     ) -> str:
         if not OPENAI_API_KEY:
             raise AIError("OPENAI_API_KEY não configurada")
+        # OpenAI não suporta PDF — rejeita explicitamente para acionar fallback
+        if mime_type == "application/pdf":
+            raise AIError("OpenAI vision não suporta PDF — use Gemini")
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -312,10 +323,12 @@ class AIClient:
     ) -> str:
         if not ANTHROPIC_API_KEY:
             raise AIError("ANTHROPIC_API_KEY não configurada")
-        # Claude suporta image/jpeg, image/png, image/gif, image/webp
+        # Claude suporta image/jpeg, image/png, image/gif, image/webp — não PDF
+        if mime_type == "application/pdf":
+            raise AIError("Anthropic vision não suporta PDF — use Gemini")
         supported = {"image/jpeg", "image/png", "image/gif", "image/webp"}
         if mime_type not in supported:
-            mime_type = "image/jpeg"  # fallback
+            mime_type = "image/jpeg"  # fallback conservador
 
         body = {
             "model": model,
@@ -388,15 +401,16 @@ class AIClient:
         prompt para o modelo de visão configurado.
 
         Suporte:
-          - OpenAI GPT-4o: imagens (JPEG, PNG, WEBP, GIF)
-          - Anthropic Claude 3+: imagens (JPEG, PNG, WEBP, GIF)
+          - OpenAI GPT-4o: imagens (JPEG, PNG, WEBP, GIF) — NÃO suporta PDF
+          - Anthropic Claude 3+: imagens (JPEG, PNG, WEBP, GIF) — NÃO suporta PDF
           - Google Gemini: imagens E PDFs nativamente
 
-        Para PDFs, recomenda-se usar Gemini (DEFAULT_VISION_MODEL=gemini-1.5-flash).
+        Para PDFs, sempre usa Gemini independente do DEFAULT_VISION_MODEL.
+        Em caso de falha do modelo primário, tenta a cadeia de fallback.
 
         Args:
             prompt:    Instrução ao modelo sobre o que extrair/analisar.
-            media_url: URL do documento ou imagem (e.g., URL temporária do Z-API).
+            media_url: URL do documento ou imagem (e.g., URL temporária do Whapi).
             system:    Prompt de sistema opcional.
             max_tokens: Máximo de tokens na resposta.
             model:     Modelo a usar (padrão: DEFAULT_VISION_MODEL do .env).
@@ -404,32 +418,53 @@ class AIClient:
         Returns:
             Texto gerado pelo modelo.
         """
-        model = model or DEFAULT_VISION_MODEL
-        provider = self._detect_provider(model)
-        logger.info(
-            "AI vision: provider=%s model=%s url=%s...",
-            provider, model, media_url[:60]
-        )
-
-        # Baixa a mídia
+        # Baixa a mídia primeiro (faz uma só vez, reutiliza nos fallbacks)
         media_bytes, mime_type = await self._download_media(media_url)
         image_b64 = base64.b64encode(media_bytes).decode("utf-8")
+        is_pdf = mime_type == "application/pdf"
 
         logger.info(
-            "AI vision: baixou %d bytes, mime=%s", len(media_bytes), mime_type
+            "AI vision: baixou %d bytes, mime=%s, is_pdf=%s",
+            len(media_bytes), mime_type, is_pdf,
         )
 
-        try:
-            if provider == "openai":
-                return await self._openai_vision(prompt, image_b64, mime_type, system, max_tokens, model)
-            elif provider == "anthropic":
-                return await self._anthropic_vision(prompt, image_b64, mime_type, system, max_tokens, model)
-            elif provider == "gemini":
-                return await self._gemini_vision(prompt, image_b64, mime_type, system, max_tokens, model)
-        except httpx.HTTPStatusError as e:
-            raise AIError(f"Erro HTTP {e.response.status_code} na IA visão: {e.response.text[:200]}") from e
-        except httpx.RequestError as e:
-            raise AIError(f"Erro de rede na IA visão: {e}") from e
+        # Se for PDF, força Gemini como primeiro da fila
+        preferred = model or DEFAULT_VISION_MODEL
+        if is_pdf and not preferred.startswith("gemini"):
+            logger.info("AI vision: PDF detectado — substituindo %s por gemini-2.0-flash", preferred)
+            preferred = "gemini-2.0-flash"
+
+        # Monta cadeia: modelo preferido + fallbacks que suportam o mime
+        candidates: list[str] = [preferred]
+        for fallback_model, accepts_pdf in _VISION_FALLBACK_CHAIN:
+            if fallback_model != preferred:
+                if is_pdf and not accepts_pdf:
+                    continue  # pula modelos que não aceitam PDF
+                candidates.append(fallback_model)
+
+        last_error: Exception = AIError("Sem modelos disponíveis")
+        for attempt_model in candidates:
+            provider = self._detect_provider(attempt_model)
+            logger.info("AI vision: tentando provider=%s model=%s", provider, attempt_model)
+            try:
+                if provider == "openai":
+                    result = await self._openai_vision(prompt, image_b64, mime_type, system, max_tokens, attempt_model)
+                elif provider == "anthropic":
+                    result = await self._anthropic_vision(prompt, image_b64, mime_type, system, max_tokens, attempt_model)
+                elif provider == "gemini":
+                    result = await self._gemini_vision(prompt, image_b64, mime_type, system, max_tokens, attempt_model)
+                else:
+                    continue
+                logger.info("AI vision: sucesso com %s", attempt_model)
+                return result
+            except (AIError, httpx.HTTPStatusError, httpx.RequestError) as e:
+                logger.warning("AI vision: falha em %s (%s), tentando próximo.", attempt_model, e)
+                last_error = e
+
+        raise AIError(
+            f"Todos os modelos de visão falharam para mime={mime_type}. "
+            f"Último erro: {last_error}"
+        )
 
     async def format_phone(self, raw_phone: str) -> str:
         """

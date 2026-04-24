@@ -199,6 +199,7 @@ def filter_test_cards(cards: list) -> list:
 # ---------------------------------------------------------------------------
 DEBOUNCE_SECONDS  = int(os.getenv("DEBOUNCE_SECONDS", "15"))
 HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "30"))
+REDIS_URL         = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
 # ---------------------------------------------------------------------------
 # Filtros de ativação Bazar/Site

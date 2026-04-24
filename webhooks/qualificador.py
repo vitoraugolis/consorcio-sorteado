@@ -5,6 +5,7 @@ webhooks/qualificador.py — Qualificação de leads Bazar/Site via análise de 
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -13,17 +14,20 @@ from typing import Optional
 from config import (
     Stage,
     NOTIFY_PHONES,
+    PUBLIC_URL,
     QUALIFICACAO_PERCENTUAL_MAXIMO,
     QUALIFICACAO_VALOR_PAGO_MAXIMO,
 )
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError, get_name, get_phone, get_adm, get_fonte,
-    load_history, history_append, save_history,
+    load_history, history_append,
     load_journey, save_journey,
 )
 from services.slack import slack_error, slack_warning
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.session_store import load_history_smart, save_history_smart
+from services.safety_car import audit_response
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,9 @@ QUALIFICATION_STAGES = {
     Stage.TERCEIRA_ATIVACAO,
     Stage.QUARTA_ATIVACAO,
 }
+
+# Máximo de extratos incorretos antes de escalar para humano
+MAX_EXTRATO_INCORRETO = 3
 
 # ---------------------------------------------------------------------------
 # Resultado da análise
@@ -132,8 +139,28 @@ MSG_EXTRATO_INCORRETO = (
     "• O valor do crédito\n"
     "• Quanto já foi pago\n"
     "• Quantas parcelas faltam\n\n"
+    "Veja abaixo um exemplo do extrato correto 👇"
+)
+
+MSG_EXTRATO_INCORRETO_SEM_IMAGEM = (
+    "Obrigada por enviar, {nome}! 😊\n\n"
+    "Mas parece que o documento que recebi não é o extrato de consórcio "
+    "que preciso. Pode ser um boleto, contrato ou a imagem ficou um pouco "
+    "ilegível.\n\n"
+    "O que preciso é o *extrato atualizado da cota*, que mostra:\n"
+    "• O valor do crédito\n"
+    "• Quanto já foi pago\n"
+    "• Quantas parcelas faltam\n\n"
     "Tente tirar uma foto clara do documento ou exportar como PDF pelo "
     "aplicativo do banco. Pode me mandar que analiso na hora! 📄"
+)
+
+MSG_EXTRATO_INCORRETO_ESCALADO = (
+    "Olá, {nome}! 😊\n\n"
+    "Recebi alguns documentos, mas ainda não consegui identificar o extrato "
+    "correto da sua cota. Não se preocupe — vou passar seu contato para um "
+    "consultor da nossa equipe que vai te ajudar pessoalmente.\n\n"
+    "Em breve alguém entra em contato! 🙏"
 )
 
 MSG_NAO_QUALIFICADO = (
@@ -169,9 +196,14 @@ _RECUSA_KEYWORDS = [
     "me remova", "me tire", "para de enviar", "parem",
 ]
 
-# Pré-compila padrões com word boundary para evitar falsos positivos
-import re as _re
-_RECUSA_PATTERNS = [_re.compile(r'\b' + _re.escape(kw) + r'\b') for kw in _RECUSA_KEYWORDS]
+# Usa re.UNICODE para tratar acentos corretamente com \b
+_RECUSA_PATTERNS = [
+    re.compile(r'(?<!\w)' + re.escape(kw) + r'(?!\w)', re.IGNORECASE | re.UNICODE)
+    for kw in _RECUSA_KEYWORDS
+]
+
+# Caminho local da imagem de exemplo de extrato
+_EXTRATO_EXEMPLO_PATH = os.path.join(os.getenv("IMAGES_DIR", "/tmp/cs_images"), "extrato_exemplo.png")
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +222,41 @@ def _extract_media_url(raw: dict, media_type: str) -> Optional[str]:
         if isinstance(obj, dict) and obj.get("url"):
             return obj["url"]
     return raw.get("mediaUrl") or raw.get("fileUrl") or None
+
+
+# ---------------------------------------------------------------------------
+# Imagem de exemplo de extrato
+# ---------------------------------------------------------------------------
+
+def _get_extrato_exemplo_url() -> Optional[str]:
+    """Retorna URL pública da imagem de exemplo, se disponível."""
+    if PUBLIC_URL:
+        return f"{PUBLIC_URL}/images/extrato_exemplo.png"
+    return None
+
+
+async def _send_extrato_exemplo(card: dict, phone: str) -> bool:
+    """
+    Envia imagem de exemplo do extrato correto via Whapi.
+    Retorna True se enviou, False se imagem não disponível ou falhou.
+    """
+    import base64
+    from pathlib import Path
+
+    img_path = Path(_EXTRATO_EXEMPLO_PATH)
+    if not img_path.exists():
+        logger.info("Qualificador: imagem de exemplo não encontrada em %s", _EXTRATO_EXEMPLO_PATH)
+        return False
+
+    try:
+        b64 = base64.b64encode(img_path.read_bytes()).decode()
+        data_uri = f"data:image/png;base64,{b64}"
+        async with get_whapi_for_card(card) as w:
+            await w.send_image(phone, data_uri, caption="Exemplo de extrato correto 👆")
+        return True
+    except Exception as e:
+        logger.warning("Qualificador: falha ao enviar imagem de exemplo: %s", e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +289,20 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
                     return None
                 return str(val).strip()
 
+            # Normalização defensiva de tipo_bem
+            tipo_bem_raw = _nullable_str(data.get("tipo_bem"))
+            tipo_bem_map = {
+                "imovel": "Imóvel", "imóvel": "Imóvel",
+                "veiculo": "Veículo", "veículo": "Veículo",
+                "moto": "Moto",
+                "caminhao": "Caminhão", "caminhão": "Caminhão",
+                "servico": "Serviço", "serviço": "Serviço",
+            }
+            tipo_bem_norm = tipo_bem_map.get(
+                tipo_bem_raw.lower() if tipo_bem_raw else "",
+                tipo_bem_raw,
+            )
+
             analise = ExtratoAnalise(
                 resultado=resultado,
                 administradora=_nullable_str(data.get("administradora")),
@@ -231,7 +312,7 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
                 total_parcelas=int(data.get("total_parcelas") or 0),
                 motivo=data.get("motivo", ""),
                 tipo_contemplacao=_nullable_str(data.get("tipo_contemplacao")),
-                tipo_bem=_nullable_str(data.get("tipo_bem")),
+                tipo_bem=tipo_bem_norm,
                 grupo=_nullable_str(data.get("grupo")),
                 cota=_nullable_str(data.get("cota")),
             )
@@ -259,8 +340,12 @@ def _is_verbal_refusal(text: str) -> bool:
     return any(p.search(lower) for p in _RECUSA_PATTERNS)
 
 
-async def _send_message(card: dict, phone: str, message: str) -> None:
-    """Envia mensagem ao lead via Whapi (canal correto pelo tipo de lead)."""
+async def _send_message(card: dict, phone: str, message: str, history: list | None = None) -> None:
+    """Envia mensagem ao lead via Whapi com auditoria Safety Car."""
+    from services.faro import history_to_text
+    historico_txt = history_to_text(history or [], max_turns=6)
+    audit = await audit_response(message, card, historico_txt, agente="qualificador")
+    message = audit.mensagem_final
     try:
         async with get_whapi_for_card(card) as w:
             await w.send_text(phone, message)
@@ -298,7 +383,8 @@ async def handle_qualification(card: dict, msg) -> None:
         card_id[:8], msg.media_type is not None, msg.media_type, (msg.text or "")[:60],
     )
 
-    history = load_history(card)
+    history = await load_history_smart(phone, card)
+    journey = load_journey(card)
     user_text = msg.text or f"[Enviou {msg.media_type or 'mídia'}]"
 
     # ── Caso 1: Recusa verbal ────────────────────────────────────────────────
@@ -308,7 +394,7 @@ async def handle_qualification(card: dict, msg) -> None:
             f"Tudo bem, {nome}! Entendido. Caso mude de ideia ou queira "
             f"negociar outra cota no futuro, é só nos chamar. Até mais! 😊"
         )
-        await _send_message(card, phone, bot_msg)
+        await _send_message(card, phone, bot_msg, history=history)
         history = history_append(history, "user", msg.text)
         history = history_append(history, "assistant", bot_msg)
         async with FaroClient() as faro:
@@ -316,7 +402,7 @@ async def handle_qualification(card: dict, msg) -> None:
                 await faro.move_card(card_id, Stage.PERDIDO)
             except FaroError as e:
                 logger.error("Qualificador: erro ao mover card para PERDIDO: %s", e)
-            await save_history(faro, card_id, history)
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
         return
 
     # ── Caso 2: Mídia → analisa extrato ──────────────────────────────────────
@@ -328,12 +414,10 @@ async def handle_qualification(card: dict, msg) -> None:
                 "Qualificador: mídia sem URL no payload (card %s). raw[:200]=%s",
                 card_id[:8], str(msg.raw)[:200],
             )
-            bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
-            await _send_message(card, phone, bot_msg)
-            history = history_append(history, "user", "[Enviou documento — URL não disponível]")
-            history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                await save_history(faro, card_id, history)
+            # Conta como tentativa incorreta mesmo sem URL
+            erros = int(journey.get("extrato_incorreto_count", 0)) + 1
+            journey["extrato_incorreto_count"] = erros
+            await _handle_extrato_incorreto(card, card_id, phone, nome, history, journey, erros)
             return
 
         # Analisa via IA
@@ -342,11 +426,11 @@ async def handle_qualification(card: dict, msg) -> None:
         except Exception as e:
             logger.error("Qualificador: erro técnico na análise: %s", e)
             bot_msg = MSG_ERRO_ANALISE.format(nome=nome)
-            await _send_message(card, phone, bot_msg)
+            await _send_message(card, phone, bot_msg, history=history)
             history = history_append(history, "user", "[Enviou extrato — erro técnico na análise]")
             history = history_append(history, "assistant", bot_msg)
             async with FaroClient() as faro:
-                await save_history(faro, card_id, history)
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
             await slack_error(
                 "Falha na análise de extrato (IA Visão)",
                 exception=e,
@@ -361,12 +445,10 @@ async def handle_qualification(card: dict, msg) -> None:
         # ── EXTRATO_INCORRETO ─────────────────────────────────────────────
         if analise.resultado == ExtratoResultado.EXTRATO_INCORRETO:
             logger.info("Qualificador: extrato incorreto para card %s — %s", card_id[:8], analise.motivo)
-            bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
-            await _send_message(card, phone, bot_msg)
+            erros = int(journey.get("extrato_incorreto_count", 0)) + 1
+            journey["extrato_incorreto_count"] = erros
             history = history_append(history, "user", "[Enviou documento — não é extrato ou ilegível]")
-            history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                await save_history(faro, card_id, history)
+            await _handle_extrato_incorreto(card, card_id, phone, nome, history, journey, erros)
             return
 
         # ── NAO_QUALIFICADO ───────────────────────────────────────────────
@@ -376,7 +458,7 @@ async def handle_qualification(card: dict, msg) -> None:
                 card_id[:8], analise.valor_pago, analise.valor_credito, analise.motivo,
             )
             bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=adm)
-            await _send_message(card, phone, bot_msg)
+            await _send_message(card, phone, bot_msg, history=history)
             history = history_append(
                 history, "user",
                 f"[Extrato — cota {analise.administradora or adm}, "
@@ -393,7 +475,7 @@ async def handle_qualification(card: dict, msg) -> None:
                     })
                 except FaroError as e:
                     logger.error("Qualificador: erro ao mover card para NAO_QUALIFICADO: %s", e)
-                await save_history(faro, card_id, history)
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
             return
 
         # ── QUALIFICADO ───────────────────────────────────────────────────
@@ -403,7 +485,7 @@ async def handle_qualification(card: dict, msg) -> None:
                 card_id[:8], analise.valor_pago, analise.valor_credito, analise.administradora,
             )
             bot_msg = MSG_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
-            await _send_message(card, phone, bot_msg)
+            await _send_message(card, phone, bot_msg, history=history)
             history = history_append(
                 history, "user",
                 f"[Extrato — cota {analise.administradora or adm}, "
@@ -430,7 +512,6 @@ async def handle_qualification(card: dict, msg) -> None:
             if analise.cota:
                 update_fields["Cota"] = analise.cota
 
-            journey = load_journey(card)
             journey.update({
                 "origem": get_fonte(card) or "desconhecida",
                 "adm": analise.administradora or adm,
@@ -456,18 +537,76 @@ async def handle_qualification(card: dict, msg) -> None:
                         exception=e,
                         context={"Card": card_id[:12], "Cliente": nome, "Telefone": phone},
                     )
-                    # Não salva histórico se o CRM está com problema — evita estado inconsistente
                     return
-                # save_history e save_journey dentro do mesmo FaroClient
-                await save_history(faro, card_id, history)
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
                 await save_journey(faro, card_id, journey)
             return
 
     # ── Caso 3: Texto sem extrato ─────────────────────────────────────────────
     logger.info("Qualificador: lead %s enviou texto sem extrato. Solicitando.", card_id[:8])
     bot_msg = MSG_PEDE_EXTRATO.format(nome=nome, adm=adm)
-    await _send_message(card, phone, bot_msg)
+    await _send_message(card, phone, bot_msg, history=history)
     history = history_append(history, "user", user_text)
     history = history_append(history, "assistant", bot_msg)
     async with FaroClient() as faro:
-        await save_history(faro, card_id, history)
+        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+
+
+# ---------------------------------------------------------------------------
+# Handler de extrato incorreto com contador + escalada
+# ---------------------------------------------------------------------------
+
+async def _handle_extrato_incorreto(
+    card: dict,
+    card_id: str,
+    phone: str,
+    nome: str,
+    history: list,
+    journey: dict,
+    erros: int,
+) -> None:
+    """
+    Gerencia resposta a extratos incorretos.
+    - Até MAX_EXTRATO_INCORRETO tentativas: orienta + envia imagem de exemplo
+    - Acima do limite: escala para humano e move para ON_HOLD
+    """
+    if erros >= MAX_EXTRATO_INCORRETO:
+        # Escalada para humano
+        logger.warning(
+            "Qualificador: card %s atingiu %d extratos incorretos — escalando para humano.",
+            card_id[:8], erros,
+        )
+        bot_msg = MSG_EXTRATO_INCORRETO_ESCALADO.format(nome=nome)
+        await _send_message(card, phone, bot_msg, history=history)
+        history = history_append(history, "assistant", bot_msg)
+        async with FaroClient() as faro:
+            try:
+                await faro.move_card(card_id, Stage.ON_HOLD)
+                await faro.update_card(card_id, {
+                    "Motivo dispensa": f"Extrato incorreto após {erros} tentativas — aguarda atendimento humano",
+                })
+            except FaroError as e:
+                logger.error("Qualificador: erro ao mover card %s para ON_HOLD: %s", card_id[:8], e)
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+            await save_journey(faro, card_id, journey)
+        await slack_warning(
+            f"Lead {nome} enviou extrato incorreto {erros}x — movido para ON_HOLD",
+            context={"Card": card_id[:12], "Telefone": phone, "Tentativas": str(erros)},
+        )
+    else:
+        # Orienta + envia imagem de exemplo
+        bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
+        await _send_message(card, phone, bot_msg, history=history)
+        enviou_imagem = await _send_extrato_exemplo(card, phone)
+        if not enviou_imagem:
+            # Sem imagem: usa mensagem alternativa sem a deixa "veja abaixo"
+            await _send_message(card, phone, MSG_EXTRATO_INCORRETO_SEM_IMAGEM.format(nome=nome), history=history)
+        history = history_append(history, "assistant", bot_msg)
+        async with FaroClient() as faro:
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+            await save_journey(faro, card_id, journey)
+
+    logger.info(
+        "Qualificador: extrato incorreto card %s — tentativa %d/%d",
+        card_id[:8], erros, MAX_EXTRATO_INCORRETO,
+    )

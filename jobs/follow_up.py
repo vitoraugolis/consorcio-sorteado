@@ -22,11 +22,12 @@ from config import (
 from services.faro import (
     FaroClient, FaroError,
     get_phone, get_name, get_adm, is_lista,
-    load_history, build_card_context,
+    load_history, history_to_text, build_card_context,
     load_journey, journey_to_text,
 )
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 from services.ai import AIClient, AIError
+from services.safety_car import audit_response
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,11 @@ async def _send_followup(card: dict, message: str) -> bool:
     phone = get_phone(card)
     if not phone:
         return False
+    # ── Safety Car: audita antes de enviar ──────────────────────────────────
+    history = load_history(card)
+    historico_txt = history_to_text(history, max_turns=6)
+    audit = await audit_response(message, card, historico_txt, agente="follow_up")
+    message = audit.mensagem_final
     try:
         async with get_whapi_for_card(card) as w:
             await w.send_text(phone, message)
