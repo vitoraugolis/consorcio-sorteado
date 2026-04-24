@@ -73,9 +73,10 @@ def setup_scheduler():
     scheduler.add_job(run_precificacao, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
-    scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
-                      id="safety_car", name="Safety Car — Monitor de Pipeline",
-                      max_instances=1, misfire_grace_time=120)
+    # Safety Car pausado — reativar após testes
+    # scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
+    #                   id="safety_car", name="Safety Car — Monitor de Pipeline",
+    #                   max_instances=1, misfire_grace_time=120)
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
 
 

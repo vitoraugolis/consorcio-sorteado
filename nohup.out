@@ -34,3 +34,13 @@ INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 INFO:     127.0.0.1:49108 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [39392]
+WHAPI_TOKEN_BAZAR não configurado — usando pool de Listas como fallback. Configure WHAPI_TOKEN_BAZAR no .env para isolar os fluxos.
+INFO:     Started server process [39463]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:35052 - "GET /health HTTP/1.1" 200 OK
