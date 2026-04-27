@@ -51,6 +51,85 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
+# Status dos canais Whapi — rastreado em memória para detectar transições
+_whapi_canal_status: dict[str, bool] = {}  # canal -> True=online, False=offline
+
+async def _whapi_monitor():
+    """
+    Monitora canais Whapi a cada 5 min.
+    - Se canal cair: pausa jobs + alerta no grupo
+    - Se canal voltar: retoma jobs + avisa
+    """
+    from services.whapi import WhapiClient, notify_team
+    global _whapi_canal_status
+    await asyncio.sleep(30)  # aguarda estabilização no boot
+
+    canais = ["bazar", "lista"]
+    while True:
+        try:
+            algum_offline = False
+            mensagens = []
+
+            for canal in canais:
+                try:
+                    async with WhapiClient(canal=canal) as w:
+                        online, status_text = await w.health_check()
+                except Exception as e:
+                    online = False
+                    status_text = f"ERRO: {e}"
+
+                era_online = _whapi_canal_status.get(canal, True)  # assume online no boot
+
+                if not online and era_online:
+                    # Acabou de cair
+                    _whapi_canal_status[canal] = False
+                    mensagens.append(f"🔴 Canal *{canal.upper()}* OFFLINE (status: {status_text})")
+                    logger.warning("Whapi monitor: canal %s OFFLINE — status: %s", canal, status_text)
+                elif online and not era_online:
+                    # Voltou
+                    _whapi_canal_status[canal] = True
+                    mensagens.append(f"🟢 Canal *{canal.upper()}* voltou online (status: {status_text})")
+                    logger.info("Whapi monitor: canal %s voltou ONLINE", canal)
+                else:
+                    _whapi_canal_status[canal] = online
+
+                if not online:
+                    algum_offline = True
+
+            # Pausa/retoma jobs conforme estado dos canais
+            jobs_paused_env = os.getenv("JOBS_PAUSED", "false").lower() == "true"
+            if algum_offline and not scheduler.state == 2:  # 2 = STATE_PAUSED
+                scheduler.pause()
+                logger.warning("Whapi monitor: scheduler pausado — canal(is) offline")
+            elif not algum_offline and scheduler.state == 2 and not jobs_paused_env:
+                scheduler.resume()
+                # Relança fila se estava parada
+                import redis.asyncio as aioredis
+                _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
+                running = await _r.get("fila_ativacao:running")
+                await _r.aclose()
+                if not running:
+                    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+                logger.info("Whapi monitor: scheduler retomado — todos os canais online")
+
+            # Notifica grupo se houve transição
+            if mensagens:
+                alerta = "\n".join(mensagens)
+                if algum_offline:
+                    alerta += "\n\n⚠️ Jobs pausados automaticamente até os canais voltarem."
+                else:
+                    alerta += "\n\n✅ Jobs retomados automaticamente."
+                try:
+                    await notify_team(alerta)
+                except Exception:
+                    pass  # não falha o monitor se notificação falhar
+
+        except Exception as e:
+            logger.error("Whapi monitor: erro inesperado: %s", e)
+
+        await asyncio.sleep(300)  # checa a cada 5 min
+
+
 
 async def _fila_watchdog():
     """Verifica a cada 5 min se a fila está rodando e relança se necessário."""
@@ -121,8 +200,12 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("✅ Scheduler iniciado.")
 
-    # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
-    if redis_ok:
+    JOBS_PAUSED = os.getenv("JOBS_PAUSED", "false").lower() == "true"
+    if JOBS_PAUSED:
+        scheduler.pause()
+        logger.warning("⏸️  JOBS_PAUSED=true — scheduler e fila suspensos. Canais Whapi indisponíveis.")
+    elif redis_ok:
+        # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
         import redis.asyncio as aioredis
         _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
         try:
@@ -137,6 +220,9 @@ async def lifespan(app: FastAPI):
             await _r.aclose()
         asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
         asyncio.create_task(_guarded_task(_fila_watchdog(), "fila_watchdog"))
+
+    # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
+    asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))
 
     asyncio.create_task(_guarded_task(
         slack_info("Sistema Consórcio Sorteado iniciado",

@@ -131,17 +131,20 @@ class WhapiClient:
 
     async def health_check(self) -> tuple[bool, str]:
         """
-        Verifica se o canal está respondendo.
-        Tenta um envio real para detectar falha — o status da API pode ser enganoso (AUTH != offline).
-        Retorna (ok, status_text).
+        Verifica se o canal está respondendo e conectado.
+        Retorna (online, status_text).
+        - online=True apenas se HTTP 200 E status não indica desconexão (QR, unpaired, loading)
         """
+        _OFFLINE_STATUSES = {"qr", "unpaired", "loading", "unknown", "init"}
         try:
             r = await self._client.get("/health", timeout=10.0)
             data = r.json()
-            status_text = data.get("status", {}).get("text", "UNKNOWN")
-            # Canal pode estar AUTH mas ainda funcional — validamos pelo HTTP 200
-            ok = r.status_code == 200
-            return ok, status_text
+            status_text = (data.get("status", {}).get("text") or "UNKNOWN").lower()
+            if r.status_code != 200:
+                return False, status_text.upper()
+            # Canal conectado = não está em estado de desconexão
+            online = status_text not in _OFFLINE_STATUSES
+            return online, status_text.upper()
         except Exception as e:
             return False, f"ERRO: {e}"
 
