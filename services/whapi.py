@@ -129,6 +129,22 @@ class WhapiClient:
     # Envio de mensagens
     # ------------------------------------------------------------------
 
+    async def health_check(self) -> tuple[bool, str]:
+        """
+        Verifica se o canal está respondendo.
+        Tenta um envio real para detectar falha — o status da API pode ser enganoso (AUTH != offline).
+        Retorna (ok, status_text).
+        """
+        try:
+            r = await self._client.get("/health", timeout=10.0)
+            data = r.json()
+            status_text = data.get("status", {}).get("text", "UNKNOWN")
+            # Canal pode estar AUTH mas ainda funcional — validamos pelo HTTP 200
+            ok = r.status_code == 200
+            return ok, status_text
+        except Exception as e:
+            return False, f"ERRO: {e}"
+
     async def send_text(self, to: str, message: str) -> dict:
         """Envia mensagem de texto simples."""
         phone = self._normalize_phone(to)

@@ -144,16 +144,25 @@ class FaroClient:
         return data.get("data") or data.get("card") or data
 
     async def find_card_by_phone(self, phone: str) -> dict | None:
-        try:
-            data = await self._get("/api-cards-get", {
-                "pipeline_id": PIPELINE_ID,
-                "field_name": "Telefone",
-                "field_value": phone,
-            })
-            cards = data.get("cards") or data.get("data", {}).get("cards", [])
-            return cards[0] if cards else None
-        except FaroError:
-            return None
+        # Tenta com o número exato, depois com + prefixo e sem ele
+        digits = "".join(c for c in phone if c.isdigit())
+        variants = list(dict.fromkeys([phone, digits, f"+{digits}"]))
+        for variant in variants:
+            try:
+                data = await self._get("/api-cards-get", {
+                    "pipeline_id": PIPELINE_ID,
+                    "field_name": "Telefone",
+                    "field_value": variant,
+                })
+                # A API pode retornar o card diretamente (objeto) ou dentro de cards[]
+                if data.get("id"):
+                    return data
+                cards = data.get("cards") or data.get("data", {}).get("cards", [])
+                if cards:
+                    return cards[0]
+            except FaroError:
+                continue
+        return None
 
     async def get_cards_from_stage(
         self,

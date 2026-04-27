@@ -55,6 +55,15 @@ ACTIVATION_STAGES = {
     Stage.TERCEIRA_ATIVACAO, Stage.QUARTA_ATIVACAO,
 }
 
+# Se a proposta já foi enviada (Proposta Realizada preenchida), o negociador
+# assume independente da stage — evita que agente_bazar encerre prematuramente
+def _proposta_ja_enviada(card: dict) -> bool:
+    p = str(card.get("Proposta Realizada") or "").strip()
+    try:
+        return float(p.replace("R$","").replace(".","").replace(",",".").strip()) > 0
+    except (ValueError, TypeError):
+        return False
+
 
 def parse_whapi_payload(payload: dict) -> list[IncomingMessage]:
     """Normaliza payload Whapi para lista de IncomingMessages."""
@@ -159,6 +168,14 @@ async def route_message(msg: IncomingMessage) -> None:
     current_stage = card.get("stage_id") or card.get("stageId") or ""
     nome = card.get("Nome do contato") or card.get("title") or "?"
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
+
+    # Se proposta já foi enviada, negociador assume independente da stage
+    if _proposta_ja_enviada(card) and msg.is_processable:
+        async def _dispatch_neg(c: dict, texto: str) -> None:
+            await handle_message(card=c, mensagem=texto, current_stage_id=current_stage)
+        debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                          dispatch=_dispatch_neg)
+        return
 
     # Listas em stages de ativação → agente SDR Listas
     # Regra: is_lista()==True OU Fonte não definida (sem origem = lista fria)

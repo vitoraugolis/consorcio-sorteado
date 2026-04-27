@@ -5,13 +5,14 @@ Provider: Whapi (get_whapi_for_card — substitui Z-API para Bazar/Site)
 
 import asyncio
 import logging
+import math
 import os
 import uuid
 from datetime import datetime, timezone
 
 from config import (
     Stage, JOB_BATCH_LIMIT, SEND_WINDOW_START, SEND_WINDOW_END,
-    PUBLIC_URL, TEST_MODE, TZ_BRASILIA, filter_test_cards,
+    PUBLIC_URL, TEST_MODE, TZ_BRASILIA, filter_test_cards, NOTIFY_PHONES,
 )
 from services.html_image import render_to_file
 from services.faro import (
@@ -26,6 +27,114 @@ from services.slack import slack_error
 logger = logging.getLogger(__name__)
 
 _processing: dict[str, asyncio.Lock] = {}
+
+# ---------------------------------------------------------------------------
+# Cálculo automático de proposta para leads de Listas
+# Replica a lógica do blueprint Make.com (fluxograma completo)
+# ---------------------------------------------------------------------------
+
+# Cluster A: índices 0-4 para escalada de negociação
+_CLUSTER_A = [0.20, 0.23, 0.27, 0.30, 0.32]
+
+# Cluster B: Ademicon/Embracon com meses a pagar entre 80-110
+_CLUSTER_B = [0.17, 0.20, 0.23, 0.27, 0.30]
+
+# Admins aceitas
+_ADMS_ACEITAS = {
+    "porto seguro", "itaú", "itau", "bradesco", "santander",
+    "sicoob", "mycon", "caixa", "embracon", "ademicon",
+}
+
+# Adms com cluster especial (80-110 meses)
+_ADMS_CLUSTER_B = {"ademicon", "embracon"}
+
+def _arredondar_milhar(valor: float) -> float:
+    return math.floor(valor / 1000) * 1000
+
+def _get_cluster(adm: str, meses_a_pagar: int) -> list:
+    """Retorna o cluster correto baseado na adm e meses a pagar."""
+    adm_lower = adm.lower().strip()
+    adm_match = any(a in adm_lower for a in _ADMS_CLUSTER_B)
+    if adm_match and 80 <= meses_a_pagar <= 110:
+        return _CLUSTER_B
+    return _CLUSTER_A
+
+def _get_indice_por_percentual(percentual_pago: float) -> int | None:
+    """
+    Retorna o índice inicial do cluster baseado no % pago.
+    Retorna None se o lead não se qualifica (% pago > 30%).
+
+    Classe A: ≤ 5%  → índice 0 (20% ou 17%)
+    Classe B: ≤ 15% → índice 1 (23% ou 20%)
+    Classe C: ≤ 30% → índice 2 (27% ou 23%)
+    > 30%           → None (desqualificado)
+    """
+    if percentual_pago <= 0.05:
+        return 0
+    if percentual_pago <= 0.15:
+        return 1
+    if percentual_pago <= 0.30:
+        return 2
+    return None
+
+def calcular_proposta_listas(
+    credito: float,
+    valor_pago: float,
+    percentual_pago: float,
+    adm: str = "",
+    meses_a_pagar: int = 999,
+    indice_override: int | None = None,
+) -> tuple[float, int, list]:
+    """
+    Calcula proposta para fluxo de Listas.
+    Baseado exclusivamente no crédito × percentual do cluster (não usa valor_pago nem meses).
+
+    Classe A: % pago ≤ 5%  → índice 0 (20%)
+    Classe B: % pago ≤ 15% → índice 1 (23%)
+    Classe C: % pago ≤ 30% → índice 2 (27%)
+    > 30%                  → não compramos (retorna 0.0)
+
+    Retorna (proposta, indice_usado, cluster) para permitir escalada posterior.
+    """
+    if credito <= 0:
+        return 0.0, 0, _CLUSTER_A
+
+    cluster = _CLUSTER_A  # Listas sempre usa Cluster A
+
+    if indice_override is not None:
+        indice = max(0, min(indice_override, len(cluster) - 1))
+    else:
+        indice = _get_indice_por_percentual(percentual_pago)
+        if indice is None:
+            return 0.0, 0, cluster  # % pago > 30% → não compramos
+
+    proposta = _arredondar_milhar(cluster[indice] * credito)
+    return proposta, indice, cluster
+
+def _parse_float(value) -> float:
+    """Converte string de valor monetário brasileiro/americano para float."""
+    if not value:
+        return 0.0
+    try:
+        s = str(value).strip().replace("R$", "").replace(" ", "")
+        # Remove caracteres não numéricos exceto vírgula e ponto
+        # Formato BR: 144.984,10 → 144984.10
+        # Formato US/FARO: 144,984.10 → 144984.10
+        if "," in s and "." in s:
+            # Descobre qual é separador decimal pelo último separador
+            last_comma = s.rfind(",")
+            last_dot   = s.rfind(".")
+            if last_dot > last_comma:
+                # US: 144,984.10 — vírgula é milhar, ponto é decimal
+                s = s.replace(",", "")
+            else:
+                # BR: 144.984,10 — ponto é milhar, vírgula é decimal
+                s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            s = s.replace(",", ".")
+        return float(s)
+    except (ValueError, AttributeError):
+        return 0.0
 
 # ---------------------------------------------------------------------------
 # Formatação
@@ -298,7 +407,7 @@ def _build_proposal_buttons(card: dict) -> tuple[str, list[dict]]:
 # ---------------------------------------------------------------------------
 
 async def _send_proposal(phone: str, card: dict) -> bool:
-    """Envia imagem (se disponível) + mensagem com botões via Whapi (canal correto)."""
+    """Envia imagem da proposta + mensagem de texto via Whapi (sem botões)."""
     image_url = await _generate_proposal_image(card)
     if image_url:
         try:
@@ -313,21 +422,15 @@ async def _send_proposal(phone: str, card: dict) -> bool:
         except WhapiError as e:
             logger.warning("Falha ao enviar imagem da proposta: %s", e)
 
-    mensagem, botoes = _build_proposal_buttons(card)
+    mensagem = _build_proposal_message(card)
     try:
         async with get_whapi_for_card(card) as w:
-            await w.send_buttons(to=phone, message=mensagem, buttons=botoes)
-        logger.info("Proposta Whapi enviada → %s", phone)
+            await w.send_text(phone, mensagem)
+        logger.info("Proposta enviada → %s", phone)
         return True
     except WhapiError as e:
-        logger.warning("Botões falharam, tentando texto simples: %s", e)
-        try:
-            async with get_whapi_for_card(card) as w:
-                await w.send_text(phone, _build_proposal_message(card))
-            return True
-        except WhapiError as e2:
-            logger.error("Falha total Whapi para %s: %s", phone, e2)
-            return False
+        logger.error("Falha ao enviar proposta para %s: %s", phone, e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +467,105 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         return False
 
     proposta = card.get("Proposta Realizada", "")
+    # Ignora valores zerados ou inválidos (ex: '0.00', '0', 'R$ 0')
+    proposta_num = _parse_float(proposta)
+    if proposta_num <= 0:
+        proposta = ""
+
+    if not proposta and is_lista(card):
+        # Calcula automaticamente pelo fluxograma completo
+        credito          = _parse_float(card.get("Crédito") or card.get("Valor do crédito", "0"))
+        valor_pago       = _parse_float(card.get("Valor pago até o momento", "0"))
+        percentual_pago  = _parse_float(card.get("Porcentagem paga até o momento", "0")) / 100
+        adm              = get_adm(card)
+        meses_a_pagar    = int(_parse_float(card.get("Meses a pagar") or card.get("Quantidade meses restantes", "999")) or 999)
+        if credito > 0:
+            proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
+                credito, valor_pago, percentual_pago,
+                adm=adm, meses_a_pagar=meses_a_pagar,
+            )
+            if proposta_calculada <= 0:
+                logger.warning("Precificação Listas: card %s não se qualifica (% pago > 30%% ou meses < 80)", card_id[:8])
+                return False
+            proposta = str(int(proposta_calculada))
+            sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
+            logger.info(
+                "Precificação Listas: card %s | adm=%s | %%pago=%.1f%% | indice=%d | proposta=%s | seq=%s",
+                card_id[:8], adm, percentual_pago*100, indice_usado, proposta, sequencia,
+            )
+            try:
+                await faro.update_card(card_id, {
+                    "Proposta Realizada": proposta,
+                    "Sequencia_Proposta": sequencia,
+                    "Indice da Proposta": str(indice_usado),
+                })
+                card["Proposta Realizada"] = proposta
+                card["Sequencia_Proposta"] = sequencia
+            except FaroError as e:
+                logger.warning("Precificação: erro ao gravar Proposta Realizada: %s", e)
+        else:
+            logger.warning("Precificação Listas: card %s sem crédito para calcular proposta", card_id[:8])
+
     if not proposta:
+        # Bazar/LP sem proposta preenchida no FARO — notifica para precificar manualmente
+        if not is_lista(card):
+            ja_notificado = card.get("Notificado Precificacao", "")
+            if not ja_notificado:
+                credito = _parse_float(card.get("Crédito") or "0")
+                adm = get_adm(card)
+                fonte = card.get("Fonte") or "Bazar/LP"
+                notif = (
+                    f"💰 *Precificação pendente*\n\n"
+                    f"*Lead:* {nome} ({card_id[:8]})\n"
+                    f"*Fonte:* {fonte}\n"
+                    f"*Adm:* {adm}\n"
+                    f"*Crédito:* {_fmt_currency(str(int(credito))) if credito else 'a verificar'}\n\n"
+                    f"Preencha o campo *Proposta Realizada* no FARO para liberar o envio."
+                )
+                try:
+                    async with WhapiClient(canal="lista") as w:
+                        for ph in NOTIFY_PHONES:
+                            await w.send_text(ph, notif)
+                    await faro.update_card(card_id, {"Notificado Precificacao": "sim"})
+                    logger.info("Precificação: equipe notificada para card %s (Bazar/LP sem proposta)", card_id[:8])
+                except Exception as e:
+                    logger.warning("Precificação: falha ao notificar equipe: %s", e)
         logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
+        return False
+
+    # ── Aprovação antes de enviar ─────────────────────────────────────────────
+    # Notifica Vitor com os dados e aguarda aprovação (flag no FARO).
+    # Se "Aprovado Precificacao" == "sim" → dispara imediatamente.
+    # Caso contrário → notifica e aguarda próxima rodada do job (30 min).
+    aprovado = str(card.get("Aprovado Precificacao") or "").strip().lower()
+    if aprovado != "sim":
+        ja_notificado = str(card.get("Notificado Precificacao") or "").strip().lower()
+        if ja_notificado != "sim":
+            adm = get_adm(card)
+            credito = _parse_float(card.get("Crédito") or "0")
+            percentual = _parse_float(card.get("Porcentagem paga até o momento") or "0")
+            fonte = card.get("Fonte") or ("Listas" if is_lista(card) else "Bazar/LP")
+            notif = (
+                f"💰 *Proposta para aprovação*\n\n"
+                f"*Lead:* {nome}\n"
+                f"*Fonte:* {fonte}\n"
+                f"*Adm:* {adm}\n"
+                f"*Crédito:* {_fmt_currency(str(int(credito))) if credito else 'a verificar'}\n"
+                f"*% Pago:* {percentual:.1f}%\n"
+                f"*Proposta calculada:* *{_fmt_currency(proposta)}*\n\n"
+                f"Para aprovar, marque *Aprovado Precificacao = sim* no card:\n"
+                f"https://app.faro.com/cards/{card_id}"
+            )
+            try:
+                async with WhapiClient(canal="lista") as w:
+                    for ph in NOTIFY_PHONES:
+                        await w.send_text(ph, notif)
+                await faro.update_card(card_id, {"Notificado Precificacao": "sim"})
+                logger.info("Precificação: aguardando aprovação para card %s — notificado", card_id[:8])
+            except Exception as e:
+                logger.warning("Precificação: falha ao notificar aprovação: %s", e)
+        else:
+            logger.info("Precificação: card %s aguardando aprovação (já notificado)", card_id[:8])
         return False
 
     agora = datetime.now(timezone.utc).isoformat()

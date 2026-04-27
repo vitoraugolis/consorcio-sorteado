@@ -32,6 +32,7 @@ from services.faro import FaroClient, FaroError, get_adm, get_name
 from services.whapi import WhapiClient, WhapiError
 from services.ai import AIClient, AIError
 from services.session_store import acquire_mutex, release_mutex
+from services.slack import slack_error
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,17 @@ async def run_ativacao_listas():
     """
     if not _is_within_send_window():
         logger.info("Ativação Listas: fora da janela de envio, pulando.")
+        return
+
+    # Health check — só bloqueia se HTTP falhar (status AUTH é falso positivo no Whapi)
+    async with WhapiClient(canal="lista") as w:
+        ok, status = await w.health_check()
+    if not ok:
+        logger.error("Whapi Lista não responde (HTTP erro) — status: %s — abortando ativação", status)
+        await slack_error(
+            f"⚠️ Canal Whapi Lista não está respondendo (HTTP erro, status: {status}). "
+            "Ativação de Listas abortada. Verifique o painel Whapi."
+        )
         return
 
     logger.info("=== Iniciando Ativação de Listas ===")

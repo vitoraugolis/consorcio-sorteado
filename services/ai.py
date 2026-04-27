@@ -26,7 +26,7 @@ AIProvider = Literal["openai", "anthropic", "gemini"]
 _VISION_FALLBACK_CHAIN = [
     # (modelo, aceita_pdf)
     ("gpt-4o",              False),
-    ("gemini-2.0-flash",    True),
+    ("gemini-2.5-flash",    True),
     ("claude-3-5-sonnet-20241022", False),
 ]
 
@@ -431,8 +431,8 @@ class AIClient:
         # Se for PDF, força Gemini como primeiro da fila
         preferred = model or DEFAULT_VISION_MODEL
         if is_pdf and not preferred.startswith("gemini"):
-            logger.info("AI vision: PDF detectado — substituindo %s por gemini-2.0-flash", preferred)
-            preferred = "gemini-2.0-flash"
+            logger.info("AI vision: PDF detectado — substituindo %s por gemini-2.5-flash", preferred)
+            preferred = "gemini-2.5-flash"
 
         # Monta cadeia: modelo preferido + fallbacks que suportam o mime
         candidates: list[str] = [preferred]

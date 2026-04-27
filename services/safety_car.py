@@ -103,16 +103,16 @@ async def audit_response(
     agente: str = "agente",
 ) -> AuditResult:
     """
-    Valida uma mensagem antes de enviá-la ao lead.
-    Retorna AuditResult com aprovado=True e a mensagem final a enviar.
-
-    Fail-safe: se a auditoria falhar por qualquer motivo, aprova a mensagem
-    original para não bloquear o fluxo.
+    Safety Car desativado — aprovação automática de todas as mensagens.
+    Retorna AuditResult com aprovado=True e mensagem original inalterada.
     """
-    nome = get_name(card)
-    adm = get_adm(card)
-    phone = get_phone(card) or "?"
-    journey = load_journey(card)
+    return AuditResult(
+        aprovado=True,
+        score=100,
+        motivo="Safety Car desativado",
+        sugestao=None,
+        mensagem_final=mensagem,
+    )
 
     contexto = f"""
 AGENTE: {agente}

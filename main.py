@@ -20,6 +20,7 @@ from services.session_store import health_check as redis_health, close_redis
 from jobs.reativador import run_reativador
 from jobs.ativacao_listas import run_ativacao_listas
 from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
+from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_leads
 from jobs.follow_up import run_follow_up
 from jobs.contrato import run_contrato
 from jobs.precificacao import run_precificacao
@@ -52,24 +53,23 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 
 def setup_scheduler():
-    scheduler.add_job(run_ativacao_listas, IntervalTrigger(minutes=30),
+    scheduler.add_job(run_ativacao_listas, IntervalTrigger(minutes=30, jitter=300),
                       id="ativacao_listas", name="Ativação de Listas",
                       max_instances=1, misfire_grace_time=120)
-    scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5),
-                      id="ativacao_bazar", name="Ativação Bazar",
+    scheduler.add_job(run_watch_novos_leads, IntervalTrigger(minutes=5),
+                      id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
                       max_instances=1, misfire_grace_time=60)
-    scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5),
-                      id="ativacao_site", name="Ativação Site/LP",
-                      max_instances=1, misfire_grace_time=60)
-    scheduler.add_job(run_reativador, IntervalTrigger(hours=1),
-                      id="reativador", name="Reativador",
-                      max_instances=1, misfire_grace_time=300)
+    # Bazar/Site periódicos desativados — substituídos pela fila com jitter
+    # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5), ...)
+    # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
+    # Reativador pausado — alto impacto, ativar manualmente
+    # scheduler.add_job(run_reativador, IntervalTrigger(hours=1), ...)
     scheduler.add_job(run_follow_up, IntervalTrigger(minutes=30),
-                      id="follow_up", name="Follow-up Propostas",
+                      id="follow_up", name="Follow-up de Propostas",
                       max_instances=1, misfire_grace_time=120)
     scheduler.add_job(run_contrato, IntervalTrigger(minutes=30),
                       id="contrato", name="Geração de Contratos",
-                      max_instances=1, misfire_grace_time=60)
+                      max_instances=1, misfire_grace_time=120)
     scheduler.add_job(run_precificacao, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
@@ -98,6 +98,27 @@ async def lifespan(app: FastAPI):
     setup_scheduler()
     scheduler.start()
     logger.info("✅ Scheduler iniciado.")
+
+    # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
+    # SET NX garante que só um worker faz o lançamento mesmo com múltiplos processos
+    if redis_ok:
+        import redis.asyncio as aioredis
+        _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
+        try:
+            await _r.delete("fila_ativacao:running")
+            # Só o primeiro worker que pegar o lock de startup faz o lançamento
+            is_primary = await _r.set("fila_startup:lock", "1", nx=True, ex=30)
+            if is_primary:
+                queue_len = await _r.llen("fila_ativacao:queue")
+                if queue_len > 0:
+                    logger.info("♻️  Fila encontrada no Redis (%d cards) — relançando.", queue_len)
+                else:
+                    logger.info("🔄 Fila vazia — reconstruindo do FARO...")
+                    await build_queue()
+                asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+        finally:
+            await _r.aclose()
+
     asyncio.create_task(_guarded_task(
         slack_info("Sistema Consórcio Sorteado iniciado",
                    context={"Jobs ativos": str(len(scheduler.get_jobs())), "Ambiente": "Produção", "Redis": "✅" if redis_ok else "⚠️ offline"}),
@@ -170,6 +191,7 @@ async def run_job_manually(job_id: str, key: str = ""):
         "follow_up": run_follow_up,
         "contrato": run_contrato,
         "precificacao": run_precificacao,
+        "fila_ativacao": run_fila_ativacao,
     }
     fn = job_map.get(job_id)
     if not fn:
@@ -177,6 +199,31 @@ async def run_job_manually(job_id: str, key: str = ""):
     logger.info("Job '%s' disparado manualmente via API", job_id)
     asyncio.create_task(_guarded_task(fn(), f"job manual: {job_id}"))
     return {"status": "triggered", "job": job_id}
+
+
+@app.post("/jobs/fila/start")
+async def start_fila_ativacao(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    result = await build_queue()
+    if result["total"] == 0:
+        return {"status": "empty", "message": "Nenhum card encontrado em Bazar ou LP"}
+    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+    return {"status": "started", **result}
+
+
+@app.get("/jobs/fila/status")
+async def fila_status(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    import redis.asyncio as aioredis
+    r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
+    try:
+        remaining = await r.llen("fila_ativacao:queue")
+        running = await r.get("fila_ativacao:running")
+    finally:
+        await r.aclose()
+    return {"running": bool(running), "remaining": remaining}
 
 
 # ---------------------------------------------------------------------------

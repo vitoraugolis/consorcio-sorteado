@@ -1026,6 +1026,11 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
         logger.warning("Negociador: card %s sem telefone, ignorando.", card_id[:8])
         return
 
+    # Negociador pausado manualmente — consultor humano está negociando
+    if str(card.get("Negociador Pausado") or "").strip().lower() == "sim":
+        logger.info("Negociador: card %s pausado (Negociador Pausado=sim) — ignorando msg", card_id[:8])
+        return
+
     logger.info(
         "Negociador: card=%s | stage=%s... | msg='%s'",
         card_id[:8], current_stage_id[:8], mensagem[:60]
