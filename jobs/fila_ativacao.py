@@ -98,6 +98,15 @@ async def build_queue() -> dict:
         len(bazar_qual), len(bazar_nqual), len(lp_qual), len(lp_nqual),
     )
 
+    # Ordena cada grupo: mais recente primeiro (maior created_at = topo da fila)
+    def _sort_key(card: dict) -> str:
+        return card.get("created_at") or card.get("updated_at") or ""
+
+    bazar_qual.sort(key=_sort_key, reverse=True)
+    lp_qual.sort(key=_sort_key, reverse=True)
+    bazar_nqual.sort(key=_sort_key, reverse=True)
+    lp_nqual.sort(key=_sort_key, reverse=True)
+
     # Qualificados primeiro (intercalados), depois não qualificados
     queue = _interleave(bazar_qual, "bazar", lp_qual, "lp")
     for card in bazar_nqual:
@@ -174,7 +183,16 @@ async def watch_novos_leads() -> dict:
         if not novos_qual and not novos_nqual:
             return {"novos_qualificados": 0, "novos_nao_qualificados": 0}
 
+        # Ordena novos por created_at: mais recente primeiro
+        def _sort_entry(e: dict) -> str:
+            c = e["card"]
+            return c.get("created_at") or c.get("updated_at") or ""
+
+        novos_qual.sort(key=_sort_entry, reverse=True)
+        novos_nqual.sort(key=_sort_entry, reverse=True)
+
         pipeline = r.pipeline()
+        # lpush inverte a ordem — usamos reversed para que o mais recente fique no topo
         for entry in reversed(novos_qual):
             pipeline.lpush(REDIS_QUEUE_KEY, json.dumps(entry, ensure_ascii=False))
         for entry in novos_nqual:

@@ -36,6 +36,7 @@ QUALIFICATION_STAGES = {
     Stage.SEGUNDA_ATIVACAO,
     Stage.TERCEIRA_ATIVACAO,
     Stage.QUARTA_ATIVACAO,
+    Stage.TESTES,  # stage de testes — processa normalmente
 }
 
 # Máximo de extratos incorretos antes de escalar para humano
