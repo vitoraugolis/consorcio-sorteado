@@ -25,7 +25,7 @@ from services.faro import (
     load_journey, save_journey,
 )
 from services.slack import slack_error, slack_warning
-from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card, notify_team
 from services.session_store import load_history_smart, save_history_smart
 from services.safety_car import audit_response
 
@@ -354,14 +354,7 @@ async def _send_message(card: dict, phone: str, message: str, history: list | No
 
 
 async def _notify_team(message: str) -> None:
-    if not NOTIFY_PHONES:
-        return
-    try:
-        async with WhapiClient(canal="lista") as w:
-            for phone in NOTIFY_PHONES:
-                await w.send_text(phone, message)
-    except WhapiError as e:
-        logger.warning("Qualificador: falha ao notificar equipe: %s", e)
+    await notify_team(message)
 
 
 # ---------------------------------------------------------------------------

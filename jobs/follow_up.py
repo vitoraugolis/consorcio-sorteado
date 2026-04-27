@@ -25,7 +25,7 @@ from services.faro import (
     load_history, history_to_text, build_card_context,
     load_journey, journey_to_text,
 )
-from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card, notify_team
 from services.ai import AIClient, AIError
 from services.safety_car import audit_response
 
@@ -204,9 +204,6 @@ async def _escalate_to_human(faro: FaroClient, card: dict) -> None:
         logger.error("Follow-up: erro ao escalar card %s: %s", card_id[:8], e)
         return
 
-    if not NOTIFY_PHONES:
-        return
-
     # Resumo da jornada para o consultor
     journey = load_journey(card)
     jornada_txt = journey_to_text(journey)
@@ -222,14 +219,8 @@ async def _escalate_to_human(faro: FaroClient, card: dict) -> None:
         f"{jornada_txt}"
     )
 
-    try:
-        canal = "lista" if is_lista(card) else "bazar"
-        async with WhapiClient(canal=canal) as w:
-            for ph in NOTIFY_PHONES:
-                await w.send_text(ph, notif)
-        logger.info("Follow-up: equipe notificada para card %s", card_id[:8])
-    except WhapiError as e:
-        logger.error("Follow-up: erro ao notificar equipe card %s: %s", card_id[:8], e)
+    await notify_team(notif)
+    logger.info("Follow-up: equipe notificada para card %s", card_id[:8])
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +292,7 @@ async def _followup_assinatura_parados(faro: FaroClient) -> None:
                     f"Nome: {nome} | Adm: {adm}\n"
                     f"Sem resposta após {num_lembretes} lembretes. Intervenção manual recomendada."
                 )
-                try:
-                    async with WhapiClient(canal="lista") as w:
-                        for ph in NOTIFY_PHONES:
-                            await w.send_text(ph, notif)
-                except WhapiError:
-                    pass
+                await notify_team(notif)
             try:
                 await faro.update_card(card_id, {"Num Follow Ups Assinatura": str(num_lembretes + 1)})
             except FaroError:

@@ -251,3 +251,35 @@ def get_whapi_for_card(card: dict) -> WhapiClient:
     from services.faro import is_lista
     canal: Canal = "lista" if is_lista(card) else "bazar"
     return WhapiClient(canal=canal)
+
+
+# ---------------------------------------------------------------------------
+# Notificação centralizada para equipe (grupo Alarmes Sistemas CS)
+# ---------------------------------------------------------------------------
+
+async def notify_team(message: str) -> None:
+    """
+    Envia notificação para o grupo de alarmes/equipe comercial.
+    Usa canal Bazar (número 8087) para enviar ao grupo.
+    Fallback: envia para NOTIFY_PHONES se grupo não configurado.
+    """
+    from config import NOTIFY_GROUP, NOTIFY_PHONES
+    import logging
+    _log = logging.getLogger(__name__)
+
+    if NOTIFY_GROUP:
+        try:
+            async with WhapiClient(canal="bazar") as w:
+                await w.send_text(NOTIFY_GROUP, message)
+            return
+        except WhapiError as e:
+            _log.warning("notify_team: falha ao enviar para grupo (%s), tentando NOTIFY_PHONES: %s", NOTIFY_GROUP, e)
+
+    # Fallback: NOTIFY_PHONES
+    if NOTIFY_PHONES:
+        try:
+            async with WhapiClient(canal="lista") as w:
+                for ph in NOTIFY_PHONES:
+                    await w.send_text(ph, message)
+        except WhapiError as e:
+            _log.error("notify_team: falha total ao notificar equipe: %s", e)

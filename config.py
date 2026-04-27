@@ -119,6 +119,7 @@ SEND_WINDOW_END       = int(os.getenv("SEND_WINDOW_END", "20"))
 # Notificações
 # ---------------------------------------------------------------------------
 NOTIFY_PHONES = [p.strip() for p in os.getenv("NOTIFY_PHONES", "").split(",") if p.strip()]
+NOTIFY_GROUP  = os.getenv("NOTIFY_GROUP", "")  # Grupo Alarmes Sistemas CS
 
 
 def _parse_consultant_phones(raw: str) -> dict[str, str]:

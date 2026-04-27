@@ -1002,15 +1002,17 @@ async def _send_response(card: dict, phone: str, message: str) -> bool:
 
 
 async def _notify_team(message: str, target_phones: list[str] | None = None) -> None:
-    phones = target_phones if target_phones else list(NOTIFY_PHONES)
-    if not phones:
-        return
-    try:
-        async with WhapiClient(canal="lista") as w:
-            for phone in phones:
-                await w.send_text(phone, message)
-    except WhapiError as e:
-        logger.warning("Falha ao notificar consultor: %s", e)
+    """Notifica equipe. Se target_phones especificado, envia direto a eles; caso contrário usa grupo central."""
+    if target_phones:
+        try:
+            async with WhapiClient(canal="lista") as w:
+                for phone in target_phones:
+                    await w.send_text(phone, message)
+        except WhapiError as e:
+            logger.warning("Falha ao notificar consultor direto: %s", e)
+    else:
+        from services.whapi import notify_team as _nt
+        await _nt(message)
 
 
 # ---------------------------------------------------------------------------

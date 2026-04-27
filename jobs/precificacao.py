@@ -21,7 +21,7 @@ from services.faro import (
     load_history, history_append, save_history,
     load_journey, save_journey,
 )
-from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card, notify_team
 from services.slack import slack_error
 
 logger = logging.getLogger(__name__)
@@ -523,9 +523,7 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
                     f"Preencha o campo *Proposta Realizada* no FARO para liberar o envio."
                 )
                 try:
-                    async with WhapiClient(canal="lista") as w:
-                        for ph in NOTIFY_PHONES:
-                            await w.send_text(ph, notif)
+                    await notify_team(notif)
                     await faro.update_card(card_id, {"Notificado Precificacao": "sim"})
                     logger.info("Precificação: equipe notificada para card %s (Bazar/LP sem proposta)", card_id[:8])
                 except Exception as e:
@@ -557,9 +555,7 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
                 f"https://app.faro.com/cards/{card_id}"
             )
             try:
-                async with WhapiClient(canal="lista") as w:
-                    for ph in NOTIFY_PHONES:
-                        await w.send_text(ph, notif)
+                await notify_team(notif)
                 await faro.update_card(card_id, {"Notificado Precificacao": "sim"})
                 logger.info("Precificação: aguardando aprovação para card %s — notificado", card_id[:8])
             except Exception as e:
