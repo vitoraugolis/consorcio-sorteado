@@ -86,12 +86,20 @@ async def _normalize_phone(raw_phone: str) -> str:
 async def _process_card(card: dict, whapi: WhapiClient, faro: FaroClient) -> bool:
     card_id = card["id"]
 
-    # Mutex distribuído via Redis — evita disparo duplo mesmo após reinício
+    # Mutex por card — evita disparo duplo mesmo após reinício
     acquired = await acquire_mutex(f"ativacao:{card_id}")
     if not acquired:
         logger.debug("Card %s já em processamento, pulando.", card_id[:8])
         return False
     try:
+        # Mutex por telefone (TTL 24h) — evita duplicata entre cards do mesmo número
+        raw_phone = card.get("Telefone") or card.get("Telefone alternativo") or ""
+        phone_digits = "".join(c for c in str(raw_phone) if c.isdigit())
+        if phone_digits:
+            phone_sent = await acquire_mutex(f"listas_sent:{phone_digits}", ttl=86400)
+            if not phone_sent:
+                logger.info("Telefone %s já recebeu ativação hoje — pulando card %s.", phone_digits[-4:], card_id[:8])
+                return False
         return await _process_card_inner(card, whapi, faro, card_id)
     finally:
         await release_mutex(f"ativacao:{card_id}")
@@ -99,6 +107,17 @@ async def _process_card(card: dict, whapi: WhapiClient, faro: FaroClient) -> boo
 
 async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, card_id: str) -> bool:
     """Lógica interna de processamento — chamada apenas pelo mutex de _process_card."""
+
+    # Proteção primária: se já tem data de primeira ativação, não disparar de novo
+    if card.get("Data de primeira ativação"):
+        logger.info("Card %s já ativado em %s — pulando.", card_id[:8], card["Data de primeira ativação"])
+        # Move para PRIMEIRA_ATIVACAO caso ainda esteja em Listas por algum bug anterior
+        try:
+            await faro.move_card(card_id, Stage.PRIMEIRA_ATIVACAO)
+        except FaroError:
+            pass
+        return False
+
     raw_phone = card.get("Telefone") or card.get("Telefone alternativo") or ""
 
     if not raw_phone:

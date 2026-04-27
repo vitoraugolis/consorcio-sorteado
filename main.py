@@ -203,12 +203,12 @@ async def run_job_manually(job_id: str, key: str = ""):
         raise HTTPException(status_code=401, detail="Chave inválida")
     job_map = {
         "reativador": run_reativador,
-        "ativacao_listas": run_ativacao_listas,
+        "ativacao_listas": run_ativacao_listas_safe,
         "ativacao_bazar": run_ativacao_bazar,
         "ativacao_site": run_ativacao_site,
-        "follow_up": run_follow_up,
-        "contrato": run_contrato,
-        "precificacao": run_precificacao,
+        "follow_up": run_follow_up_safe,
+        "contrato": run_contrato_safe,
+        "precificacao": run_precificacao_safe,
         "fila_ativacao": run_fila_ativacao,
     }
     fn = job_map.get(job_id)
