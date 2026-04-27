@@ -306,3 +306,12 @@ async def run_fila_ativacao():
         await r.delete(REDIS_RUNNING_KEY)
     finally:
         await r.aclose()
+
+
+async def run_watch_novos_leads_safe():
+    """Wrapper resiliente para watch_novos_leads."""
+    try:
+        await run_watch_novos_leads()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("run_watch_novos_leads: erro inesperado: %s", e)

@@ -217,19 +217,42 @@ async def run_ativacao_listas():
         logger.info("%d cards encontrados, processando %d neste ciclo", len(cards), len(batch))
 
         total_ok = 0
+        total_err = 0
         async with WhapiClient() as whapi:
             for i, card in enumerate(batch):
-                success = await _process_card(card, whapi, faro)
-                if success:
-                    total_ok += 1
+                try:
+                    success = await _process_card(card, whapi, faro)
+                    if success:
+                        total_ok += 1
+                    else:
+                        total_err += 1
+                except Exception as e:
+                    total_err += 1
+                    logger.error(
+                        "Ativação Listas: erro inesperado card %s: %s",
+                        card.get("id", "?")[:8], e
+                    )
 
-                # Sleep crítico entre disparos (anti-ban para lotes)
+                # Sleep entre disparos (anti-ban)
                 if i < len(batch) - 1:
                     delay = random.randint(LISTAS_DELAY_MIN_S, LISTAS_DELAY_MAX_S)
                     logger.debug("Aguardando %ds antes do próximo...", delay)
                     await asyncio.sleep(delay)
 
     logger.info(
-        "=== Ativação Listas concluída: %d/%d enviados com sucesso ===",
-        total_ok, len(batch),
+        "=== Ativação Listas concluída: %d/%d enviados | %d erros ===",
+        total_ok, len(batch), total_err,
     )
+
+
+async def run_ativacao_listas_safe():
+    """Wrapper resiliente — garante que exceções não derrubam o scheduler."""
+    try:
+        await run_ativacao_listas()
+    except Exception as e:
+        logger.exception("run_ativacao_listas: erro inesperado: %s", e)
+        try:
+            from services.slack import slack_error
+            await slack_error("Job ativacao_listas falhou inesperadamente", exception=e)
+        except Exception:
+            pass

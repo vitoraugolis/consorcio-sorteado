@@ -666,3 +666,17 @@ async def process_precificacao_card(card: dict) -> bool:
     """Ponto de entrada público para o webhook FARO — processa um card específico."""
     async with FaroClient() as faro:
         return await _process_card(faro, card)
+
+
+async def run_precificacao_safe():
+    """Wrapper resiliente — garante que exceções não derrubam o scheduler."""
+    try:
+        await run_precificacao()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("run_precificacao: erro inesperado: %s", e)
+        try:
+            from services.slack import slack_error
+            await slack_error("Job precificacao falhou inesperadamente", exception=e)
+        except Exception:
+            pass

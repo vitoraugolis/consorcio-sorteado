@@ -403,3 +403,17 @@ async def run_follow_up():
             logger.info("=== Follow-up concluído: %d/%d ===", total_ok, len(pendentes))
 
         await _followup_assinatura_parados(faro)
+
+
+async def run_follow_up_safe():
+    """Wrapper resiliente — garante que exceções não derrubam o scheduler."""
+    try:
+        await run_follow_up()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("run_follow_up: erro inesperado: %s", e)
+        try:
+            from services.slack import slack_error
+            await slack_error("Job follow_up falhou inesperadamente", exception=e)
+        except Exception:
+            pass

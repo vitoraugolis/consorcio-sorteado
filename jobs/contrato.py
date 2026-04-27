@@ -277,3 +277,17 @@ async def run_contrato() -> None:
 async def process_contrato_card(card: dict) -> None:
     """Ponto de entrada público para o webhook FARO — processa um card específico."""
     await _process_card(card)
+
+
+async def run_contrato_safe():
+    """Wrapper resiliente — garante que exceções não derrubam o scheduler."""
+    try:
+        await run_contrato()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("run_contrato: erro inesperado: %s", e)
+        try:
+            from services.slack import slack_error
+            await slack_error("Job contrato falhou inesperadamente", exception=e)
+        except Exception:
+            pass

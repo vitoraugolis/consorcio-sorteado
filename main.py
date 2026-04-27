@@ -18,12 +18,12 @@ from config import PORT, SECRET_KEY, NOTIFY_PHONES, Stage
 from services.slack import slack_error, slack_info
 from services.session_store import health_check as redis_health, close_redis
 from jobs.reativador import run_reativador
-from jobs.ativacao_listas import run_ativacao_listas
+from jobs.ativacao_listas import run_ativacao_listas_safe
 from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
-from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_leads
-from jobs.follow_up import run_follow_up
-from jobs.contrato import run_contrato
-from jobs.precificacao import run_precificacao
+from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_leads_safe
+from jobs.follow_up import run_follow_up_safe
+from jobs.contrato import run_contrato_safe
+from jobs.precificacao import run_precificacao_safe
 from webhooks.router import handle_whapi_webhook
 from services.safety_car import run_pipeline_monitor
 
@@ -74,10 +74,10 @@ async def _fila_watchdog():
 
 
 def setup_scheduler():
-    scheduler.add_job(run_ativacao_listas, IntervalTrigger(minutes=30, jitter=300),
+    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30, jitter=300),
                       id="ativacao_listas", name="Ativação de Listas",
                       max_instances=1, misfire_grace_time=120)
-    scheduler.add_job(run_watch_novos_leads, IntervalTrigger(minutes=5),
+    scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
                       id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
                       max_instances=1, misfire_grace_time=60)
     # Bazar/Site periódicos desativados — substituídos pela fila com jitter
@@ -85,13 +85,13 @@ def setup_scheduler():
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
     # Reativador pausado — alto impacto, ativar manualmente
     # scheduler.add_job(run_reativador, IntervalTrigger(hours=1), ...)
-    scheduler.add_job(run_follow_up, IntervalTrigger(minutes=30),
+    scheduler.add_job(run_follow_up_safe, IntervalTrigger(minutes=30),
                       id="follow_up", name="Follow-up de Propostas",
                       max_instances=1, misfire_grace_time=120)
-    scheduler.add_job(run_contrato, IntervalTrigger(minutes=30),
+    scheduler.add_job(run_contrato_safe, IntervalTrigger(minutes=30),
                       id="contrato", name="Geração de Contratos",
                       max_instances=1, misfire_grace_time=120)
-    scheduler.add_job(run_precificacao, IntervalTrigger(minutes=30),
+    scheduler.add_job(run_precificacao_safe, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
     # Safety Car pausado — reativar após testes
