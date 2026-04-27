@@ -109,7 +109,7 @@ async def audit_response(
     return AuditResult(
         aprovado=True,
         score=100,
-        motivo="Safety Car desativado",
+        problemas=[],
         sugestao=None,
         mensagem_final=mensagem,
     )
