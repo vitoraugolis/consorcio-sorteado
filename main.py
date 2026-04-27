@@ -52,6 +52,27 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 
+async def _fila_watchdog():
+    """Verifica a cada 5 min se a fila está rodando e relança se necessário."""
+    import redis.asyncio as aioredis
+    await asyncio.sleep(60)  # aguarda 60s após startup antes de começar a checar
+    while True:
+        try:
+            _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
+            running = await _r.get("fila_ativacao:running")
+            queue_len = await _r.llen("fila_ativacao:queue")
+            if not running and queue_len > 0:
+                # Usa lock para evitar duplo lançamento
+                got_lock = await _r.set("fila_watchdog:lock", "1", nx=True, ex=60)
+                if got_lock:
+                    logger.warning("🔁 Watchdog: fila parada (%d cards) — relançando.", queue_len)
+                    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+            await _r.aclose()
+        except Exception as e:
+            logger.warning("Watchdog fila: erro: %s", e)
+        await asyncio.sleep(300)  # checa a cada 5 min
+
+
 def setup_scheduler():
     scheduler.add_job(run_ativacao_listas, IntervalTrigger(minutes=30, jitter=300),
                       id="ativacao_listas", name="Ativação de Listas",
@@ -100,24 +121,21 @@ async def lifespan(app: FastAPI):
     logger.info("✅ Scheduler iniciado.")
 
     # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
-    # SET NX garante que só um worker faz o lançamento mesmo com múltiplos processos
     if redis_ok:
         import redis.asyncio as aioredis
         _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
         try:
             await _r.delete("fila_ativacao:running")
-            # Só o primeiro worker que pegar o lock de startup faz o lançamento
-            is_primary = await _r.set("fila_startup:lock", "1", nx=True, ex=30)
-            if is_primary:
+            queue_len = await _r.llen("fila_ativacao:queue")
+            if queue_len == 0:
+                logger.info("🔄 Fila vazia — reconstruindo do FARO...")
+                await build_queue()
                 queue_len = await _r.llen("fila_ativacao:queue")
-                if queue_len > 0:
-                    logger.info("♻️  Fila encontrada no Redis (%d cards) — relançando.", queue_len)
-                else:
-                    logger.info("🔄 Fila vazia — reconstruindo do FARO...")
-                    await build_queue()
-                asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+            logger.info("♻️  Relançando fila (%d cards).", queue_len)
         finally:
             await _r.aclose()
+        asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+        asyncio.create_task(_guarded_task(_fila_watchdog(), "fila_watchdog"))
 
     asyncio.create_task(_guarded_task(
         slack_info("Sistema Consórcio Sorteado iniciado",

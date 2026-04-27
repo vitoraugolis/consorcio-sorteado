@@ -225,15 +225,16 @@ async def run_fila_ativacao():
     """
     r = _get_redis()
     try:
-        already = await r.get(REDIS_RUNNING_KEY)
-        if already:
+        # SET NX: garante que só um processo/worker inicia a fila
+        acquired = await r.set(REDIS_RUNNING_KEY, "1", nx=True, ex=3600 * 12)
+        if not acquired:
             logger.info("Fila já está rodando — ignorando chamada duplicada")
             return
         queue_len = await r.llen(REDIS_QUEUE_KEY)
         if queue_len == 0:
+            await r.delete(REDIS_RUNNING_KEY)
             logger.info("Fila vazia — nada a processar")
             return
-        await r.set(REDIS_RUNNING_KEY, "1", ex=3600 * 12)
         logger.info("=== Iniciando fila de ativação: %d cards pendentes ===", queue_len)
     finally:
         await r.aclose()
