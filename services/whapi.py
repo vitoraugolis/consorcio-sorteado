@@ -45,16 +45,27 @@ def _build_bazar_pool() -> list[str]:
 _LISTA_POOL: list[str] = WHAPI_LISTA_TOKENS
 _BAZAR_POOL: list[str] = _build_bazar_pool()
 
+# Contadores round-robin por pool (thread-safe para asyncio single-thread)
+_LISTA_RR_IDX: int = 0
+_BAZAR_RR_IDX: int = 0
+
 
 def _pick_token(canal: Canal) -> str:
+    global _LISTA_RR_IDX, _BAZAR_RR_IDX
     pool = _LISTA_POOL if canal == "lista" else _BAZAR_POOL
     if not pool:
         raise WhapiError(
             f"Nenhum token Whapi configurado para o canal '{canal}'. "
             f"Verifique WHAPI_TOKEN_LISTA_1 / WHAPI_TOKEN_BAZAR no .env."
         )
-    token = random.choice(pool)
-    logger.debug("WhapiClient[%s]: token ...%s", canal, token[-6:])
+    if canal == "lista":
+        token = pool[_LISTA_RR_IDX % len(pool)]
+        _LISTA_RR_IDX += 1
+    else:
+        token = pool[_BAZAR_RR_IDX % len(pool)]
+        _BAZAR_RR_IDX += 1
+    logger.debug("WhapiClient[%s]: canal #%d token ...%s",
+                 canal, (_LISTA_RR_IDX if canal == "lista" else _BAZAR_RR_IDX) - 1, token[-6:])
     return token
 
 

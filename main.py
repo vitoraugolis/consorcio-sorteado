@@ -61,49 +61,55 @@ async def _whapi_monitor():
     - Se canal voltar: retoma jobs + avisa
     """
     from services.whapi import WhapiClient, notify_team
+    from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN
     global _whapi_canal_status
     await asyncio.sleep(30)  # aguarda estabilização no boot
 
-    canais = ["bazar", "lista"]
     while True:
         try:
             algum_offline = False
             mensagens = []
 
-            for canal in canais:
+            # Monta lista de canais a checar: cada token individualmente
+            canais_check: list[tuple[str, str]] = []  # (label, token)
+            canais_check.append(("BAZAR (DAREDL)", WHAPI_BAZAR_TOKEN))
+            for i, tok in enumerate(WHAPI_LISTA_TOKENS, 1):
+                label = f"LISTA-{i} ({'FALCON' if i == 1 else 'DEADPL'})"
+                canais_check.append((label, tok))
+
+            for label, token in canais_check:
+                if not token:
+                    continue
                 try:
-                    async with WhapiClient(canal=canal) as w:
+                    async with WhapiClient(token=token) as w:
                         online, status_text = await w.health_check()
                 except Exception as e:
                     online = False
                     status_text = f"ERRO: {e}"
 
-                era_online = _whapi_canal_status.get(canal, True)  # assume online no boot
+                era_online = _whapi_canal_status.get(label, True)
 
                 if not online and era_online:
-                    # Acabou de cair
-                    _whapi_canal_status[canal] = False
-                    mensagens.append(f"🔴 Canal *{canal.upper()}* OFFLINE (status: {status_text})")
-                    logger.warning("Whapi monitor: canal %s OFFLINE — status: %s", canal, status_text)
+                    _whapi_canal_status[label] = False
+                    mensagens.append(f"🔴 *{label}* OFFLINE (status: {status_text})")
+                    logger.warning("Whapi monitor: %s OFFLINE — %s", label, status_text)
                 elif online and not era_online:
-                    # Voltou
-                    _whapi_canal_status[canal] = True
-                    mensagens.append(f"🟢 Canal *{canal.upper()}* voltou online (status: {status_text})")
-                    logger.info("Whapi monitor: canal %s voltou ONLINE", canal)
+                    _whapi_canal_status[label] = True
+                    mensagens.append(f"🟢 *{label}* voltou online (status: {status_text})")
+                    logger.info("Whapi monitor: %s voltou ONLINE", label)
                 else:
-                    _whapi_canal_status[canal] = online
+                    _whapi_canal_status[label] = online
 
                 if not online:
                     algum_offline = True
 
-            # Pausa/retoma jobs conforme estado dos canais
+            # Pausa/retoma scheduler conforme estado
             jobs_paused_env = os.getenv("JOBS_PAUSED", "false").lower() == "true"
-            if algum_offline and not scheduler.state == 2:  # 2 = STATE_PAUSED
+            if algum_offline and scheduler.state != 2:  # 2 = STATE_PAUSED
                 scheduler.pause()
                 logger.warning("Whapi monitor: scheduler pausado — canal(is) offline")
             elif not algum_offline and scheduler.state == 2 and not jobs_paused_env:
                 scheduler.resume()
-                # Relança fila se estava parada
                 import redis.asyncio as aioredis
                 _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
                 running = await _r.get("fila_ativacao:running")
@@ -112,22 +118,18 @@ async def _whapi_monitor():
                     asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
                 logger.info("Whapi monitor: scheduler retomado — todos os canais online")
 
-            # Notifica grupo se houve transição
             if mensagens:
                 alerta = "\n".join(mensagens)
-                if algum_offline:
-                    alerta += "\n\n⚠️ Jobs pausados automaticamente até os canais voltarem."
-                else:
-                    alerta += "\n\n✅ Jobs retomados automaticamente."
+                alerta += "\n\n⚠️ Jobs pausados." if algum_offline else "\n\n✅ Jobs retomados."
                 try:
                     await notify_team(alerta)
                 except Exception:
-                    pass  # não falha o monitor se notificação falhar
+                    pass
 
         except Exception as e:
             logger.error("Whapi monitor: erro inesperado: %s", e)
 
-        await asyncio.sleep(300)  # checa a cada 5 min
+        await asyncio.sleep(300)
 
 
 
@@ -154,7 +156,8 @@ async def _fila_watchdog():
 
 def setup_scheduler():
     # PAUSADO: número Whapi Lista restrito — só Bazar ativo por enquanto
-    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30, jitter=300),
+    # Quando reativar: jitter 20–35 min (LISTAS_JITTER_MIN_S=1200, MAX=2100)
+    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=27, jitter=450),
     #                   id="ativacao_listas", name="Ativação de Listas",
     #                   max_instances=1, misfire_grace_time=120)
     scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),

@@ -21,14 +21,21 @@ import redis.asyncio as aioredis
 
 from config import (
     Stage, TZ_BRASILIA, TEST_MODE,
+    BAZAR_JITTER_MIN_S, BAZAR_JITTER_MAX_S,
+    BAZAR_WINDOW_START, BAZAR_WINDOW_END,
 )
 from services.faro import FaroClient, FaroError
 from services.whapi import WhapiClient
 from services.slack import slack_error
 from jobs.ativacao_bazar_site import (
     _activate_card, _qualifica_bazar, _qualifica_lp,
-    MSG_BAZAR, MSG_SITE, _is_within_send_window,
+    MSG_BAZAR, MSG_SITE,
 )
+
+
+def _is_within_bazar_window() -> bool:
+    from datetime import datetime
+    return BAZAR_WINDOW_START <= datetime.now(TZ_BRASILIA).hour < BAZAR_WINDOW_END
 
 logger = logging.getLogger(__name__)
 
@@ -276,8 +283,9 @@ async def run_fila_ativacao():
             fonte = item["fonte"]
             qualificado = item.get("qualificado", True)
 
-            if qualificado and not _is_within_send_window():
-                logger.info("Fora da janela de envio — pausando fila")
+            if qualificado and not _is_within_bazar_window():
+                logger.info("Fora da janela Bazar (%dh–%dh BRT) — pausando fila",
+                            BAZAR_WINDOW_START, BAZAR_WINDOW_END)
                 r = _get_redis()
                 try:
                     await r.lpush(REDIS_QUEUE_KEY, json.dumps(item, ensure_ascii=False))
@@ -314,7 +322,7 @@ async def run_fila_ativacao():
                 break
 
             if qualificado and not TEST_MODE:
-                wait_sec = random.randint(10 * 60, 25 * 60)
+                wait_sec = random.randint(BAZAR_JITTER_MIN_S, BAZAR_JITTER_MAX_S)
                 logger.info("Aguardando %dm%ds antes do próximo disparo...",
                             wait_sec // 60, wait_sec % 60)
                 await asyncio.sleep(wait_sec)

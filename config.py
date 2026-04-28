@@ -112,8 +112,18 @@ LISTAS_DELAY_MAX_S    = int(os.getenv("LISTAS_DELAY_MAX_S", "90"))
 REATIVADOR_DELAY_MIN_S = int(os.getenv("REATIVADOR_DELAY_MIN_S", "60"))
 REATIVADOR_DELAY_MAX_S = int(os.getenv("REATIVADOR_DELAY_MAX_S", "900"))
 JOB_BATCH_LIMIT       = int(os.getenv("JOB_BATCH_LIMIT", "50"))
-SEND_WINDOW_START     = int(os.getenv("SEND_WINDOW_START", "9"))
+
+# Janelas de envio por fluxo (hora BRT)
+SEND_WINDOW_START     = int(os.getenv("SEND_WINDOW_START", "8"))   # Listas
 SEND_WINDOW_END       = int(os.getenv("SEND_WINDOW_END", "20"))
+BAZAR_WINDOW_START    = int(os.getenv("BAZAR_WINDOW_START", "6"))  # Bazar/LP
+BAZAR_WINDOW_END      = int(os.getenv("BAZAR_WINDOW_END", "20"))
+
+# Jitter por fluxo (segundos)
+BAZAR_JITTER_MIN_S    = int(os.getenv("BAZAR_JITTER_MIN_S", "900"))   # 15 min
+BAZAR_JITTER_MAX_S    = int(os.getenv("BAZAR_JITTER_MAX_S", "1800"))  # 30 min
+LISTAS_JITTER_MIN_S   = int(os.getenv("LISTAS_JITTER_MIN_S", "1200")) # 20 min
+LISTAS_JITTER_MAX_S   = int(os.getenv("LISTAS_JITTER_MAX_S", "2100")) # 35 min
 
 # ---------------------------------------------------------------------------
 # Notificações
