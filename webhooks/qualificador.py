@@ -19,6 +19,10 @@ from config import (
     QUALIFICACAO_VALOR_PAGO_MAXIMO,
 )
 from services.ai import AIClient, AIError
+from services.pdf_extractor import (
+    extract_extrato, ExtratoEstruturado,
+    PDFInvalido, PDFCorrompido, GeminiError, ExtratorError,
+)
 from services.faro import (
     FaroClient, FaroError, get_name, get_phone, get_adm, get_fonte,
     load_history, history_append,
@@ -277,71 +281,110 @@ async def _send_extrato_exemplo(card: dict, phone: str) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
-    """Analisa extrato via IA com timeout de 90s para evitar travar o event loop."""
-    async with AIClient() as ai:
-        try:
-            raw_response = await asyncio.wait_for(
-                ai.complete_with_image(
-                    prompt=EXTRATO_PROMPT_TEMPLATE,
-                    media_url=media_url,
-                    system=EXTRATO_SYSTEM_PROMPT,
-                    max_tokens=500,
-                ),
-                timeout=90.0,
-            )
+    """
+    Analisa extrato de consórcio via pdf_extractor (Gemini 2.5 Flash inline PDF).
+    Ponte de compatibilidade: retorna ExtratoAnalise para o fluxo existente.
+    """
+    from config import QUALIFICACAO_PERCENTUAL_MAXIMO, QUALIFICACAO_VALOR_PAGO_MAXIMO
 
-            json_match = re.search(r"\{.*\}", raw_response, re.DOTALL)
-            if not json_match:
-                raise AIError("Resposta sem JSON válido")
+    try:
+        estruturado: ExtratoEstruturado = await asyncio.wait_for(
+            extract_extrato(media_url),
+            timeout=130.0,  # pdf_extractor já tem retry interno de 120s
+        )
+    except asyncio.TimeoutError:
+        raise AIError("Timeout na análise de extrato (>130s)")
+    except (PDFInvalido, PDFCorrompido) as e:
+        # PDF ilegível — trata como extrato incorreto para pedir reenvio
+        logger.warning("Qualificador: PDF inválido/corrompido: %s", e)
+        return ExtratoAnalise(
+            resultado=ExtratoResultado.EXTRATO_INCORRETO,
+            motivo=str(e),
+        )
+    except GeminiError as e:
+        raise AIError(f"Gemini falhou na análise: {e}")
 
-            data = json.loads(json_match.group())
-            resultado = ExtratoResultado(data.get("resultado", "EXTRATO_INCORRETO"))
+    dp = estruturado.dados_plano
+    rf = estruturado.resumo_financeiro
 
-            def _nullable_str(val) -> Optional[str]:
-                if not val or str(val).strip().lower() in ("null", "none", ""):
-                    return None
-                return str(val).strip()
+    # Extrai valor pago do resumo_financeiro.valores_pagos.total_pago
+    valor_pago: float = 0.0
+    if rf.valores_pagos:
+        valor_pago = float(rf.valores_pagos.get("total_pago") or 0)
 
-            # Normalização defensiva de tipo_bem
-            tipo_bem_raw = _nullable_str(data.get("tipo_bem"))
-            tipo_bem_map = {
-                "imovel": "Imóvel", "imóvel": "Imóvel",
-                "veiculo": "Veículo", "veículo": "Veículo",
-                "moto": "Moto",
-                "caminhao": "Caminhão", "caminhão": "Caminhão",
-                "servico": "Serviço", "serviço": "Serviço",
-            }
-            tipo_bem_norm = tipo_bem_map.get(
-                tipo_bem_raw.lower() if tipo_bem_raw else "",
-                tipo_bem_raw,
-            )
+    valor_credito: float = dp.valor_credito or 0.0
+    administradora: Optional[str] = dp.administradora
+    meses_pagos: int = dp.meses_pagos or rf.parcelas_pagas or 0
+    total_parcelas: int = (dp.prazo_grupo_meses
+                          or (meses_pagos + (dp.meses_a_pagar or 0))
+                          or 0)
 
-            analise = ExtratoAnalise(
-                resultado=resultado,
-                administradora=_nullable_str(data.get("administradora")),
-                valor_credito=float(data.get("valor_credito") or 0),
-                valor_pago=float(data.get("valor_pago") or 0),
-                parcelas_pagas=int(data.get("parcelas_pagas") or 0),
-                total_parcelas=int(data.get("total_parcelas") or 0),
-                motivo=data.get("motivo", ""),
-                tipo_contemplacao=_nullable_str(data.get("tipo_contemplacao")),
-                tipo_bem=tipo_bem_norm,
-                grupo=_nullable_str(data.get("grupo")),
-                cota=_nullable_str(data.get("cota")),
-            )
+    # Se o Gemini não retornou dados essenciais, o documento provavelmente não é um extrato
+    if valor_credito == 0 and valor_pago == 0 and not administradora:
+        logger.info("Qualificador: campos essenciais ausentes — extrato incorreto")
+        return ExtratoAnalise(
+            resultado=ExtratoResultado.EXTRATO_INCORRETO,
+            motivo="Não foi possível identificar administradora, crédito ou valor pago",
+        )
 
-            logger.info(
-                "Qualificador IA: resultado=%s adm=%s credito=%.0f pago=%.0f | %s",
-                resultado.value, analise.administradora,
-                analise.valor_credito, analise.valor_pago, analise.motivo[:80],
-            )
-            return analise
+    # Regra de qualificação: pago ≤ X% do crédito E pago ≤ R$ Y
+    qualificado = False
+    motivo = ""
+    if valor_credito > 0:
+        pct_pago = (valor_pago / valor_credito) * 100
+        dentro_percentual = pct_pago <= QUALIFICACAO_PERCENTUAL_MAXIMO
+        dentro_valor = valor_pago <= QUALIFICACAO_VALOR_PAGO_MAXIMO
+        qualificado = dentro_percentual and dentro_valor
+        if not qualificado:
+            if not dentro_percentual:
+                motivo = (f"Valor pago ({pct_pago:.1f}%) excede o teto de "
+                          f"{QUALIFICACAO_PERCENTUAL_MAXIMO:.0f}% do crédito")
+            else:
+                motivo = (f"Valor pago R${valor_pago:,.0f} excede o teto de "
+                          f"R${QUALIFICACAO_VALOR_PAGO_MAXIMO:,.0f}")
+        else:
+            motivo = (f"Cota elegível: pago {pct_pago:.1f}% do crédito "
+                      f"(R${valor_pago:,.0f} de R${valor_credito:,.0f})")
+    else:
+        # Sem crédito identificado — não qualifica mas marca como incorreto
+        # para dar uma segunda chance ao lead
+        return ExtratoAnalise(
+            resultado=ExtratoResultado.EXTRATO_INCORRETO,
+            motivo="Valor do crédito não identificado no extrato",
+        )
 
-        except asyncio.TimeoutError:
-            raise AIError("Timeout na análise de extrato (>90s)")
-        except (AIError, json.JSONDecodeError, ValueError, KeyError) as e:
-            logger.error("Qualificador: erro ao analisar extrato via IA: %s", e)
-            raise
+    resultado = ExtratoResultado.QUALIFICADO if qualificado else ExtratoResultado.NAO_QUALIFICADO
+
+    # Mapeamento de produto para tipo_bem legível
+    produto_map = {
+        "IMOVEL": "Imóvel", "AUTOMOVEL": "Veículo",
+        "MOTO": "Moto", "CAMINHAO": "Caminhão", "SERVICO": "Serviço",
+    }
+    tipo_bem = produto_map.get((dp.produto or "").upper(), dp.produto)
+
+    analise = ExtratoAnalise(
+        resultado=resultado,
+        administradora=administradora,
+        valor_credito=valor_credito,
+        valor_pago=valor_pago,
+        parcelas_pagas=meses_pagos,
+        total_parcelas=total_parcelas,
+        motivo=motivo,
+        tipo_contemplacao=estruturado.contemplacao.tipo,
+        tipo_bem=tipo_bem,
+        grupo=dp.grupo,
+        cota=dp.cota,
+    )
+
+    logger.info(
+        "Qualificador: resultado=%s adm=%s credito=%.0f pago=%.0f confidence=%.2f | %s",
+        resultado.value, administradora, valor_credito, valor_pago,
+        estruturado.confidence_score, motivo[:80],
+    )
+
+    # Guarda o ExtratoEstruturado completo no analise para uso no update_fields abaixo
+    analise._estruturado = estruturado  # type: ignore[attr-defined]
+    return analise
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +560,36 @@ async def handle_qualification(card: dict, msg) -> None:
                 update_fields["Grupo"] = analise.grupo
             if analise.cota:
                 update_fields["Cota"] = analise.cota
+
+            # Enriquecimento extra com dados do ExtratoEstruturado (novos campos)
+            estruturado: ExtratoEstruturado | None = getattr(analise, "_estruturado", None)
+            if estruturado:
+                dp = estruturado.dados_plano
+                dc = estruturado.dados_cadastrais
+                if dp.contrato:
+                    update_fields["Contrato"] = dp.contrato
+                if dp.data_adesao:
+                    update_fields["Data de adesão"] = dp.data_adesao
+                if dp.prazo_grupo_meses:
+                    update_fields["Prazo do grupo"] = str(dp.prazo_grupo_meses)
+                if dp.meses_a_pagar:
+                    update_fields["Meses a pagar"] = str(dp.meses_a_pagar)
+                if dp.taxa_administracao:
+                    update_fields["Taxa administração"] = str(dp.taxa_administracao)
+                if dp.valor_parcela_atual:
+                    update_fields["Valor parcela"] = str(dp.valor_parcela_atual)
+                if dp.sit_cobranca:
+                    update_fields["Situação cobrança"] = dp.sit_cobranca
+                if dp.bem:
+                    update_fields["Bem"] = dp.bem
+                if dc.cpf:
+                    update_fields["CPF"] = dc.cpf
+                if dc.nome and not card.get("Nome do contato"):
+                    update_fields["Nome do contato"] = dc.nome
+                logger.info(
+                    "Qualificador: enriquecendo FARO com %d campos extras (confidence=%.2f)",
+                    len(update_fields), estruturado.confidence_score,
+                )
 
             journey.update({
                 "origem": get_fonte(card) or "desconhecida",

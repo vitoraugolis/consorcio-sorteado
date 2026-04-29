@@ -112,6 +112,7 @@ ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 DEFAULT_AI_MODEL   = os.getenv("DEFAULT_AI_MODEL", "gpt-4o-mini")
 DEFAULT_VISION_MODEL = os.getenv("DEFAULT_VISION_MODEL", "gpt-4o")
+GEMINI_MODEL_PDF     = os.getenv("GEMINI_MODEL_PDF", "gemini-2.5-flash")
 HISTORY_MODEL      = os.getenv("HISTORY_MODEL", "gemini-2.0-flash")
 
 # ---------------------------------------------------------------------------
