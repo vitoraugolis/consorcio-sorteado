@@ -673,13 +673,17 @@ async def _handle_extrato_incorreto(
             context={"Card": card_id[:12], "Telefone": phone, "Tentativas": str(erros)},
         )
     else:
-        # Orienta + envia imagem de exemplo
-        bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
-        await _send_message(card, phone, bot_msg, history=history)
-        enviou_imagem = await _send_extrato_exemplo(card, phone)
-        if not enviou_imagem:
-            # Sem imagem: usa mensagem alternativa sem a deixa "veja abaixo"
-            await _send_message(card, phone, MSG_EXTRATO_INCORRETO_SEM_IMAGEM.format(nome=nome), history=history)
+        # Verifica disponibilidade da imagem antes de escolher o texto
+        tem_imagem = os.path.exists(_EXTRATO_EXEMPLO_PATH)
+        if tem_imagem:
+            # Texto com gancho "veja abaixo 👇" + imagem em seguida
+            bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
+            await _send_message(card, phone, bot_msg, history=history)
+            await _send_extrato_exemplo(card, phone)
+        else:
+            # Sem imagem: versão única, sem referência a "veja abaixo"
+            bot_msg = MSG_EXTRATO_INCORRETO_SEM_IMAGEM.format(nome=nome)
+            await _send_message(card, phone, bot_msg, history=history)
         history = history_append(history, "assistant", bot_msg)
         async with FaroClient() as faro:
             await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
