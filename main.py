@@ -158,8 +158,8 @@ async def _fila_watchdog():
 
 def setup_scheduler():
     # PAUSADO: número Whapi Lista restrito — só Bazar ativo por enquanto
-    # Ativação de Listas — modo suave: 10 cards/ciclo, 45 min ± 10 min jitter
-    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=45, jitter=600),
+    # Ativação de Listas — modo suave: 4 cards/ciclo, 60 min ± 10 min jitter
+    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
                       id="ativacao_listas", name="Ativação de Listas",
                       max_instances=1, misfire_grace_time=300)
     scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
