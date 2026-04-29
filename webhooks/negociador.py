@@ -676,7 +676,25 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
         # 1️⃣ Conseguimos cobrir com a sequência → escalada automática
         if max_sequencia > 0 and lead_value <= max_sequencia:
             pass  # cai no bloco de escalada abaixo
-        # 2️⃣ Proposta indecorosa (> 40% do crédito) → bot responde com 32% após delay
+        # 2️⃣ Dentro do nosso teto (≤ 32%) mas sem sequência calculada → responde com o teto
+        elif teto_val > 0 and lead_value <= teto_val:
+            delay = _random.randint(35, 65)
+            director_msg = _build_director_response(nome, teto_val, credito_val)
+            logger.info(
+                "Negociador: CONTRA_PROPOSTA dentro do teto (%.0f%% ≤ 32%%) para %s — "
+                "resposta do diretor com teto=%.0f em %ds.",
+                (lead_value / credito_val * 100) if credito_val > 0 else 0,
+                card.get("id", "")[:8], teto_val, delay,
+            )
+            return NegotiationResult(
+                intent=intent,
+                response_message=ai_response,
+                next_stage=Stage.EM_NEGOCIACAO,
+                extra_fields={"Situacao Negociacao": intent.value},
+                delayed_followup=director_msg,
+                delayed_followup_seconds=delay,
+            )
+        # 3️⃣ Proposta indecorosa (> 40% do crédito) → bot responde com 32% após delay
         elif absurdo_val > 0 and lead_value > absurdo_val:
             delay = _random.randint(35, 65)
             director_msg = _build_director_response(nome, teto_val or lead_value * 0.64, credito_val)
@@ -694,7 +712,7 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
                 delayed_followup=director_msg,
                 delayed_followup_seconds=delay,
             )
-        # 3️⃣ Acima da nossa capacidade mas razoável → handoff ao consultor
+        # 4️⃣ Acima do teto mas razoável (32-40%) → handoff ao consultor
         else:
             notif_msg, notif_phones = _build_contraproposta_notification(card, mensagem)
             return NegotiationResult(
