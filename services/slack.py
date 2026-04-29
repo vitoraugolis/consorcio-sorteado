@@ -1,27 +1,25 @@
 """
-services/slack.py — Notificações técnicas via Slack
+services/slack.py — Notificações via Slack
 
-Separação de responsabilidades:
-  - WhatsApp (Whapi) → notificações COMERCIAIS para agentes
-    (lead aceitou proposta, contrato assinado, lead quer atendente)
-  - Slack → alertas TÉCNICOS para a equipe Guará Lab
-    (erros de IA, falhas de API, extrato sem análise, jobs com falha)
+Dois canais:
+  - #alertas-sistemas  (SLACK_WEBHOOK_URL)   → alertas TÉCNICOS para a equipe Guará Lab
+    Erros de IA, falhas de API, jobs com falha, extrato sem análise
+  - #log-cs            (SLACK_LOG_CS_URL)    → log de TRÁFEGO comercial em tempo real
+    Toda mensagem enviada ou recebida pelos números do CS (Bazar, LP, Listas)
 
-Configure um Incoming Webhook em:
+Configure Incoming Webhooks em:
   https://api.slack.com/apps → seu app → Incoming Webhooks → Add New Webhook to Workspace
 
-A URL tem o formato:
-  https://hooks.slack.com/services/T.../B.../XXXX
-
 Adicione ao .env:
-  SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+  SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...   ← alertas técnicos
+  SLACK_LOG_CS_URL=https://hooks.slack.com/services/...    ← log-cs
 """
 
 import logging
 
 import httpx
 
-from config import SLACK_WEBHOOK_URL
+from config import SLACK_WEBHOOK_URL, SLACK_LOG_CS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +34,7 @@ async def slack_alert(
     context: dict = None,
 ) -> bool:
     """
-    Envia um alerta técnico para o Slack.
+    Envia um alerta técnico para o Slack (#alertas-sistemas).
 
     Args:
         message:  Texto principal do alerta.
@@ -57,7 +55,6 @@ async def slack_alert(
     icon  = icons.get(level, "⚠️")
     color = colors.get(level, "#ffcc00")
 
-    # Monta o payload com attachments para melhor legibilidade
     fields = []
     if context:
         for key, val in context.items():
@@ -109,3 +106,88 @@ async def slack_warning(message: str, context: dict = None) -> bool:
 async def slack_info(message: str, context: dict = None) -> bool:
     """Atalho para alertas de nível info."""
     return await slack_alert(message, level="info", context=context)
+
+
+# ---------------------------------------------------------------------------
+# Log de tráfego comercial — #log-cs
+# ---------------------------------------------------------------------------
+
+_CANAL_EMOJI = {
+    "lista": "📋",
+    "bazar": "🏪",
+    "lp":    "🌐",
+}
+
+_DIR_EMOJI = {
+    "enviado":  "📤",
+    "recebido": "📥",
+}
+
+
+async def log_cs(
+    direcao: str,
+    canal: str,
+    phone: str,
+    nome: str = "",
+    card_id: str = "",
+    mensagem: str = "",
+    extra: dict = None,
+) -> bool:
+    """
+    Registra uma mensagem enviada ou recebida no canal #log-cs do Slack.
+
+    Args:
+        direcao:  "enviado" ou "recebido"
+        canal:    "lista" | "bazar" | "lp"
+        phone:    Número do contato (E.164 sem +)
+        nome:     Nome do lead (opcional)
+        card_id:  UUID do card no FARO (opcional, primeiros 8 chars)
+        mensagem: Texto da mensagem (truncado a 300 chars)
+        extra:    Dict com campos adicionais (ex: stage, tipo)
+
+    Returns:
+        True se enviou, False se não configurado ou erro.
+    """
+    if not SLACK_LOG_CS_URL:
+        logger.debug("Slack log-cs: SLACK_LOG_CS_URL não configurado, log ignorado.")
+        return False
+
+    canal_emoji = _CANAL_EMOJI.get(canal, "📱")
+    dir_emoji   = _DIR_EMOJI.get(direcao, "↔️")
+    nome_fmt    = f" · {nome}" if nome else ""
+    card_fmt    = f" · `{card_id[:8]}`" if card_id else ""
+    msg_preview = (mensagem[:297] + "...") if len(mensagem) > 300 else mensagem
+
+    header = f"{dir_emoji} {canal_emoji} *[{canal.upper()}]* {phone}{nome_fmt}{card_fmt}"
+
+    fields = [{"title": "Mensagem", "value": msg_preview or "_(sem texto)_", "short": False}]
+    if extra:
+        for key, val in extra.items():
+            fields.append({"title": str(key), "value": str(val)[:200], "short": True})
+
+    color = "#2eb886" if direcao == "enviado" else "#439fe0"
+
+    payload = {
+        "attachments": [
+            {
+                "color": color,
+                "text": header,
+                "fields": fields,
+                "footer": "Consórcio Sorteado · log-cs",
+                "mrkdwn_in": ["text"],
+            }
+        ]
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(SLACK_LOG_CS_URL, json=payload)
+            r.raise_for_status()
+        logger.debug("Slack log-cs: %s %s %s", direcao, canal, phone)
+        return True
+    except httpx.HTTPStatusError as e:
+        logger.error("Slack log-cs: HTTP %d: %s", e.response.status_code, e.response.text[:100])
+        return False
+    except httpx.RequestError as e:
+        logger.error("Slack log-cs: erro de rede: %s", e)
+        return False

@@ -352,14 +352,14 @@ def is_bazar(card: dict) -> bool:
 
 
 def get_canal(card: dict) -> str:
-    """Retorna 'lista', 'bazar', 'site' ou 'desconhecido'. Usado para logging/alertas."""
+    """Retorna 'lista', 'bazar', 'lp' ou 'desconhecido'. Usado para roteamento e logging."""
     fonte = str(card.get("Fonte") or "").strip().lower()
     if "lista" in fonte:
         return "lista"
     if "bazar" in fonte:
         return "bazar"
     if "site" in fonte or "lp" in fonte:
-        return "site"
+        return "lp"
     return "desconhecido"
 
 

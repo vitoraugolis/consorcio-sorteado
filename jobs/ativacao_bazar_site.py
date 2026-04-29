@@ -26,7 +26,7 @@ from config import (
     TEST_MODE, TZ_BRASILIA, filter_test_cards,
 )
 from services.faro import FaroClient, FaroError, get_phone, get_name, get_adm
-from services.whapi import WhapiClient, WhapiError
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +189,20 @@ async def _activate_card(card: dict, message_template: str,
             pass
         return False
 
+    # Verifica se o número tem WhatsApp antes de disparar
+    try:
+        async with get_whapi_for_card(card) as w:
+            has_wa = await w.check_phone(phone)
+        if not has_wa:
+            logger.info("Card %s sem WhatsApp (%s) — movendo para Problema de Contato", card_id[:8], phone[-4:])
+            try:
+                await faro.move_card(card_id, Stage.PROBLEMA_CONTATO)
+            except FaroError as e:
+                logger.error("Erro ao mover card %s para Problema de Contato: %s", card_id[:8], e)
+            return False
+    except Exception as e:
+        logger.warning("Card %s falha ao verificar WhatsApp (%s) — prosseguindo mesmo assim: %s", card_id[:8], phone[-4:], e)
+
     qualificado, motivo = qualifica_fn(card)
 
     if not qualificado:
@@ -196,8 +210,9 @@ async def _activate_card(card: dict, message_template: str,
         try:
             if not TEST_MODE:
                 await asyncio.sleep(random.randint(5, 30))
-            async with WhapiClient(canal="bazar") as w:
-                await w.send_text(phone, MSG_NAO_QUALIFICADO.format(nome=nome))
+            async with get_whapi_for_card(card) as w:
+                await w.send_text(phone, MSG_NAO_QUALIFICADO.format(nome=nome),
+                                  _log_nome=nome, _log_card_id=card_id)
             await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
         except (WhapiError, FaroError) as e:
             logger.error("Erro ao desqualificar card %s: %s", card_id[:8], e)
@@ -211,19 +226,20 @@ async def _activate_card(card: dict, message_template: str,
         await asyncio.sleep(random.randint(5, 50))
 
     try:
-        async with WhapiClient(canal="bazar") as w:
-            await w.send_text(phone, message)
+        async with get_whapi_for_card(card) as w:
+            await w.send_text(phone, message, _log_nome=nome, _log_card_id=card_id)
 
         await faro.move_card(card_id, Stage.PRIMEIRA_ATIVACAO)
         await faro.update_card(card_id, {
             "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
             "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
         })
-        logger.info("Whapi bazar OK: card=%s phone=%s", card_id[:8], phone[-4:])
+        logger.info("Whapi OK: card=%s phone=%s canal=%s", card_id[:8], phone[-4:],
+                    "lp" if "lp" in str(card.get("Fonte") or "").lower() else "bazar")
         return True
 
     except WhapiError as e:
-        logger.error("Erro Whapi bazar card %s: %s", card_id[:8], e)
+        logger.error("Erro Whapi card %s: %s", card_id[:8], e)
         return False
     except FaroError as e:
         logger.error("Erro FARO card %s: %s", card_id[:8], e)

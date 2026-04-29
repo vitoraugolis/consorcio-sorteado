@@ -2,9 +2,10 @@
 services/whapi.py — Cliente assíncrono para Whapi Cloud
 Único provider WhatsApp do sistema (substitui Whapi Listas + Z-API Bazar/Site).
 
-Dois pools independentes:
+Três pools independentes:
   LISTA : tokens WHAPI_TOKEN_LISTA_1..5 — rotação aleatória anti-ban
-  BAZAR : token WHAPI_TOKEN_BAZAR       — canal dedicado leads orgânicos
+  BAZAR : token WHAPI_TOKEN_BAZAR       — canal dedicado leads empresa parceira
+  LP    : token WHAPI_TOKEN_LP          — canal dedicado leads site próprio / tráfego pago
 
 Uso:
     # Roteamento automático pelo card (recomendado):
@@ -22,11 +23,11 @@ from typing import Any, Literal
 
 import httpx
 
-from config import WHAPI_BASE_URL, WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN
+from config import WHAPI_BASE_URL, WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN
 
 logger = logging.getLogger(__name__)
 
-Canal = Literal["lista", "bazar"]
+Canal = Literal["lista", "bazar", "lp"]
 
 
 # ---------------------------------------------------------------------------
@@ -42,30 +43,53 @@ def _build_bazar_pool() -> list[str]:
     return []
 
 
+def _build_lp_pool() -> list[str]:
+    """Retorna pool LP; usa Bazar como fallback se token LP não configurado."""
+    if WHAPI_LP_TOKEN:
+        return [WHAPI_LP_TOKEN]
+    if WHAPI_BAZAR_TOKEN:
+        return [WHAPI_BAZAR_TOKEN]  # fallback para bazar (aviso já emitido no config.py)
+    if WHAPI_LISTA_TOKENS:
+        return WHAPI_LISTA_TOKENS
+    return []
+
+
 _LISTA_POOL: list[str] = WHAPI_LISTA_TOKENS
 _BAZAR_POOL: list[str] = _build_bazar_pool()
+_LP_POOL:    list[str] = _build_lp_pool()
 
 # Contadores round-robin por pool (thread-safe para asyncio single-thread)
 _LISTA_RR_IDX: int = 0
 _BAZAR_RR_IDX: int = 0
+_LP_RR_IDX:    int = 0
 
 
 def _pick_token(canal: Canal) -> str:
-    global _LISTA_RR_IDX, _BAZAR_RR_IDX
-    pool = _LISTA_POOL if canal == "lista" else _BAZAR_POOL
+    global _LISTA_RR_IDX, _BAZAR_RR_IDX, _LP_RR_IDX
+    if canal == "lista":
+        pool = _LISTA_POOL
+    elif canal == "bazar":
+        pool = _BAZAR_POOL
+    else:
+        pool = _LP_POOL
     if not pool:
         raise WhapiError(
             f"Nenhum token Whapi configurado para o canal '{canal}'. "
-            f"Verifique WHAPI_TOKEN_LISTA_1 / WHAPI_TOKEN_BAZAR no .env."
+            f"Verifique WHAPI_TOKEN_LISTA_1 / WHAPI_TOKEN_BAZAR / WHAPI_TOKEN_LP no .env."
         )
     if canal == "lista":
         token = pool[_LISTA_RR_IDX % len(pool)]
         _LISTA_RR_IDX += 1
-    else:
+        idx = _LISTA_RR_IDX
+    elif canal == "bazar":
         token = pool[_BAZAR_RR_IDX % len(pool)]
         _BAZAR_RR_IDX += 1
-    logger.debug("WhapiClient[%s]: canal #%d token ...%s",
-                 canal, (_LISTA_RR_IDX if canal == "lista" else _BAZAR_RR_IDX) - 1, token[-6:])
+        idx = _BAZAR_RR_IDX
+    else:
+        token = pool[_LP_RR_IDX % len(pool)]
+        _LP_RR_IDX += 1
+        idx = _LP_RR_IDX
+    logger.debug("WhapiClient[%s]: canal #%d token ...%s", canal, idx - 1, token[-6:])
     return token
 
 
@@ -159,11 +183,47 @@ class WhapiClient:
         except Exception as e:
             return False, f"ERRO: {e}"
 
-    async def send_text(self, to: str, message: str) -> dict:
+    async def check_phone(self, phone: str) -> bool:
+        """
+        Verifica se um número tem WhatsApp ativo.
+        Retorna True se existir, False se 404 (sem WA) ou erro.
+        Usa GET /contacts/{phone}@s.whatsapp.net
+        """
+        normalized = self._normalize_phone(phone)
+        jid = f"{normalized}@s.whatsapp.net"
+        try:
+            r = await self._client.get(f"/contacts/{jid}", timeout=10.0)
+            if r.status_code == 404:
+                return False
+            if r.status_code == 200:
+                data = r.json()
+                # Se API retornar exists=false explicitamente, número não tem WA
+                if isinstance(data, dict) and data.get("exists") is False:
+                    return False
+                return True
+            # Outros erros: assumir que tem WA (fail-open, não bloqueia o lead)
+            logger.warning("check_phone(%s): status inesperado %d — assumindo True", normalized[-4:], r.status_code)
+            return True
+        except Exception as e:
+            logger.warning("check_phone(%s): erro de rede — assumindo True: %s", normalized[-4:], e)
+            return True
+
+    async def send_text(self, to: str, message: str, _log_nome: str = "", _log_card_id: str = "") -> dict:
         """Envia mensagem de texto simples."""
         phone = self._normalize_phone(to)
         logger.info("Whapi[%s] send_text → %s", self._canal, phone)
-        return await self._post("/messages/text", {"to": phone, "body": message})
+        result = await self._post("/messages/text", {"to": phone, "body": message})
+        # Log no #log-cs (fire-and-forget, nunca bloqueia o fluxo)
+        try:
+            from services.slack import log_cs
+            import asyncio
+            asyncio.ensure_future(log_cs(
+                direcao="enviado", canal=self._canal, phone=phone,
+                nome=_log_nome, card_id=_log_card_id, mensagem=message,
+            ))
+        except Exception:
+            pass
+        return result
 
     async def send_buttons(
         self,
@@ -172,6 +232,8 @@ class WhapiClient:
         buttons: list[dict],
         header: str = None,
         footer: str = None,
+        _log_nome: str = "",
+        _log_card_id: str = "",
     ) -> dict:
         """Envia mensagem interativa com botões de resposta rápida (máx 3)."""
         phone = self._normalize_phone(to)
@@ -195,7 +257,17 @@ class WhapiClient:
             body["header"] = {"type": "text", "text": header}
         if footer:
             body["footer"] = footer
-        return await self._post("/messages/interactive", body)
+        result = await self._post("/messages/interactive", body)
+        try:
+            from services.slack import log_cs
+            import asyncio
+            asyncio.ensure_future(log_cs(
+                direcao="enviado", canal=self._canal, phone=phone,
+                nome=_log_nome, card_id=_log_card_id, mensagem=f"[botões] {message}",
+            ))
+        except Exception:
+            pass
+        return result
 
     async def send_list(
         self,
@@ -205,6 +277,8 @@ class WhapiClient:
         sections: list[dict],
         header: str = None,
         footer: str = None,
+        _log_nome: str = "",
+        _log_card_id: str = "",
     ) -> dict:
         """Envia mensagem com lista de opções."""
         phone = self._normalize_phone(to)
@@ -218,17 +292,37 @@ class WhapiClient:
             body["header"] = {"type": "text", "text": header}
         if footer:
             body["footer"] = footer
-        return await self._post("/messages/interactive/list", body)
+        result = await self._post("/messages/interactive/list", body)
+        try:
+            from services.slack import log_cs
+            import asyncio
+            asyncio.ensure_future(log_cs(
+                direcao="enviado", canal=self._canal, phone=phone,
+                nome=_log_nome, card_id=_log_card_id, mensagem=f"[lista] {message}",
+            ))
+        except Exception:
+            pass
+        return result
 
-    async def send_image(self, to: str, image_url: str, caption: str = "") -> dict:
+    async def send_image(self, to: str, image_url: str, caption: str = "", _log_nome: str = "", _log_card_id: str = "") -> dict:
         """Envia imagem com legenda opcional."""
         phone = self._normalize_phone(to)
         logger.info("Whapi[%s] send_image → %s", self._canal, phone)
-        return await self._post("/messages/image", {
+        result = await self._post("/messages/image", {
             "to": phone,
             "media": image_url,
             "caption": caption,
         })
+        try:
+            from services.slack import log_cs
+            import asyncio
+            asyncio.ensure_future(log_cs(
+                direcao="enviado", canal=self._canal, phone=phone,
+                nome=_log_nome, card_id=_log_card_id, mensagem=f"[imagem] {caption}",
+            ))
+        except Exception:
+            pass
+        return result
 
     async def send_document(
         self,
@@ -236,16 +330,28 @@ class WhapiClient:
         document_url: str,
         filename: str = "documento.pdf",
         caption: str = "",
+        _log_nome: str = "",
+        _log_card_id: str = "",
     ) -> dict:
         """Envia documento (PDF, etc.)."""
         phone = self._normalize_phone(to)
         logger.info("Whapi[%s] send_document → %s (%s)", self._canal, phone, filename)
-        return await self._post("/messages/document", {
+        result = await self._post("/messages/document", {
             "to": phone,
             "media": document_url,
             "filename": filename,
             "caption": caption,
         })
+        try:
+            from services.slack import log_cs
+            import asyncio
+            asyncio.ensure_future(log_cs(
+                direcao="enviado", canal=self._canal, phone=phone,
+                nome=_log_nome, card_id=_log_card_id, mensagem=f"[doc] {filename}",
+            ))
+        except Exception:
+            pass
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -256,14 +362,21 @@ def get_whapi_for_card(card: dict) -> WhapiClient:
     """
     Retorna WhapiClient com o canal correto baseado na origem do lead.
     - Lead de Lista  → canal "lista" (pool anti-ban)
-    - Lead Bazar/Site → canal "bazar" (token dedicado)
+    - Lead Bazar     → canal "bazar" (token dedicado empresa parceira)
+    - Lead LP/Site   → canal "lp"    (token dedicado site próprio / tráfego pago)
 
     Uso:
         async with get_whapi_for_card(card) as w:
             await w.send_text(phone, mensagem)
     """
-    from services.faro import is_lista
-    canal: Canal = "lista" if is_lista(card) else "bazar"
+    from services.faro import get_canal
+    origem = get_canal(card)
+    if origem == "lista":
+        canal: Canal = "lista"
+    elif origem == "lp":
+        canal = "lp"
+    else:
+        canal = "bazar"
     return WhapiClient(canal=canal)
 
 

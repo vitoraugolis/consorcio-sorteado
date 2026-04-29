@@ -40,6 +40,7 @@ class Stage:
     DISPENSADOS = "fb52b454-de52-4057-bd2c-645014636cba"
     NAO_QUALIFICADO = "38c91042-2205-4d7d-9015-215a526acefc"
     LP = "f3d1c2ea-ab74-4275-9583-bcec89c58c0c"
+    PROBLEMA_CONTATO = "0f593ed2-3c5e-477e-9b0d-1740808fe145"
 
 
 ACTIVATION_SEQUENCE = {
@@ -62,15 +63,17 @@ REATIVACAO_DIAS = {
 # ---------------------------------------------------------------------------
 # WHAPI — único provider WhatsApp (substitui Whapi Listas + Z-API Bazar/Site)
 #
-# Dois pools distintos:
+# Três pools distintos:
 #   LISTA : até 5 tokens com rotação aleatória anti-ban (volume alto)
-#   BAZAR : 1 token dedicado para leads orgânicos (Bazar/Site, volume baixo)
+#   BAZAR : 1 token dedicado para leads orgânicos via empresa parceira
+#   LP    : 1 token dedicado para leads do site próprio / tráfego pago
 #
 # .env:
 #   WHAPI_TOKEN_LISTA_1=...  (obrigatório; aceita WHAPI_TOKEN como retrocompat)
 #   WHAPI_TOKEN_LISTA_2=...  (opcional; aceita WHAPI_TOKEN_2 como retrocompat)
 #   WHAPI_TOKEN_LISTA_3..5=  (opcionais)
-#   WHAPI_TOKEN_BAZAR=...    (obrigatório para fluxo Bazar/Site)
+#   WHAPI_TOKEN_BAZAR=...    (obrigatório para fluxo Bazar)
+#   WHAPI_TOKEN_LP=...       (obrigatório para fluxo LP/Site)
 # ---------------------------------------------------------------------------
 WHAPI_BASE_URL = os.getenv("WHAPI_BASE_URL", "https://gate.whapi.cloud")
 
@@ -85,13 +88,20 @@ WHAPI_LISTA_TOKENS: list[str] = [
 ]
 
 WHAPI_BAZAR_TOKEN: str = os.getenv("WHAPI_TOKEN_BAZAR", "")
+WHAPI_LP_TOKEN: str    = os.getenv("WHAPI_TOKEN_LP", "")
 
-# Aviso em startup se BAZAR token não configurado
+# Avisos em startup se tokens não configurados
 if not WHAPI_BAZAR_TOKEN and WHAPI_LISTA_TOKENS:
     import logging as _log
     _log.getLogger(__name__).warning(
         "WHAPI_TOKEN_BAZAR não configurado — usando pool de Listas como fallback. "
         "Configure WHAPI_TOKEN_BAZAR no .env para isolar os fluxos."
+    )
+if not WHAPI_LP_TOKEN and WHAPI_LISTA_TOKENS:
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "WHAPI_TOKEN_LP não configurado — usando WHAPI_TOKEN_BAZAR como fallback para LP. "
+        "Configure WHAPI_TOKEN_LP no .env para isolar o fluxo LP."
     )
 
 # ---------------------------------------------------------------------------
@@ -155,7 +165,8 @@ CONSULTANT_PHONES: dict[str, str] = (
     }
 )
 
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+SLACK_WEBHOOK_URL     = os.getenv("SLACK_WEBHOOK_URL", "")
+SLACK_LOG_CS_URL      = os.getenv("SLACK_LOG_CS_URL", "")
 
 # ---------------------------------------------------------------------------
 # Qualificação de extratos

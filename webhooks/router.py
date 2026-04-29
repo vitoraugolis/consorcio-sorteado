@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from config import Stage
-from services.faro import FaroClient, FaroError, is_lista, get_name
+from services.faro import FaroClient, FaroError, is_lista, get_name, get_canal
 from webhooks.negociador import handle_message
 from webhooks.qualificador import handle_qualification, QUALIFICATION_STAGES
 from webhooks.agente_contrato import handle_dados_pessoais, handle_extrato_recebido
@@ -168,6 +168,17 @@ async def route_message(msg: IncomingMessage) -> None:
     current_stage = card.get("stage_id") or card.get("stageId") or ""
     nome = card.get("Nome do contato") or card.get("title") or "?"
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
+
+    # Log da mensagem recebida no #log-cs
+    try:
+        from services.slack import log_cs
+        canal_lead = get_canal(card)
+        asyncio.create_task(log_cs(
+            direcao="recebido", canal=canal_lead, phone=msg.phone,
+            nome=nome, card_id=card_id, mensagem=msg.text or f"[{msg.media_type}]",
+        ))
+    except Exception:
+        pass
 
     # Se proposta já foi enviada, negociador assume independente da stage
     if _proposta_ja_enviada(card) and msg.is_processable:
