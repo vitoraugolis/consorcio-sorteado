@@ -22,6 +22,7 @@ import redis.asyncio as aioredis
 from config import (
     Stage, TZ_BRASILIA, TEST_MODE,
     BAZAR_JITTER_MIN_S, BAZAR_JITTER_MAX_S,
+    LP_JITTER_MIN_S, LP_JITTER_MAX_S,
     BAZAR_WINDOW_START, BAZAR_WINDOW_END,
 )
 from services.faro import FaroClient, FaroError
@@ -242,6 +243,19 @@ async def _check_whapi_bazar_health() -> bool:
     return ok
 
 
+async def _check_whapi_lp_health() -> bool:
+    """Verifica se o canal LP (DEADPL-V592K) está respondendo."""
+    async with WhapiClient(canal="lp") as w:
+        ok, status = await w.health_check()
+    if not ok:
+        logger.error("Whapi LP (DEADPL-V592K) não responde — status: %s", status)
+        await slack_error(
+            f"⚠️ Canal Whapi LP (DEADPL-V592K) não está respondendo (status: {status}). "
+            "Verifique o painel Whapi."
+        )
+    return ok
+
+
 async def run_fila_ativacao():
     """
     Processa a fila item a item.
@@ -311,9 +325,12 @@ async def run_fila_ativacao():
                 await asyncio.sleep(900)
                 continue
 
-            # Health check antes de cada disparo qualificado
+            # Health check antes de cada disparo qualificado — canal correto por fonte
             if qualificado:
-                canal_ok = await _check_whapi_bazar_health()
+                if fonte == "lp":
+                    canal_ok = await _check_whapi_lp_health()
+                else:
+                    canal_ok = await _check_whapi_bazar_health()
                 if not canal_ok:
                     # Devolve o card e pausa 5 min antes de tentar de novo
                     r = _get_redis()
@@ -339,9 +356,15 @@ async def run_fila_ativacao():
                 break
 
             if qualificado and not TEST_MODE:
-                wait_sec = random.randint(BAZAR_JITTER_MIN_S, BAZAR_JITTER_MAX_S)
-                logger.info("Aguardando %dm%ds antes do próximo disparo...",
-                            wait_sec // 60, wait_sec % 60)
+                # Jitter por canal: LP mais suave (45-60 min) para warmup do DEADPL-V592K
+                if fonte == "lp":
+                    wait_sec = random.randint(LP_JITTER_MIN_S, LP_JITTER_MAX_S)
+                    logger.info("LP: aguardando %dm%ds (warmup suave) antes do próximo disparo...",
+                                wait_sec // 60, wait_sec % 60)
+                else:
+                    wait_sec = random.randint(BAZAR_JITTER_MIN_S, BAZAR_JITTER_MAX_S)
+                    logger.info("Bazar: aguardando %dm%ds antes do próximo disparo...",
+                                wait_sec // 60, wait_sec % 60)
                 # Sleep em fatias de 30s para reagir a JOBS_PAUSED sem esperar o jitter inteiro
                 elapsed = 0
                 while elapsed < wait_sec:

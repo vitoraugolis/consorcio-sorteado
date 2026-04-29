@@ -135,6 +135,8 @@ BAZAR_JITTER_MIN_S    = int(os.getenv("BAZAR_JITTER_MIN_S", "900"))   # 15 min
 BAZAR_JITTER_MAX_S    = int(os.getenv("BAZAR_JITTER_MAX_S", "1800"))  # 30 min
 LISTAS_JITTER_MIN_S   = int(os.getenv("LISTAS_JITTER_MIN_S", "1200")) # 20 min
 LISTAS_JITTER_MAX_S   = int(os.getenv("LISTAS_JITTER_MAX_S", "2100")) # 35 min
+LP_JITTER_MIN_S       = int(os.getenv("LP_JITTER_MIN_S", "2700"))     # 45 min (warmup suave)
+LP_JITTER_MAX_S       = int(os.getenv("LP_JITTER_MAX_S", "3600"))     # 60 min
 
 # ---------------------------------------------------------------------------
 # Notificações
