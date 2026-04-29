@@ -248,6 +248,13 @@ async def run_fila_ativacao():
     - Qualificados: jitter 10-25 min entre disparos
     - Não qualificados: sem jitter
     """
+    import os
+
+    # Checagem inicial
+    if os.getenv("JOBS_PAUSED", "false").lower() == "true":
+        logger.info("Fila: JOBS_PAUSED=true — abortando antes de iniciar")
+        return
+
     r = _get_redis()
     try:
         # SET NX: garante que só um processo/worker inicia a fila
@@ -267,6 +274,16 @@ async def run_fila_ativacao():
     async with FaroClient() as faro:
         processed = 0
         while True:
+            # Checagem a cada iteração — respeita pause em tempo real
+            if os.getenv("JOBS_PAUSED", "false").lower() == "true":
+                logger.warning("Fila: JOBS_PAUSED=true detectado — interrompendo loop")
+                r = _get_redis()
+                try:
+                    await r.delete(REDIS_RUNNING_KEY)
+                finally:
+                    await r.aclose()
+                return
+
             r = _get_redis()
             try:
                 raw = await r.lpop(REDIS_QUEUE_KEY)
@@ -325,7 +342,19 @@ async def run_fila_ativacao():
                 wait_sec = random.randint(BAZAR_JITTER_MIN_S, BAZAR_JITTER_MAX_S)
                 logger.info("Aguardando %dm%ds antes do próximo disparo...",
                             wait_sec // 60, wait_sec % 60)
-                await asyncio.sleep(wait_sec)
+                # Sleep em fatias de 30s para reagir a JOBS_PAUSED sem esperar o jitter inteiro
+                elapsed = 0
+                while elapsed < wait_sec:
+                    if os.getenv("JOBS_PAUSED", "false").lower() == "true":
+                        logger.warning("Fila: JOBS_PAUSED=true durante jitter — interrompendo")
+                        r = _get_redis()
+                        try:
+                            await r.delete(REDIS_RUNNING_KEY)
+                        finally:
+                            await r.aclose()
+                        return
+                    await asyncio.sleep(min(30, wait_sec - elapsed))
+                    elapsed += 30
 
     r = _get_redis()
     try:
