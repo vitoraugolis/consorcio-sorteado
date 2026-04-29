@@ -141,6 +141,10 @@ async def _fila_watchdog():
     await asyncio.sleep(60)  # aguarda 60s após startup antes de começar a checar
     while True:
         try:
+            # Não relança se JOBS_PAUSED
+            if os.getenv("JOBS_PAUSED", "false").lower() == "true":
+                await asyncio.sleep(300)
+                continue
             _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
             running = await _r.get("fila_ativacao:running")
             queue_len = await _r.llen("fila_ativacao:queue")
@@ -210,21 +214,26 @@ async def lifespan(app: FastAPI):
         scheduler.pause()
         logger.warning("⏸️  JOBS_PAUSED=true — scheduler e fila suspensos. Canais Whapi indisponíveis.")
     elif redis_ok:
-        # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
-        import redis.asyncio as aioredis
-        _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
-        try:
-            await _r.delete("fila_ativacao:running")
-            queue_len = await _r.llen("fila_ativacao:queue")
-            if queue_len == 0:
-                logger.info("🔄 Fila vazia — reconstruindo do FARO...")
-                await build_queue()
+        # Só relança fila se JOBS_PAUSED=false
+        jobs_paused = os.getenv("JOBS_PAUSED", "false").lower() == "true"
+        if jobs_paused:
+            logger.warning("⏸️  JOBS_PAUSED=true — fila_ativacao não será relançada.")
+        else:
+            # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
+            import redis.asyncio as aioredis
+            _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
+            try:
+                await _r.delete("fila_ativacao:running")
                 queue_len = await _r.llen("fila_ativacao:queue")
-            logger.info("♻️  Relançando fila (%d cards).", queue_len)
-        finally:
-            await _r.aclose()
-        asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
-        asyncio.create_task(_guarded_task(_fila_watchdog(), "fila_watchdog"))
+                if queue_len == 0:
+                    logger.info("🔄 Fila vazia — reconstruindo do FARO...")
+                    await build_queue()
+                    queue_len = await _r.llen("fila_ativacao:queue")
+                logger.info("♻️  Relançando fila (%d cards).", queue_len)
+            finally:
+                await _r.aclose()
+            asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+            asyncio.create_task(_guarded_task(_fila_watchdog(), "fila_watchdog"))
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))
