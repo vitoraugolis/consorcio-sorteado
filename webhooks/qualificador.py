@@ -212,16 +212,28 @@ _EXTRATO_EXEMPLO_PATH = os.path.join(os.getenv("IMAGES_DIR", "/tmp/cs_images"), 
 # ---------------------------------------------------------------------------
 
 def _extract_media_url(raw: dict, media_type: str) -> Optional[str]:
+    """
+    Extrai a URL de download da mídia do payload do Whapi.
+    O Whapi coloca a URL em `document.link`, `image.link`, etc. (não em `.url`).
+    """
+    # Campos diretos de cada tipo de mídia (Whapi usa .link, não .url)
+    for mtype in ("document", "image", "video", "audio", "voice"):
+        obj = raw.get(mtype, {})
+        if isinstance(obj, dict):
+            url = obj.get("link") or obj.get("url")
+            if url:
+                return url
+
+    # Fallback: dentro de message/messageData
     message_obj = raw.get("message") or raw.get("messageData") or {}
     if isinstance(message_obj, dict):
-        for mtype in ("document", "image", "video"):
+        for mtype in ("document", "image", "video", "audio", "voice"):
             obj = message_obj.get(mtype, {})
-            if isinstance(obj, dict) and obj.get("url"):
-                return obj["url"]
-    for mtype in ("document", "image"):
-        obj = raw.get(mtype, {})
-        if isinstance(obj, dict) and obj.get("url"):
-            return obj["url"]
+            if isinstance(obj, dict):
+                url = obj.get("link") or obj.get("url")
+                if url:
+                    return url
+
     return raw.get("mediaUrl") or raw.get("fileUrl") or None
 
 

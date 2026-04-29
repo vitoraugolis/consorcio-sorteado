@@ -49,6 +49,26 @@ class IncomingMessage:
         return self.media_type in ("image", "document", "video")
 
 
+def _describe_media(msg: "IncomingMessage") -> str:
+    """Retorna descrição legível da mídia para o #log-cs."""
+    if not msg.media_type:
+        return "[mídia desconhecida]"
+    raw = msg.raw
+    if msg.media_type == "document":
+        doc = raw.get("document", {})
+        fname = doc.get("file_name") or doc.get("filename") or ""
+        mime  = doc.get("mime_type", "")
+        label = fname or mime or "documento"
+        return f"📄 [{label}]"
+    if msg.media_type == "image":
+        return "🖼️ [imagem]"
+    if msg.media_type in ("audio", "voice"):
+        return "🎤 [áudio]"
+    if msg.media_type == "video":
+        return "🎥 [vídeo]"
+    return f"[{msg.media_type}]"
+
+
 HANDLED_STAGES = {Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ASSINATURA}
 ACTIVATION_STAGES = {
     Stage.PRIMEIRA_ATIVACAO, Stage.SEGUNDA_ATIVACAO,
@@ -174,7 +194,8 @@ async def route_message(msg: IncomingMessage) -> None:
             card_id    = ""
         asyncio.create_task(log_cs(
             direcao="recebido", canal=canal_lead, phone=msg.phone,
-            nome=nome, card_id=card_id, mensagem=msg.text or f"[{msg.media_type}]",
+            nome=nome, card_id=card_id,
+            mensagem=msg.text or _describe_media(msg),
             extra={"FARO": "✅ encontrado" if card else "❌ sem cadastro"},
         ))
     except Exception:
