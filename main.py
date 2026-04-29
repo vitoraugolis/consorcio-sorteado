@@ -152,13 +152,14 @@ async def _fila_watchdog():
 
 def setup_scheduler():
     # PAUSADO: número Whapi Lista restrito — só Bazar ativo por enquanto
-    # Ativação de Listas — modo suave: 4 cards/ciclo, 60 min ± 10 min jitter
-    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
-                      id="ativacao_listas", name="Ativação de Listas",
-                      max_instances=1, misfire_grace_time=300)
-    scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
-                      id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
-                      max_instances=1, misfire_grace_time=60)
+    # ⏸️ DISPAROS DESATIVADOS — só atendimento + leitura de extrato ativos
+    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
+    #                   id="ativacao_listas", name="Ativação de Listas",
+    #                   max_instances=1, misfire_grace_time=300)
+    # ⏸️ watch_novos_leads desativado — não injeta na fila enquanto Bazar pausado
+    # scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
+    #                   id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
+    #                   max_instances=1, misfire_grace_time=60)
     # Bazar/Site periódicos desativados — substituídos pela fila com jitter
     # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5), ...)
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
@@ -209,21 +210,8 @@ async def lifespan(app: FastAPI):
         if jobs_paused:
             logger.warning("⏸️  JOBS_PAUSED=true — fila_ativacao não será relançada.")
         else:
-            # Relança fila de ativação automaticamente — limpa lock órfão de restart anterior
-            import redis.asyncio as aioredis
-            _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
-            try:
-                await _r.delete("fila_ativacao:running")
-                queue_len = await _r.llen("fila_ativacao:queue")
-                if queue_len == 0:
-                    logger.info("🔄 Fila vazia — reconstruindo do FARO...")
-                    await build_queue()
-                    queue_len = await _r.llen("fila_ativacao:queue")
-                logger.info("♻️  Relançando fila (%d cards).", queue_len)
-            finally:
-                await _r.aclose()
-            asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
-            asyncio.create_task(_guarded_task(_fila_watchdog(), "fila_watchdog"))
+            # ⏸️ Fila Bazar/LP desativada — reativar manualmente quando pronto
+            logger.info("⏸️  Fila Bazar/LP desativada no startup (modo atendimento apenas)")
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))
