@@ -105,28 +105,18 @@ async def _whapi_monitor():
                 if not online:
                     algum_offline = True
 
-            # Pausa/retoma scheduler conforme estado
-            jobs_paused_env = os.getenv("JOBS_PAUSED", "false").lower() == "true"
-            if algum_offline and scheduler.state != 2:  # 2 = STATE_PAUSED
-                scheduler.pause()
-                logger.warning("Whapi monitor: scheduler pausado — canal(is) offline")
-            elif not algum_offline and scheduler.state == 2 and not jobs_paused_env:
-                scheduler.resume()
-                import redis.asyncio as aioredis
-                _r = aioredis.Redis(host="localhost", port=6379, decode_responses=True)
-                running = await _r.get("fila_ativacao:running")
-                await _r.aclose()
-                if not running:
-                    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
-                logger.info("Whapi monitor: scheduler retomado — todos os canais online")
-
+            # NÃO pausa/retoma scheduler automaticamente — controle manual via JOBS_PAUSED
+            # O monitor só notifica, não interfere nos jobs
             if mensagens:
-                alerta = "\n".join(mensagens)
-                alerta += "\n\n⚠️ Jobs pausados." if algum_offline else "\n\n✅ Jobs retomados."
-                try:
-                    await notify_team(alerta)
-                except Exception:
-                    pass
+                # Só notifica se for um canal crítico (Bazar ou Lista) — LP offline é esperado
+                # enquanto número não está conectado
+                alertas_criticos = [m for m in mensagens if "LP" not in m]
+                if alertas_criticos:
+                    alerta = "\n".join(alertas_criticos)
+                    try:
+                        await notify_team(alerta)
+                    except Exception:
+                        pass
 
         except Exception as e:
             logger.error("Whapi monitor: erro inesperado: %s", e)
