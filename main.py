@@ -74,7 +74,7 @@ async def _whapi_monitor():
             canais_check: list[tuple[str, str]] = []  # (label, token)
             canais_check.append(("BAZAR (DAREDL)", WHAPI_BAZAR_TOKEN))
             if WHAPI_LP_TOKEN:
-                canais_check.append(("LP (DEADPL)", WHAPI_LP_TOKEN))
+                canais_check.append(("DEADPL-V592K", WHAPI_LP_TOKEN))
             for i, tok in enumerate(WHAPI_LISTA_TOKENS, 1):
                 label = f"LISTA-{i} (FALCON)" if i == 1 else f"LISTA-{i}"
                 canais_check.append((label, tok))

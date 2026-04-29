@@ -44,13 +44,10 @@ def _build_bazar_pool() -> list[str]:
 
 
 def _build_lp_pool() -> list[str]:
-    """Retorna pool LP; usa Bazar como fallback se token LP não configurado."""
+    """Retorna pool LP (DEADPL-V592K). Sem fallback — token LP é obrigatório."""
     if WHAPI_LP_TOKEN:
         return [WHAPI_LP_TOKEN]
-    if WHAPI_BAZAR_TOKEN:
-        return [WHAPI_BAZAR_TOKEN]  # fallback para bazar (aviso já emitido no config.py)
-    if WHAPI_LISTA_TOKENS:
-        return WHAPI_LISTA_TOKENS
+    logger.warning("WHAPI_TOKEN_LP não configurado — leads LP sem canal de envio!")
     return []
 
 
