@@ -506,37 +506,58 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         else:
             logger.warning("Precificação Listas: card %s sem crédito para calcular proposta", card_id[:8])
 
-    if not proposta:
-        # Bazar/LP sem proposta preenchida no FARO — notifica para precificar manualmente
-        if not is_lista(card):
-            ja_notificado = card.get("Notificado Precificacao", "")
-            if not ja_notificado:
-                credito = _parse_float(card.get("Crédito") or "0")
-                adm = get_adm(card)
-                fonte = card.get("Fonte") or "Bazar/LP"
-                notif = (
-                    f"💰 *Precificação pendente*\n\n"
-                    f"*Lead:* {nome} ({card_id[:8]})\n"
-                    f"*Fonte:* {fonte}\n"
-                    f"*Adm:* {adm}\n"
-                    f"*Crédito:* {_fmt_currency(str(int(credito))) if credito else 'a verificar'}\n\n"
-                    f"Preencha o campo *Proposta Realizada* no FARO para liberar o envio."
+    if not proposta and not is_lista(card):
+        # Bazar/LP: calcula pela mesma lógica usando dados do extrato (já gravados no FARO)
+        credito       = _parse_float(card.get("Crédito") or "0")
+        valor_pago    = _parse_float(card.get("Valor pago extrato") or "0")
+        meses_a_pagar = int(_parse_float(card.get("Meses a pagar") or "999") or 999)
+        adm           = get_adm(card)
+        percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
+
+        if credito > 0:
+            proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
+                credito, valor_pago, percentual_pago,
+                adm=adm, meses_a_pagar=meses_a_pagar,
+            )
+            if proposta_calculada <= 0:
+                logger.warning(
+                    "Precificação Bazar/LP: card %s não se qualifica (%%pago=%.1f%%)",
+                    card_id[:8], percentual_pago * 100,
                 )
-                try:
-                    await notify_team(notif)
-                    await faro.update_card(card_id, {"Notificado Precificacao": "sim"})
-                    logger.info("Precificação: equipe notificada para card %s (Bazar/LP sem proposta)", card_id[:8])
-                except Exception as e:
-                    logger.warning("Precificação: falha ao notificar equipe: %s", e)
+                return False
+            proposta = str(int(proposta_calculada))
+            sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
+            logger.info(
+                "Precificação Bazar/LP: card %s | adm=%s | %%pago=%.1f%% | indice=%d | proposta=%s",
+                card_id[:8], adm, percentual_pago * 100, indice_usado, proposta,
+            )
+            try:
+                await faro.update_card(card_id, {
+                    "Proposta Realizada": proposta,
+                    "Sequencia_Proposta": sequencia,
+                    "Indice da Proposta": str(indice_usado),
+                })
+                card["Proposta Realizada"] = proposta
+                card["Sequencia_Proposta"] = sequencia
+            except FaroError as e:
+                logger.warning("Precificação: erro ao gravar proposta Bazar/LP: %s", e)
+        else:
+            logger.warning("Precificação Bazar/LP: card %s sem crédito para calcular proposta", card_id[:8])
+
+    if not proposta:
         logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
         return False
 
     # ── Aprovação antes de enviar ─────────────────────────────────────────────
-    # Notifica Vitor com os dados e aguarda aprovação (flag no FARO).
-    # Se "Aprovado Precificacao" == "sim" → dispara imediatamente.
-    # Caso contrário → notifica e aguarda próxima rodada do job (30 min).
+    # Listas: requer aprovação manual (proposta calculada, mas Vitor valida antes de enviar)
+    # Bazar/LP: auto-aprovado — extrato foi analisado pelo Gemini com confidence > 0.5
+    #           e proposta calculada com base em dados reais do extrato.
     aprovado = str(card.get("Aprovado Precificacao") or "").strip().lower()
-    if aprovado != "sim":
+    link_extrato = str(card.get("Link do extrato") or "").strip()
+    fonte_bazar_lp = not is_lista(card)
+    auto_aprovado = fonte_bazar_lp and bool(link_extrato)
+
+    if aprovado != "sim" and not auto_aprovado:
         ja_notificado = str(card.get("Notificado Precificacao") or "").strip().lower()
         if ja_notificado != "sim":
             adm = get_adm(card)
@@ -563,6 +584,12 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         else:
             logger.info("Precificação: card %s aguardando aprovação (já notificado)", card_id[:8])
         return False
+
+    if auto_aprovado:
+        logger.info(
+            "Precificação: Bazar/LP card %s auto-aprovado (extrato Gemini: %s)",
+            card_id[:8], link_extrato[-60:],
+        )
 
     agora = datetime.now(timezone.utc).isoformat()
 
