@@ -104,6 +104,28 @@ class WhapiError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _is_lead_recipient(to: str) -> bool:
+    """
+    Retorna True se o destinatário é um lead (deve aparecer no #log-cs).
+    Filtra grupos (@g.us) e números internos da equipe (NOTIFY_PHONES).
+    """
+    if "@g.us" in str(to):
+        return False
+    try:
+        from config import NOTIFY_PHONES
+        digits = "".join(c for c in str(to) if c.isdigit())
+        for internal in NOTIFY_PHONES.values():
+            if digits.endswith(internal) or internal.endswith(digits):
+                return False
+    except Exception:
+        pass
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Cliente
 # ---------------------------------------------------------------------------
 
@@ -213,16 +235,17 @@ class WhapiClient:
         phone = self._normalize_phone(to)
         logger.info("Whapi[%s] send_text → %s", self._canal, phone)
         result = await self._post("/messages/text", {"to": phone, "body": message})
-        # Log no #log-cs (fire-and-forget, nunca bloqueia o fluxo)
-        try:
-            from services.slack import log_cs
-            import asyncio
-            asyncio.ensure_future(log_cs(
-                direcao="enviado", canal=self._canal, phone=phone,
-                nome=_log_nome, card_id=_log_card_id, mensagem=message,
-            ))
-        except Exception:
-            pass
+        # Log no #log-cs — ignora grupos (@g.us) e números internos da equipe
+        if _is_lead_recipient(to):
+            try:
+                from services.slack import log_cs
+                import asyncio
+                asyncio.ensure_future(log_cs(
+                    direcao="enviado", canal=self._canal, phone=phone,
+                    nome=_log_nome, card_id=_log_card_id, mensagem=message,
+                ))
+            except Exception:
+                pass
         return result
 
     async def send_buttons(
@@ -258,15 +281,16 @@ class WhapiClient:
         if footer:
             body["footer"] = footer
         result = await self._post("/messages/interactive", body)
-        try:
-            from services.slack import log_cs
-            import asyncio
-            asyncio.ensure_future(log_cs(
-                direcao="enviado", canal=self._canal, phone=phone,
-                nome=_log_nome, card_id=_log_card_id, mensagem=f"[botões] {message}",
-            ))
-        except Exception:
-            pass
+        if _is_lead_recipient(to):
+            try:
+                from services.slack import log_cs
+                import asyncio
+                asyncio.ensure_future(log_cs(
+                    direcao="enviado", canal=self._canal, phone=phone,
+                    nome=_log_nome, card_id=_log_card_id, mensagem=f"[botões] {message}",
+                ))
+            except Exception:
+                pass
         return result
 
     async def send_list(
@@ -293,15 +317,16 @@ class WhapiClient:
         if footer:
             body["footer"] = footer
         result = await self._post("/messages/interactive/list", body)
-        try:
-            from services.slack import log_cs
-            import asyncio
-            asyncio.ensure_future(log_cs(
-                direcao="enviado", canal=self._canal, phone=phone,
-                nome=_log_nome, card_id=_log_card_id, mensagem=f"[lista] {message}",
-            ))
-        except Exception:
-            pass
+        if _is_lead_recipient(to):
+            try:
+                from services.slack import log_cs
+                import asyncio
+                asyncio.ensure_future(log_cs(
+                    direcao="enviado", canal=self._canal, phone=phone,
+                    nome=_log_nome, card_id=_log_card_id, mensagem=f"[lista] {message}",
+                ))
+            except Exception:
+                pass
         return result
 
     async def send_image(self, to: str, image_url: str, caption: str = "", _log_nome: str = "", _log_card_id: str = "") -> dict:
@@ -313,15 +338,16 @@ class WhapiClient:
             "media": image_url,
             "caption": caption,
         })
-        try:
-            from services.slack import log_cs
-            import asyncio
-            asyncio.ensure_future(log_cs(
-                direcao="enviado", canal=self._canal, phone=phone,
-                nome=_log_nome, card_id=_log_card_id, mensagem=f"[imagem] {caption}",
-            ))
-        except Exception:
-            pass
+        if _is_lead_recipient(to):
+            try:
+                from services.slack import log_cs
+                import asyncio
+                asyncio.ensure_future(log_cs(
+                    direcao="enviado", canal=self._canal, phone=phone,
+                    nome=_log_nome, card_id=_log_card_id, mensagem=f"[imagem] {caption}",
+                ))
+            except Exception:
+                pass
         return result
 
     async def send_document(
@@ -342,15 +368,16 @@ class WhapiClient:
             "filename": filename,
             "caption": caption,
         })
-        try:
-            from services.slack import log_cs
-            import asyncio
-            asyncio.ensure_future(log_cs(
-                direcao="enviado", canal=self._canal, phone=phone,
-                nome=_log_nome, card_id=_log_card_id, mensagem=f"[doc] {filename}",
-            ))
-        except Exception:
-            pass
+        if _is_lead_recipient(to):
+            try:
+                from services.slack import log_cs
+                import asyncio
+                asyncio.ensure_future(log_cs(
+                    direcao="enviado", canal=self._canal, phone=phone,
+                    nome=_log_nome, card_id=_log_card_id, mensagem=f"[doc] {filename}",
+                ))
+            except Exception:
+                pass
         return result
 
 

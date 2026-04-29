@@ -61,7 +61,7 @@ async def _whapi_monitor():
     - Se canal voltar: retoma jobs + avisa
     """
     from services.whapi import WhapiClient, notify_team
-    from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN
+    from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN
     global _whapi_canal_status
     await asyncio.sleep(30)  # aguarda estabilização no boot
 
@@ -73,8 +73,10 @@ async def _whapi_monitor():
             # Monta lista de canais a checar: cada token individualmente
             canais_check: list[tuple[str, str]] = []  # (label, token)
             canais_check.append(("BAZAR (DAREDL)", WHAPI_BAZAR_TOKEN))
+            if WHAPI_LP_TOKEN:
+                canais_check.append(("LP (DEADPL)", WHAPI_LP_TOKEN))
             for i, tok in enumerate(WHAPI_LISTA_TOKENS, 1):
-                label = f"LISTA-{i} ({'FALCON' if i == 1 else 'DEADPL'})"
+                label = f"LISTA-{i} (FALCON)" if i == 1 else f"LISTA-{i}"
                 canais_check.append((label, tok))
 
             for label, token in canais_check:
