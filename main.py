@@ -151,15 +151,14 @@ async def _fila_watchdog():
 
 
 def setup_scheduler():
-    # PAUSADO: número Whapi Lista restrito — só Bazar ativo por enquanto
-    # ⏸️ DISPAROS DESATIVADOS — só atendimento + leitura de extrato ativos
-    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
-                      id="ativacao_listas", name="Ativação de Listas",
-                      max_instances=1, misfire_grace_time=300)
-    # ⏸️ watch_novos_leads desativado — não injeta na fila enquanto Bazar pausado
-    # scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
-    #                   id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
-    #                   max_instances=1, misfire_grace_time=60)
+    # ⏸️ LISTA restrita — número com restrição WhatsApp, não disparar
+    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
+    #                   id="ativacao_listas", name="Ativação de Listas",
+    #                   max_instances=1, misfire_grace_time=300)
+    # watch_novos_leads: ativo — injeta Bazar/LP novos na fila a cada 5 min
+    scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
+                      id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
+                      max_instances=1, misfire_grace_time=60)
     # Bazar/Site periódicos desativados — substituídos pela fila com jitter
     # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5), ...)
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
@@ -205,13 +204,9 @@ async def lifespan(app: FastAPI):
         scheduler.pause()
         logger.warning("⏸️  JOBS_PAUSED=true — scheduler e fila suspensos. Canais Whapi indisponíveis.")
     elif redis_ok:
-        # Só relança fila se JOBS_PAUSED=false
-        jobs_paused = os.getenv("JOBS_PAUSED", "false").lower() == "true"
-        if jobs_paused:
-            logger.warning("⏸️  JOBS_PAUSED=true — fila_ativacao não será relançada.")
-        else:
-            # ⏸️ Fila Bazar/LP desativada — reativar manualmente quando pronto
-            logger.info("⏸️  Fila Bazar/LP desativada no startup (modo atendimento apenas)")
+            # Lança fila Bazar/LP no startup
+            logger.info("▶️  Lançando fila_ativacao Bazar/LP...")
+            asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))
