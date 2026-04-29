@@ -651,7 +651,7 @@ async def run_precificacao() -> None:
     logger.info("=== Iniciando Job Precificação ===")
     try:
         async with FaroClient() as faro:
-            cards = await faro.watch_new(stage_id=Stage.PRECIFICACAO, minutes_ago=15, limit=JOB_BATCH_LIMIT)
+            cards = await faro.watch_new(stage_id=Stage.PRECIFICACAO, minutes_ago=480, limit=JOB_BATCH_LIMIT)
             if not cards:
                 return
             cards = filter_test_cards(cards)
