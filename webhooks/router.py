@@ -160,6 +160,26 @@ async def route_message(msg: IncomingMessage) -> None:
                 msg.source, msg.phone, msg.media_type or "none", (msg.text or "")[:60])
 
     card = await _find_card(msg.phone)
+
+    # Log no #log-cs independente de ter card no FARO
+    try:
+        from services.slack import log_cs
+        if card:
+            canal_lead = get_canal(card)
+            nome       = card.get("Nome do contato") or card.get("title") or "?"
+            card_id    = card.get("id", "")
+        else:
+            canal_lead = "desconhecido"
+            nome       = ""
+            card_id    = ""
+        asyncio.create_task(log_cs(
+            direcao="recebido", canal=canal_lead, phone=msg.phone,
+            nome=nome, card_id=card_id, mensagem=msg.text or f"[{msg.media_type}]",
+            extra={"FARO": "✅ encontrado" if card else "❌ sem cadastro"},
+        ))
+    except Exception:
+        pass
+
     if not card:
         logger.info("Router: %s não encontrado no CRM.", msg.phone)
         return
@@ -168,17 +188,6 @@ async def route_message(msg: IncomingMessage) -> None:
     current_stage = card.get("stage_id") or card.get("stageId") or ""
     nome = card.get("Nome do contato") or card.get("title") or "?"
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
-
-    # Log da mensagem recebida no #log-cs
-    try:
-        from services.slack import log_cs
-        canal_lead = get_canal(card)
-        asyncio.create_task(log_cs(
-            direcao="recebido", canal=canal_lead, phone=msg.phone,
-            nome=nome, card_id=card_id, mensagem=msg.text or f"[{msg.media_type}]",
-        ))
-    except Exception:
-        pass
 
     # Se proposta já foi enviada, negociador assume independente da stage
     if _proposta_ja_enviada(card) and msg.is_processable:
