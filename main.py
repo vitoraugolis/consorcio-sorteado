@@ -153,9 +153,9 @@ async def _fila_watchdog():
 def setup_scheduler():
     # PAUSADO: número Whapi Lista restrito — só Bazar ativo por enquanto
     # ⏸️ DISPAROS DESATIVADOS — só atendimento + leitura de extrato ativos
-    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
-    #                   id="ativacao_listas", name="Ativação de Listas",
-    #                   max_instances=1, misfire_grace_time=300)
+    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
+                      id="ativacao_listas", name="Ativação de Listas",
+                      max_instances=1, misfire_grace_time=300)
     # ⏸️ watch_novos_leads desativado — não injeta na fila enquanto Bazar pausado
     # scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
     #                   id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
