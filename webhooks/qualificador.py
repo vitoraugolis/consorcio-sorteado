@@ -563,7 +563,7 @@ async def handle_qualification(card: dict, msg) -> None:
 
             # Salva URL do extrato original
             if media_url:
-                update_fields["Link do extrato"] = media_url
+                update_fields["Link do Extrato"] = media_url
 
             # Enriquecimento extra com dados do ExtratoEstruturado (novos campos)
             estruturado: ExtratoEstruturado | None = getattr(analise, "_estruturado", None)

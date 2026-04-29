@@ -553,7 +553,7 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
     # Bazar/LP: auto-aprovado — extrato foi analisado pelo Gemini com confidence > 0.5
     #           e proposta calculada com base em dados reais do extrato.
     aprovado = str(card.get("Aprovado Precificacao") or "").strip().lower()
-    link_extrato = str(card.get("Link do extrato") or "").strip()
+    link_extrato = str(card.get("Link do Extrato") or card.get("Link do extrato") or "").strip()
     fonte_bazar_lp = not is_lista(card)
     auto_aprovado = fonte_bazar_lp and bool(link_extrato)
 
