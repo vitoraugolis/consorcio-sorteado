@@ -108,9 +108,12 @@ async def _whapi_monitor():
             # NÃO pausa/retoma scheduler automaticamente — controle manual via JOBS_PAUSED
             # O monitor só notifica, não interfere nos jobs
             if mensagens:
-                # Só notifica se for um canal crítico (Bazar ou Lista) — LP offline é esperado
-                # enquanto número não está conectado
-                alertas_criticos = [m for m in mensagens if "LP" not in m]
+            # Só notifica canais críticos ativos:
+            # - FALCON restrito pelo WhatsApp → silenciado temporariamente
+            # - DEADPL-V592K (LP) → já filtrado pelo "LP" not in m acima (label não contém "LP")
+            # Alerta apenas BAZAR
+            alertas_criticos = [m for m in mensagens
+                                if "FALCON" not in m and "LP" not in m and "LISTA-1" not in m]
                 if alertas_criticos:
                     alerta = "\n".join(alertas_criticos)
                     try:
