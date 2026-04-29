@@ -360,6 +360,38 @@ _MAX_PDF_SIZE = 5 * 1024 * 1024  # 5 MB
 _DOWNLOAD_TIMEOUT = 30.0          # segundos
 _MAX_RETRIES = 3
 
+def _extract_pdf_from_multipart(data: bytes) -> bytes | None:
+    """
+    Extrai o PDF de uma resposta multipart/form-data.
+    Busca o header %PDF e o footer %%EOF no buffer binário.
+    Port do extractPdfFromMultipart() do Lovable (index.ts).
+    """
+    pdf_sig = b"%PDF"
+    eof_sig = b"%%EOF"
+
+    start = data.find(pdf_sig)
+    if start == -1:
+        return None
+
+    # Busca %%EOF do final para trás
+    end = data.rfind(eof_sig, start)
+    if end != -1:
+        end_index = min(end + len(eof_sig) + 2, len(data))  # +2 para \r\n
+        extracted = data[start:end_index]
+        logger.info("PDF extraído de multipart: %d bytes (start=%d, end=%d)",
+                    len(extracted), start, end)
+        return extracted
+
+    # Sem %%EOF: tenta cortar no boundary de fechamento (--)
+    closing = data.rfind(b"--", start)
+    if closing > start:
+        extracted = data[start:closing]
+        logger.info("PDF extraído de multipart (sem %%EOF): %d bytes", len(extracted))
+        return extracted
+
+    return None
+
+
 async def _download_pdf(url: str) -> bytes:
     """
     Baixa o PDF da URL com retry exponencial.
@@ -386,11 +418,20 @@ async def _download_pdf(url: str) -> bytes:
                 raise PDFInvalido(f"PDF muito grande ({len(data)//1024}KB > 5MB)")
 
             if not data[:5].startswith(b"%PDF"):
-                # Pode ser HTML de erro/login
-                preview = data[:100].decode("latin1", errors="replace")
-                if "<html" in preview.lower() or "<!doctype" in preview.lower():
+                # Detecta multipart — tenta extrair PDF de dentro
+                if data[:2] == b"--" or b"Content-Disposition" in data[:300]:
+                    logger.info("Multipart detectado — extraindo PDF do payload...")
+                    extracted = _extract_pdf_from_multipart(data)
+                    if extracted and extracted[:4] == b"%PDF":
+                        logger.info("PDF extraído de multipart: %d bytes", len(extracted))
+                        data = extracted
+                    else:
+                        raise PDFCorrompido("Resposta multipart mas PDF não encontrado dentro")
+                elif b"<html" in data[:200].lower() or b"<!doctype" in data[:200].lower():
                     raise PDFInvalido("Servidor retornou HTML — link expirado ou requer autenticação")
-                raise PDFCorrompido(f"Arquivo não começa com %PDF (início: {preview[:40]!r})")
+                else:
+                    preview = data[:60].decode("latin1", errors="replace")
+                    raise PDFCorrompido(f"Arquivo não começa com %PDF (início: {preview!r})")
 
             logger.info("PDF baixado: %d bytes de %s (tentativa %d)", len(data), url[-60:], attempt + 1)
             return data
