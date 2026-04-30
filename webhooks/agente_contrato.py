@@ -247,6 +247,7 @@ async def handle_dados_pessoais(card: dict, texto: str) -> None:
     """
     Chamado quando lead em ASSINATURA envia texto (Listas e Bazar/LP).
     Extrai dados pessoais, confirma e guia para os campos faltantes.
+    Se ZapSign Token já foi gerado (contrato enviado), silencia — não responde.
     """
     card_id  = card.get("id", "")
     nome     = get_name(card)
@@ -255,6 +256,14 @@ async def handle_dados_pessoais(card: dict, texto: str) -> None:
     required = _required_fields_for_card(card)
 
     if not phone:
+        return
+
+    # Contrato já enviado → silêncio total, agente comercial assume
+    if card.get("ZapSign Token"):
+        logger.info(
+            "agente_contrato: card %s já tem ZapSign Token — ignorando mensagem de %s.",
+            card_id[:8], phone,
+        )
         return
 
     history   = load_history(card)
@@ -296,11 +305,20 @@ async def handle_extrato_recebido(card: dict, msg) -> None:
     """
     Chamado quando lead envia mídia (foto/PDF do extrato) em ASSINATURA.
     Valida se dados pessoais estão completos antes de gerar o contrato ZapSign.
+    Se ZapSign Token já foi gerado (contrato enviado), silencia.
     """
     card_id = card.get("id", "")
     nome    = get_name(card)
     phone   = get_phone(card)
     adm     = get_adm(card)
+
+    # Contrato já enviado → ignora mídia adicional
+    if card.get("ZapSign Token"):
+        logger.info(
+            "agente_contrato: card %s já tem ZapSign Token — ignorando mídia de %s.",
+            card_id[:8], phone,
+        )
+        return
 
     collected = _load_collected(card)
     required  = _required_fields_for_card(card)
