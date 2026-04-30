@@ -289,6 +289,17 @@ async def route_message(msg: IncomingMessage) -> None:
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=agente_bazar.handle_message)
         return
+
+    # ESPERA: lead aguardando envio de extrato (LP retroativa)
+    # Mídia → qualifica extrato; texto → agente_bazar responde enquanto espera
+    if current_stage == Stage.ESPERA:
+        if msg.is_media_message:
+            await handle_qualification(card=card, msg=msg)
+        elif msg.is_processable:
+            debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                              dispatch=agente_bazar.handle_message)
+        return
+
     # ASSINATURA: qualquer mensagem nessa stage vai para agente_contrato — sem exceção
     # Inclui leads com ZapSign Token já gerado (ex: template inativo, aguardando reenvio)
     if current_stage == Stage.ASSINATURA:

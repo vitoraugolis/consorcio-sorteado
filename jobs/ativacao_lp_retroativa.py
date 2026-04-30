@@ -1,0 +1,261 @@
+"""
+jobs/ativacao_lp_retroativa.py — Ativação retroativa de leads LP (sorteio + lance)
+
+Dispara 1 lead a cada 20 min, ordem cronológica inversa (mais recentes primeiro).
+- Sorteio: pede extrato
+- Lance: explica limitação de ágio + convida pro grupo
+Após envio, move para stage ESPERA.
+
+Controlado via endpoint /jobs/lp-retro/start e /jobs/lp-retro/status.
+"""
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+
+from config import Stage
+from services.faro import FaroClient, get_phone, get_name, get_adm
+from services.whapi import WhapiClient, WhapiError
+from services.slack import notify_team
+
+logger = logging.getLogger(__name__)
+
+_GROUP_LINK = "https://chat.whatsapp.com/KwcE6QJHa33Bq0eHH9L9qD?mode=gi_t"
+
+MSG_SORTEIO_EXTRATO = (
+    "Olá, {nome}! 😊\n\n"
+    "Temos interesse em comprar sua cota do *{adm}*!\n\n"
+    "Para te passar a melhor proposta possível, preciso do seu *extrato atualizado* do consórcio "
+    "(pode ser PDF ou foto do app/site da administradora).\n\n"
+    "Pode me enviar aqui? 📄🚀"
+)
+
+MSG_LANCE = (
+    "Olá, {nome}! Recebemos seu interesse em vender seu consórcio *{adm}*. "
+    "No entanto, pelo formulário você nos disse que sua contemplação foi por lance, certo?\n\n"
+    "Quando é assim, na maioria das vezes não conseguimos dar uma proposta com ágio "
+    "(lucro em relação ao que você já pagou).\n\n"
+    "Caso ainda assim você queira receber uma proposta, é só enviar o seu *extrato completo* aqui.\n\n"
+    "Caso não, quero te convidar para o nosso grupo de novidades de Consórcio — "
+    "sempre colocaremos as melhores oportunidades por lá 👇\n"
+    "{link}"
+)
+
+MSG_LANCE_ACEITE = (
+    "Ótimo, {nome}! Obrigado por enviar. Vamos fazer a análise e te retornamos em breve com nossa proposta. 😊"
+)
+
+# Estado da fila (em memória — persiste enquanto servidor estiver de pé)
+_state: dict = {
+    "running": False,
+    "queue": [],       # lista de dicts com id, nome, tipo (sorteio|lance)
+    "done": [],
+    "current_idx": 0,
+    "task": None,
+    "started_at": None,
+    "last_sent_at": None,
+    "interval_minutes": 20,
+}
+
+
+def get_status() -> dict:
+    return {
+        "running": _state["running"],
+        "total": len(_state["queue"]),
+        "done": len(_state["done"]),
+        "remaining": len(_state["queue"]) - _state["current_idx"],
+        "current_idx": _state["current_idx"],
+        "started_at": _state["started_at"],
+        "last_sent_at": _state["last_sent_at"],
+        "next_in_queue": _state["queue"][_state["current_idx"]] if _state["current_idx"] < len(_state["queue"]) else None,
+    }
+
+
+async def _build_queue() -> list[dict]:
+    """Monta fila de todos os LP (sorteio + lance) em stages ativas, ordem desc updated_at."""
+    from config import Stage
+
+    STAGES_VARRER = [
+        Stage.LP,
+        Stage.PRIMEIRA_ATIVACAO,
+        Stage.SEGUNDA_ATIVACAO,
+        Stage.TERCEIRA_ATIVACAO,
+        Stage.QUARTA_ATIVACAO,
+        Stage.LP_LANCE,
+    ]
+
+    todos: list[dict] = []
+    async with FaroClient() as faro:
+        for stage_id in STAGES_VARRER:
+            try:
+                cards = await asyncio.wait_for(
+                    faro.watch_recent(stage_id=stage_id, hours=8760, limit=200),
+                    timeout=12,
+                )
+                lp = [
+                    c for c in cards
+                    if "lp" in str(c.get("Fonte") or "").lower()
+                    or "site" in str(c.get("Fonte") or "").lower()
+                ]
+                todos.extend(lp)
+            except Exception as e:
+                logger.warning("_build_queue: erro na stage %s: %s", stage_id[:8], e)
+
+    # Deduplica por id
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for c in todos:
+        cid = c.get("id", "")
+        if cid and cid not in seen:
+            seen.add(cid)
+            unique.append(c)
+
+    # Ordena desc updated_at (mais quentes primeiro)
+    unique.sort(key=lambda c: c.get("updated_at") or c.get("created_at") or "", reverse=True)
+
+    # Classifica tipo
+    queue = []
+    for c in unique:
+        contemp = str(c.get("Tipo contemplação") or "").lower()
+        if "sorteio" in contemp:
+            tipo = "sorteio"
+        elif "lance" in contemp:
+            tipo = "lance"
+        else:
+            tipo = "outro"
+        queue.append({
+            "id":   c["id"],
+            "nome": get_name(c),
+            "adm":  get_adm(c),
+            "phone": get_phone(c),
+            "tipo": tipo,
+            "stage_atual": c.get("stage_id", ""),
+            "updated_at": str(c.get("updated_at", ""))[:10],
+        })
+
+    return queue
+
+
+async def _dispatch_one(item: dict) -> bool:
+    """Envia mensagem para um lead e move para ESPERA. Retorna True se OK."""
+    card_id = item["id"]
+    phone   = item["phone"]
+    nome    = item["nome"].split()[0] if item["nome"] else "você"
+    adm     = item["adm"]
+    tipo    = item["tipo"]
+
+    if not phone:
+        logger.warning("LP retro: card %s sem telefone — pulando", card_id[:8])
+        return False
+
+    if tipo == "sorteio":
+        msg = MSG_SORTEIO_EXTRATO.format(nome=nome, adm=adm)
+    elif tipo == "lance":
+        msg = MSG_LANCE.format(nome=nome, adm=adm, link=_GROUP_LINK)
+    else:
+        logger.info("LP retro: card %s tipo '%s' — pulando", card_id[:8], tipo)
+        return False
+
+    try:
+        async with WhapiClient(canal="lp") as w:
+            await w.send_text(phone, msg, _log_nome=item["nome"], _log_card_id=card_id)
+
+        async with FaroClient() as faro:
+            await faro.move_card(card_id, Stage.ESPERA)
+            await faro.update_card(card_id, {
+                "Ultima atividade": datetime.now(timezone.utc).isoformat(),
+                "Situacao Negociacao": f"lp-retro-{tipo}",
+            })
+
+        logger.info("LP retro: ✅ %s (%s) | %s | → ESPERA", item["nome"], card_id[:8], tipo)
+        return True
+
+    except WhapiError as e:
+        logger.error("LP retro: ❌ Whapi card %s: %s", card_id[:8], e)
+        return False
+    except Exception as e:
+        logger.error("LP retro: ❌ card %s: %s", card_id[:8], e)
+        return False
+
+
+async def _run_loop() -> None:
+    """Loop principal: processa 1 item, dorme 20 min, repete."""
+    interval_s = _state["interval_minutes"] * 60
+
+    while _state["running"] and _state["current_idx"] < len(_state["queue"]):
+        item = _state["queue"][_state["current_idx"]]
+        logger.info(
+            "LP retro [%d/%d]: %s (%s) | tipo=%s",
+            _state["current_idx"] + 1, len(_state["queue"]),
+            item["nome"], item["id"][:8], item["tipo"],
+        )
+
+        ok = await _dispatch_one(item)
+        _state["done"].append({**item, "ok": ok, "sent_at": datetime.now(timezone.utc).isoformat()})
+        _state["last_sent_at"] = datetime.now(timezone.utc).isoformat()
+        _state["current_idx"] += 1
+
+        remaining = len(_state["queue"]) - _state["current_idx"]
+        # Notifica Slack a cada 5 disparos ou no último
+        if _state["current_idx"] % 5 == 0 or remaining == 0:
+            successes = sum(1 for d in _state["done"] if d["ok"])
+            try:
+                await notify_team(
+                    f"📊 *LP Retroativa* — {_state['current_idx']}/{len(_state['queue'])} disparados "
+                    f"({successes} OK) | Restam: {remaining}"
+                )
+            except Exception:
+                pass
+
+        if remaining == 0:
+            break
+
+        # Aguarda intervalo antes do próximo
+        logger.info("LP retro: aguardando %d min para próximo disparo...", _state["interval_minutes"])
+        await asyncio.sleep(interval_s)
+
+    _state["running"] = False
+    logger.info("LP retro: fila concluída. Total: %d | OK: %d",
+                len(_state["done"]), sum(1 for d in _state["done"] if d["ok"]))
+    try:
+        await notify_team(
+            f"✅ *LP Retroativa concluída!* {len(_state['done'])} leads processados "
+            f"({sum(1 for d in _state['done'] if d['ok'])} enviados com sucesso)."
+        )
+    except Exception:
+        pass
+
+
+async def start(interval_minutes: int = 20) -> dict:
+    """Inicia a fila retroativa. Idempotente — ignora se já rodando."""
+    if _state["running"]:
+        return {"status": "already_running", **get_status()}
+
+    logger.info("LP retro: montando fila...")
+    queue = await _build_queue()
+
+    if not queue:
+        return {"status": "empty_queue", "total": 0}
+
+    _state.update({
+        "running": True,
+        "queue": queue,
+        "done": [],
+        "current_idx": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "last_sent_at": None,
+        "interval_minutes": interval_minutes,
+    })
+
+    loop = asyncio.get_event_loop()
+    task = loop.create_task(_run_loop())
+    _state["task"] = task
+
+    logger.info("LP retro: iniciado. %d leads na fila (intervalo=%dmin)", len(queue), interval_minutes)
+    return {"status": "started", **get_status()}
+
+
+def stop() -> dict:
+    """Para a fila após o disparo atual."""
+    _state["running"] = False
+    return {"status": "stopping", **get_status()}

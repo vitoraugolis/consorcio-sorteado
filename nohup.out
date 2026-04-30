@@ -141,3 +141,7 @@ INFO:     37.27.56.240:45714 - "POST /webhook/whapi HTTP/1.1" 200 OK
 INFO:     37.27.56.240:40734 - "POST /webhook/whapi HTTP/1.1" 200 OK
 INFO:     37.27.56.240:42196 - "POST /webhook/whapi HTTP/1.1" 200 OK
 INFO:     37.27.56.240:52814 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [519451]

@@ -318,6 +318,30 @@ async def fila_status(key: str = ""):
     return {"running": bool(running), "remaining": remaining}
 
 
+@app.post("/jobs/lp-retro/start")
+async def lp_retro_start(key: str = "", interval: int = 20):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from jobs.ativacao_lp_retroativa import start
+    return await start(interval_minutes=interval)
+
+
+@app.get("/jobs/lp-retro/status")
+async def lp_retro_status(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from jobs.ativacao_lp_retroativa import get_status
+    return get_status()
+
+
+@app.post("/jobs/lp-retro/stop")
+async def lp_retro_stop(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from jobs.ativacao_lp_retroativa import stop
+    return stop()
+
+
 # ---------------------------------------------------------------------------
 # Webhook único — Whapi (Z-API removido)
 # ---------------------------------------------------------------------------
