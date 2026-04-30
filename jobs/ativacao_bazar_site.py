@@ -204,19 +204,20 @@ async def _activate_card(card: dict, message_template: str,
             pass
         return False
 
-    # Verifica se o número tem WhatsApp antes de disparar
+    # Verifica se o número tem WhatsApp — testa principal, fallback para alternativo, corrige FARO
     try:
-        async with get_whapi_for_card(card) as w:
-            has_wa = await w.check_phone(phone)
-        if not has_wa:
-            logger.info("Card %s sem WhatsApp (%s) — movendo para Problema de Contato", card_id[:8], phone[-4:])
+        from services.whapi import resolve_phone
+        canal_card = "lp" if "lp" in str(card.get("Fonte") or "").lower() else "bazar"
+        phone = await resolve_phone(card, canal=canal_card)
+        if not phone:
+            logger.info("Card %s sem WhatsApp em nenhum número — movendo para Problema de Contato", card_id[:8])
             try:
                 await faro.move_card(card_id, Stage.PROBLEMA_CONTATO)
             except FaroError as e:
                 logger.error("Erro ao mover card %s para Problema de Contato: %s", card_id[:8], e)
             return False
     except Exception as e:
-        logger.warning("Card %s falha ao verificar WhatsApp (%s) — prosseguindo mesmo assim: %s", card_id[:8], phone[-4:], e)
+        logger.warning("Card %s falha ao verificar WhatsApp — prosseguindo mesmo assim: %s", card_id[:8], e)
 
     # Desvio LP Lance: adm ok mas contemplação por lance → fluxo separado
     fonte = str(card.get("Fonte") or "").lower()
