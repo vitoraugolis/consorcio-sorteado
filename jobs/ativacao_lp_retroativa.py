@@ -148,7 +148,7 @@ async def _build_queue() -> list[dict]:
 
 
 async def _dispatch_one(item: dict) -> bool:
-    """Envia mensagem para um lead e move para ESPERA. Retorna True se OK."""
+    """Envia mensagem para um lead e move para PRIMEIRA_ATIVACAO. Retorna True se OK."""
     from services.whapi import resolve_phone
     from services.faro import FaroClient, FaroError
 
@@ -186,19 +186,25 @@ async def _dispatch_one(item: dict) -> bool:
         async with WhapiClient(canal="lp") as w:
             await w.send_text(phone, msg, _log_nome=item["nome"], _log_card_id=card_id)
 
-        stage_destino = Stage.PERDIDO if tipo == "nao_contemplada" else Stage.ESPERA
+        # nao_contemplada → PERDIDO (não vão enviar extrato)
+        # sorteio/lance → PRIMEIRA_ATIVACAO (aguarda resposta normal; extrato move para ESPERA)
+        stage_destino = Stage.PERDIDO if tipo == "nao_contemplada" else Stage.PRIMEIRA_ATIVACAO
         motivo = "nao-contemplada — convidado para o grupo" if tipo == "nao_contemplada" else f"lp-retro-{tipo}"
 
         async with FaroClient() as faro:
             await faro.move_card(card_id, stage_destino)
-            update: dict = {"Ultima atividade": datetime.now(timezone.utc).isoformat(), "Situacao Negociacao": motivo}
+            update: dict = {
+                "Ultima atividade": datetime.now(timezone.utc).isoformat(),
+                "Situacao Negociacao": motivo,
+                "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
+            }
             if tipo == "nao_contemplada":
                 update["Motivo de perda"] = "Cota não contemplada — convidado para o grupo"
             await faro.update_card(card_id, update)
 
         logger.info("LP retro: ✅ %s (%s) | %s | phone=%s → %s",
                     item["nome"], card_id[:8], tipo, phone[-4:],
-                    "PERDIDO" if tipo == "nao_contemplada" else "ESPERA")
+                    "PERDIDO" if tipo == "nao_contemplada" else "PRIMEIRA_ATIVACAO")
         return True
 
     except WhapiError as e:
