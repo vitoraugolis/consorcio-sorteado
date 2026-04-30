@@ -349,35 +349,46 @@ def _get_next_proposal(card: dict, lead_value: float = 0.0) -> dict:
         return {**_no_escalation, "indice": len(sequencia)}
 
     # Se o lead deu uma CONTRA_PROPOSTA com valor específico:
-    # usar o menor step da sequência que seja >= ao valor pedido pelo lead
-    # Isso evita pular ao máximo quando o lead pediu apenas um pouco mais
+    # Verificar se o valor pedido está dentro do que conseguimos pagar.
+    # Se sim → sinalizar aceitação do valor do lead (não subir para um step maior).
+    # Se não → retornar o máximo disponível da sequência.
     if lead_value > 0:
-        # Candidatos que cobrem a contraproposta do lead
-        cobre = [(i, v) for i, v in candidatos if v >= lead_value]
-        if cobre:
-            # Menor valor que cobre a contraproposta
-            novo_i, nova = min(cobre, key=lambda x: x[1])
-            viavel = any(v > nova for v in sequencia)
+        max_sequencia = max(v for _, v in candidatos) if candidatos else 0.0
+        if lead_value <= max_sequencia:
+            # Conseguimos pagar o valor pedido → aceitar o valor do lead diretamente
             logger.info(
-                "_get_next_proposal: CONTRA_PROPOSTA lead=%.0f → cobrindo com step %.0f (sequência: %s)",
-                lead_value, nova, sequencia,
+                "_get_next_proposal: CONTRA_PROPOSTA lead=%.0f ≤ max=%.0f → aceitar valor do lead",
+                lead_value, max_sequencia,
             )
+            # Descobrir o índice correspondente ao step imediatamente >= lead_value
+            # (usado para atualizar Indice da Proposta no FARO)
+            step_idx, step_val = min(
+                ((i, v) for i, v in enumerate(sequencia) if v >= lead_value),
+                key=lambda x: x[1],
+                default=(len(sequencia) - 1, max_sequencia),
+            )
+            viavel = any(v > lead_value for v in sequencia)
             return {
-                "nova_proposta": nova,
-                "indice": novo_i + 1,
+                "nova_proposta": lead_value,   # valor exato do lead, não o step
+                "indice": step_idx + 1,
                 "viavel": viavel,
                 "pode_escalar": True,
                 "is_max_jump": False,
+                "aceitar_contraproposta": True,  # flag para _build_result tratar como aceite
             }
-        # Se nenhum step cobre (lead quer mais que nosso máximo) → retorna o máximo
+        # Lead quer mais que nosso máximo → retorna o máximo como última oferta
         novo_i, nova = max(candidatos, key=lambda x: x[1])
-        viavel = False
+        logger.info(
+            "_get_next_proposal: CONTRA_PROPOSTA lead=%.0f > max=%.0f → oferecendo máximo",
+            lead_value, nova,
+        )
         return {
             "nova_proposta": nova,
             "indice": novo_i + 1,
-            "viavel": viavel,
+            "viavel": False,
             "pode_escalar": True,
             "is_max_jump": False,
+            "aceitar_contraproposta": False,
         }
 
     # Sem valor específico: regra dos 27%
@@ -797,8 +808,43 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
         )
 
     # Formata nova proposta e injeta na resposta da IA
-    nova_fmt = _fmt_currency(prox["nova_proposta"])
+    nova_fmt   = _fmt_currency(prox["nova_proposta"])
     nome_curto = get_name(card).split()[0] if get_name(card) else ""
+
+    # Contraproposta do lead dentro do nosso alcance → aceitar o valor dele diretamente
+    if prox.get("aceitar_contraproposta"):
+        import random as _rand
+        _opcoes_aceite_cp = [
+            f"Fechado, {nome_curto}! *{nova_fmt}* combinado. 🤝 "
+            f"Vou agora passar para nosso time finalizar — eles entram em contato para os próximos passos.",
+            f"Ótimo, {nome_curto}! Aceito *{nova_fmt}*. 🎉 "
+            f"Nosso time vai entrar em contato para organizar tudo. Pagamento à vista na sua conta, antes de qualquer transferência.",
+            f"Combinado! *{nova_fmt}* está aprovado. 🤝 "
+            f"Vou acionar nosso consultor agora para dar sequência.",
+        ]
+        response = _rand.choice(_opcoes_aceite_cp)
+        nome    = get_name(card)
+        adm     = get_adm(card)
+        phone   = get_phone(card) or "não informado"
+        notif = (
+            f"🎯 *Lead aceitou contraproposta!*\n\n"
+            f"*Cliente:* {nome}\n"
+            f"*Administradora:* {adm}\n"
+            f"*Telefone:* {phone}\n"
+            f"*Valor aceito:* *{nova_fmt}* (contraproposta do lead)\n\n"
+            f"O sistema vai iniciar a coleta de dados para contrato. ✅"
+        )
+        return NegotiationResult(
+            intent=Intent.ACEITAR,
+            response_message=response,
+            next_stage=Stage.ACEITO,
+            notify_team=True,
+            notify_message=notif,
+            extra_fields={
+                "Proposta Realizada": f"{prox['nova_proposta']:.2f}",
+                "Indice da Proposta": str(prox["indice"]),
+            },
+        )
 
     import random as _rand
     if prox["is_max_jump"]:
