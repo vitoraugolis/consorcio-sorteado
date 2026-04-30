@@ -144,6 +144,10 @@ async def _fila_watchdog():
                 if got_lock:
                     logger.warning("🔁 Watchdog: fila parada (%d cards) — relançando.", queue_len)
                     asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+            # Lança loop Bazar cadenciado (1 lead a cada 15-20 min)
+            from jobs.ativacao_bazar_cadenciada import start as start_bazar_loop
+            start_bazar_loop(interval_min=15, interval_max=20)
+            logger.info("Bazar loop iniciado (15-20 min entre disparos)")
             await _r.aclose()
         except Exception as e:
             logger.warning("Watchdog fila: erro: %s", e)
@@ -159,11 +163,8 @@ def setup_scheduler():
     scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
                       id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
                       max_instances=1, misfire_grace_time=60)
-    # Bazar: 1 disparo a cada 30 min com jitter de ±2 min para humanização
-    scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=30, jitter=120),
-                      id="ativacao_bazar", name="Ativação Bazar (30min)",
-                      max_instances=1, misfire_grace_time=300)
-    # Bazar/Site periódicos desativados — substituídos pela fila com jitter
+    # Bazar: controlado pela fila cadenciada — não pelo scheduler em batch
+    # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=30, jitter=120), ...)
     # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5), ...)
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
     # Reativador pausado — alto impacto, ativar manualmente
@@ -211,6 +212,10 @@ async def lifespan(app: FastAPI):
             # Lança fila Bazar/LP no startup
             logger.info("▶️  Lançando fila_ativacao Bazar/LP...")
             asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+            # Lança loop Bazar cadenciado (1 lead a cada 15-20 min)
+            from jobs.ativacao_bazar_cadenciada import start as start_bazar_loop
+            start_bazar_loop(interval_min=15, interval_max=20)
+            logger.info("Bazar loop iniciado (15-20 min entre disparos)")
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))
@@ -305,7 +310,6 @@ async def start_fila_ativacao(key: str = ""):
     if result["total"] == 0:
         return {"status": "empty", "message": "Nenhum card encontrado em Bazar ou LP"}
     asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
-    return {"status": "started", **result}
 
 
 @app.get("/jobs/fila/status")
@@ -343,6 +347,30 @@ async def lp_retro_stop(key: str = ""):
     if key != SECRET_KEY:
         raise HTTPException(status_code=401, detail="Chave inválida")
     from jobs.ativacao_lp_retroativa import stop
+    return stop()
+
+
+@app.post("/jobs/bazar-loop/start")
+async def bazar_loop_start(key: str = "", interval_min: int = 15, interval_max: int = 20):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from jobs.ativacao_bazar_cadenciada import start
+    return start(interval_min=interval_min, interval_max=interval_max)
+
+
+@app.get("/jobs/bazar-loop/status")
+async def bazar_loop_status(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from jobs.ativacao_bazar_cadenciada import get_status
+    return get_status()
+
+
+@app.post("/jobs/bazar-loop/stop")
+async def bazar_loop_stop(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from jobs.ativacao_bazar_cadenciada import stop
     return stop()
 
 
