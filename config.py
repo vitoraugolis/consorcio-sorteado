@@ -41,6 +41,7 @@ class Stage:
     NAO_QUALIFICADO = "38c91042-2205-4d7d-9015-215a526acefc"
     LP = "f3d1c2ea-ab74-4275-9583-bcec89c58c0c"
     PROBLEMA_CONTATO = "0f593ed2-3c5e-477e-9b0d-1740808fe145"
+    LP_LANCE = "PLACEHOLDER_LP_LANCE"  # TODO: Vitor criar stage "Lead LP Lance" no FARO e substituir
 
 
 ACTIVATION_SEQUENCE = {

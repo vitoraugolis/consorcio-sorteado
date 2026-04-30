@@ -54,7 +54,7 @@ ADM_LP_EXTRA_TOKENS: list[list[str]] = [
     ["rodobens"],
     ["disal"],
     ["mapfre"],
-    ["hs consorcio", "hs consorcios", "hs "],  # HS Consórcio, HS consórcios...
+    ["hs consorcio", "hs consorcios", "hs consor", "hs "],  # HS Consórcio, HS consórcios...
 ]
 
 # Siglas exatas para LP (evitam false positives em Bazar)
@@ -152,6 +152,7 @@ def _qualifica_lp(card: dict) -> tuple[bool, str]:
     """
     Retorna (qualificado, motivo_rejeição).
     Critério LP: adm na lista LP E Tipo contemplação == 'contemplada-sorteio'.
+    Leads com 'contemplada-lance' e adm na lista são marcados como 'lance' — fluxo separado.
     """
     adm_raw = card.get("Adm") or ""
     tipo_cont = _normalize(card.get("Tipo contemplação") or "")
@@ -165,6 +166,19 @@ def _qualifica_lp(card: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _is_lp_lance(card: dict) -> bool:
+    """
+    Retorna True se o lead LP tem adm na lista mas foi contemplado por LANCE.
+    Esses leads recebem fluxo separado (MSG_LP_LANCE → stage LP_LANCE).
+    """
+    adm_raw = card.get("Adm") or ""
+    tipo_cont = _normalize(card.get("Tipo contemplação") or "")
+    return (
+        _adm_matches(adm_raw, ADM_LP_TOKENS, exact_siglas=_LP_EXACT_SIGLAS)
+        and tipo_cont == "contemplada-lance"
+    )
+
+
 def _is_within_send_window() -> bool:
     return SEND_WINDOW_START <= datetime.now(TZ_BRASILIA).hour < SEND_WINDOW_END
 
@@ -173,7 +187,8 @@ async def _activate_card(card: dict, message_template: str,
                          qualifica_fn, faro: FaroClient) -> bool:
     """
     Qualifica o card pelo critério da fonte, envia mensagem e move no FARO.
-    Qualificado   → mensagem de ativação + move para Primeira Ativação
+    Qualificado (sorteio) → mensagem de ativação + move para Primeira Ativação
+    LP Lance (lance + adm ok) → MSG_LP_LANCE + move para LP_LANCE
     Não qualificado → mensagem de agradecimento + move para Não Qualificado
     """
     card_id = card["id"]
@@ -202,6 +217,27 @@ async def _activate_card(card: dict, message_template: str,
             return False
     except Exception as e:
         logger.warning("Card %s falha ao verificar WhatsApp (%s) — prosseguindo mesmo assim: %s", card_id[:8], phone[-4:], e)
+
+    # Desvio LP Lance: adm ok mas contemplação por lance → fluxo separado
+    fonte = str(card.get("Fonte") or "").lower()
+    if "lp" in fonte and _is_lp_lance(card):
+        from webhooks.agente_lp_lance import MSG_LP_LANCE
+        logger.info("Card %s LP Lance (adm='%s') — enviando msg lance", card_id[:8], adm)
+        try:
+            if not TEST_MODE:
+                await asyncio.sleep(random.randint(5, 50))
+            async with get_whapi_for_card(card) as w:
+                await w.send_text(phone, MSG_LP_LANCE.format(nome=nome, adm=adm),
+                                  _log_nome=nome, _log_card_id=card_id)
+            await faro.move_card(card_id, Stage.LP_LANCE)
+            await faro.update_card(card_id, {
+                "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
+                "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
+            })
+            logger.info("LP Lance: card=%s movido para LP_LANCE", card_id[:8])
+        except (WhapiError, FaroError) as e:
+            logger.error("Erro LP Lance card %s: %s", card_id[:8], e)
+        return False  # Não conta como qualificado no fluxo normal
 
     qualificado, motivo = qualifica_fn(card)
 

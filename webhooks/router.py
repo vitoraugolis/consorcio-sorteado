@@ -25,6 +25,7 @@ from webhooks.agente_contrato import handle_dados_pessoais, handle_extrato_receb
 from webhooks import debounce
 import webhooks.agente_listas as agente_listas
 import webhooks.agente_bazar as agente_bazar
+import webhooks.agente_lp_lance as agente_lp_lance
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,15 @@ async def route_message(msg: IncomingMessage) -> None:
         if msg.is_processable:
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=agente_listas.handle_message)
+        return
+
+    # LP Lance: leads contemplados por lance que aceitaram ouvir proposta
+    if current_stage == Stage.LP_LANCE:
+        if msg.is_media_message:
+            asyncio.create_task(agente_lp_lance.handle_extrato_recebido(card, msg))
+        elif msg.is_processable:
+            debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                              dispatch=agente_lp_lance.handle_message)
         return
 
     # Qualificação: stages de ativação, apenas Bazar/Site (Fonte definida)
