@@ -125,11 +125,12 @@ async def _build_queue() -> list[dict]:
         else:
             tipo = "outro"
         queue.append({
-            "id":   c["id"],
-            "nome": get_name(c),
-            "adm":  get_adm(c),
-            "phone": get_phone(c),
-            "tipo": tipo,
+            "id":        c["id"],
+            "nome":      get_name(c),
+            "adm":       get_adm(c),
+            "phone":     get_phone(c),
+            "phone_alt": "".join(d for d in str(c.get("Telefone alternativo") or "") if d.isdigit()) or None,
+            "tipo":      tipo,
             "stage_atual": c.get("stage_id", ""),
             "updated_at": str(c.get("updated_at", ""))[:10],
         })
@@ -139,13 +140,15 @@ async def _build_queue() -> list[dict]:
 
 async def _dispatch_one(item: dict) -> bool:
     """Envia mensagem para um lead e move para ESPERA. Retorna True se OK."""
+    from services.whapi import resolve_phone
+    from services.faro import FaroClient, FaroError
+
     card_id = item["id"]
-    phone   = item["phone"]
     nome    = item["nome"].split()[0] if item["nome"] else "você"
     adm     = item["adm"]
     tipo    = item["tipo"]
 
-    if not phone:
+    if not item["phone"] and not item.get("phone_alt"):
         logger.warning("LP retro: card %s sem telefone — pulando", card_id[:8])
         return False
 
@@ -155,6 +158,17 @@ async def _dispatch_one(item: dict) -> bool:
         msg = MSG_LANCE.format(nome=nome, adm=adm, link=_GROUP_LINK)
     else:
         logger.info("LP retro: card %s tipo '%s' — pulando", card_id[:8], tipo)
+        return False
+
+    # Monta card mínimo para resolve_phone
+    card_stub = {
+        "id":                  card_id,
+        "Telefone":            item["phone"] or "",
+        "Telefone alternativo": item.get("phone_alt") or "",
+    }
+    phone = await resolve_phone(card_stub, canal="lp")
+    if not phone:
+        logger.warning("LP retro: card %s — nenhum número com WA, pulando", card_id[:8])
         return False
 
     try:
@@ -168,7 +182,7 @@ async def _dispatch_one(item: dict) -> bool:
                 "Situacao Negociacao": f"lp-retro-{tipo}",
             })
 
-        logger.info("LP retro: ✅ %s (%s) | %s | → ESPERA", item["nome"], card_id[:8], tipo)
+        logger.info("LP retro: ✅ %s (%s) | %s | phone=%s → ESPERA", item["nome"], card_id[:8], tipo, phone[-4:])
         return True
 
     except WhapiError as e:

@@ -261,6 +261,14 @@ async def _activate_card(card: dict, message_template: str,
     if not TEST_MODE:
         await asyncio.sleep(random.randint(5, 50))
 
+    # Resolve telefone com fallback automático (9 extra, número desatualizado)
+    from services.whapi import resolve_phone
+    canal_card = "lp" if "lp" in str(card.get("Fonte") or "").lower() else "bazar"
+    phone = await resolve_phone(card, canal=canal_card)
+    if not phone:
+        logger.warning("Ativação: card %s — nenhum número com WA, pulando", card_id[:8])
+        return False
+
     try:
         async with get_whapi_for_card(card) as w:
             await w.send_text(phone, message, _log_nome=nome, _log_card_id=card_id)
@@ -270,8 +278,7 @@ async def _activate_card(card: dict, message_template: str,
             "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
             "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
         })
-        logger.info("Whapi OK: card=%s phone=%s canal=%s", card_id[:8], phone[-4:],
-                    "lp" if "lp" in str(card.get("Fonte") or "").lower() else "bazar")
+        logger.info("Whapi OK: card=%s phone=%s canal=%s", card_id[:8], phone[-4:], canal_card)
         return True
 
     except WhapiError as e:
