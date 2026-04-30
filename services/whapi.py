@@ -204,26 +204,43 @@ class WhapiClient:
 
     async def check_phone(self, phone: str) -> bool:
         """
-        Verifica se um número tem WhatsApp ativo.
-        Retorna True se existir, False se 404 (sem WA) ou erro.
-        Usa GET /contacts/{phone} (só dígitos, sem @s.whatsapp.net)
+        Verifica se um número tem WhatsApp ativo via POST /contacts.
+        Retorna True se válido, False se inválido ou sem WA.
+        O endpoint também normaliza o número (remove 9 extra se necessário).
         """
         normalized = self._normalize_phone(phone)
         try:
-            r = await self._client.get(f"/contacts/{normalized}", timeout=10.0)
-            if r.status_code == 404:
-                return False
+            r = await self._client.post("/contacts", json={"contacts": [normalized]}, timeout=10.0)
             if r.status_code == 200:
                 data = r.json()
-                if isinstance(data, dict) and data.get("exists") is False:
-                    return False
-                return True
-            # Outros erros inesperados: fail-open (não bloqueia o lead)
+                contacts = data.get("contacts", [])
+                if contacts:
+                    status = contacts[0].get("status", "")
+                    return status == "valid"
+                return False
             logger.warning("check_phone(%s): status inesperado %d — assumindo True", normalized[-4:], r.status_code)
             return True
         except Exception as e:
             logger.warning("check_phone(%s): erro de rede — assumindo True: %s", normalized[-4:], e)
             return True
+
+    async def resolve_wa_id(self, phone: str) -> str | None:
+        """
+        Retorna o wa_id real do número (pode diferir do input quando há 9 extra).
+        Retorna None se o número não tem WhatsApp.
+        """
+        normalized = self._normalize_phone(phone)
+        try:
+            r = await self._client.post("/contacts", json={"contacts": [normalized]}, timeout=10.0)
+            if r.status_code == 200:
+                contacts = r.json().get("contacts", [])
+                if contacts and contacts[0].get("status") == "valid":
+                    wa_id = contacts[0].get("wa_id", "")
+                    # wa_id vem como "554791295576@s.whatsapp.net" ou só dígitos
+                    return "".join(c for c in wa_id if c.isdigit()) or None
+            return None
+        except Exception:
+            return None
 
     async def _validate_lead_phone(self, phone: str) -> bool:
         """
@@ -429,16 +446,10 @@ def get_whapi_for_card(card: dict) -> WhapiClient:
 
 async def resolve_phone(card: dict, canal: "Canal" = "lp") -> str | None:
     """
-    Verifica qual número do card tem WhatsApp ativo e retorna o válido.
+    Resolve o número WhatsApp válido para um card, com fallback automático.
 
-    Lógica:
-      1. Testa `Telefone` principal
-      2. Se não tiver WA → testa `Telefone alternativo`
-      3. Se o alternativo funcionar → corrige `Telefone` no FARO automaticamente
-      4. Se nenhum funcionar → retorna None
-
-    Fail-open: se check_phone falhar por erro de rede, retorna o telefone principal
-    sem corrigir (não bloqueia o fluxo).
+    Usa POST /contacts que já normaliza o 9 extra do Brasil automaticamente
+    e retorna o wa_id correto. Corrige o FARO se necessário.
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
@@ -455,9 +466,25 @@ async def resolve_phone(card: dict, canal: "Canal" = "lp") -> str | None:
 
     async with WhapiClient(canal=canal) as w:
         if phone_principal:
-            ok = await w.check_phone(phone_principal)
-            if ok:
-                return phone_principal
+            wa_id = await w.resolve_wa_id(phone_principal)
+            if wa_id:
+                if wa_id != phone_principal:
+                    _logger.info(
+                        "resolve_phone: %s normalizado %s → %s — corrigindo FARO",
+                        card_id[:8], phone_principal[-6:], wa_id[-6:],
+                    )
+                    try:
+                        from services.faro import FaroClient
+                        async with FaroClient() as faro:
+                            await faro.update_card(card_id, {
+                                "Telefone":             wa_id,
+                                "Telefone alternativo": phone_principal,
+                            })
+                        card["Telefone"] = wa_id
+                        card["Telefone alternativo"] = phone_principal
+                    except Exception as _e:
+                        _logger.warning("resolve_phone: erro ao corrigir FARO %s: %s", card_id[:8], _e)
+                return wa_id
 
             _logger.info(
                 "resolve_phone: %s sem WA em principal (%s) — tentando alternativo (%s)",
@@ -465,35 +492,35 @@ async def resolve_phone(card: dict, canal: "Canal" = "lp") -> str | None:
             )
 
             if phone_alt:
-                ok_alt = await w.check_phone(phone_alt)
-                if ok_alt:
+                wa_id_alt = await w.resolve_wa_id(phone_alt)
+                if wa_id_alt:
                     _logger.info(
-                        "resolve_phone: alternativo (%s) tem WA — corrigindo Telefone no FARO",
-                        phone_alt[-4:],
+                        "resolve_phone: alternativo válido (%s) — corrigindo FARO", wa_id_alt[-4:],
                     )
-                    # Corrige no FARO: swap principal ↔ alternativo
                     try:
-                        from services.faro import FaroClient, FaroError
+                        from services.faro import FaroClient
                         async with FaroClient() as faro:
                             await faro.update_card(card_id, {
-                                "Telefone":              phone_alt,
-                                "Telefone alternativo":  phone_principal,
+                                "Telefone":             wa_id_alt,
+                                "Telefone alternativo": phone_principal,
                             })
-                        card["Telefone"] = phone_alt
+                        card["Telefone"] = wa_id_alt
                         card["Telefone alternativo"] = phone_principal
                     except Exception as _e:
-                        _logger.warning("resolve_phone: erro ao corrigir FARO card %s: %s", card_id[:8], _e)
-                    return phone_alt
+                        _logger.warning("resolve_phone: erro FARO alt %s: %s", card_id[:8], _e)
+                    return wa_id_alt
 
-            _logger.warning(
-                "resolve_phone: card %s — nenhum número tem WA (principal=%s, alt=%s)",
-                card_id[:8], phone_principal[-4:], phone_alt[-4:] if phone_alt else "N/A",
-            )
-            return None
+        elif phone_alt:
+            wa_id_alt = await w.resolve_wa_id(phone_alt)
+            if wa_id_alt:
+                return wa_id_alt
 
-        # Só tem alternativo
-        ok_alt = await w.check_phone(phone_alt)
-        return phone_alt if ok_alt else None
+    _logger.warning(
+        "resolve_phone: card %s — nenhum número com WA (principal=%s, alt=%s)",
+        card_id[:8], phone_principal[-4:] if phone_principal else "N/A",
+        phone_alt[-4:] if phone_alt else "N/A",
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------

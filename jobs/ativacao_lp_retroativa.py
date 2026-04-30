@@ -118,12 +118,12 @@ async def _build_queue() -> list[dict]:
     queue = []
     for c in unique:
         contemp = str(c.get("Tipo contemplação") or "").lower()
-        if "sorteio" in contemp:
+        if "sorteio" in contemp or "nao-contemplada" in contemp or not contemp:
             tipo = "sorteio"
         elif "lance" in contemp:
             tipo = "lance"
         else:
-            tipo = "outro"
+            tipo = "sorteio"  # fallback seguro: pede extrato
         queue.append({
             "id":        c["id"],
             "nome":      get_name(c),
