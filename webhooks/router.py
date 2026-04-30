@@ -14,8 +14,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+import httpx
+
 from config import Stage
 from services.faro import FaroClient, FaroError, is_lista, get_name, get_canal
+from services.transcriber import transcribe_audio
 from webhooks.negociador import handle_message
 from webhooks.qualificador import handle_qualification, QUALIFICATION_STAGES
 from webhooks.agente_contrato import handle_dados_pessoais, handle_extrato_recebido
@@ -35,12 +38,20 @@ class IncomingMessage:
     is_group: bool = False
     media_type: Optional[str] = None
     raw: dict = field(default_factory=dict)
+    whapi_token: Optional[str] = None   # token do canal — usado para transcrição
 
     @property
     def is_processable(self) -> bool:
         if self.from_me or self.is_group:
             return False
         return bool(self.text and self.text.strip())
+
+    @property
+    def is_audio(self) -> bool:
+        """True se for áudio/voz (ainda não transcrito)."""
+        if self.from_me or self.is_group:
+            return False
+        return self.media_type in ("audio", "voice")
 
     @property
     def is_media_message(self) -> bool:
@@ -85,7 +96,7 @@ def _proposta_ja_enviada(card: dict) -> bool:
         return False
 
 
-def parse_whapi_payload(payload: dict) -> list[IncomingMessage]:
+def parse_whapi_payload(payload: dict, whapi_token: Optional[str] = None) -> list[IncomingMessage]:
     """Normaliza payload Whapi para lista de IncomingMessages."""
     messages_raw = []
     if "messages" in payload:
@@ -142,6 +153,7 @@ def parse_whapi_payload(payload: dict) -> list[IncomingMessage]:
             is_group=is_group,
             media_type=media_type,
             raw=msg,
+            whapi_token=whapi_token,
         ))
 
     return result
@@ -173,6 +185,18 @@ async def _find_card(phone: str) -> Optional[dict]:
 async def route_message(msg: IncomingMessage) -> None:
     if msg.from_me or msg.is_group:
         return
+
+    # ── Transcrição de áudio — acontece antes de qualquer dispatch ────────────
+    if msg.is_audio and msg.whapi_token:
+        transcricao = await transcribe_audio(msg.raw, msg.whapi_token)
+        if transcricao:
+            logger.info("Router: áudio transcrito para %s: '%s'", msg.phone, transcricao[:80])
+            msg.text = transcricao
+            msg.media_type = None  # trata como texto a partir daqui
+        else:
+            logger.warning("Router: falha ao transcrever áudio de %s — ignorando", msg.phone)
+            return
+
     if not msg.is_processable and not msg.is_media_message:
         return
 
@@ -260,9 +284,51 @@ async def route_message(msg: IncomingMessage) -> None:
     logger.info("Router: stage %s não tratado para %s.", current_stage[:8], nome)
 
 
+async def _resolve_whapi_token(payload: dict) -> Optional[str]:
+    """
+    Identifica o token do canal Whapi a partir do payload do webhook.
+    O Whapi envia o channel_id no payload — usamos para mapear ao token correto.
+    """
+    from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN
+
+    channel_id = (
+        payload.get("channel_id")
+        or payload.get("channelId")
+        or (payload.get("event") or {}).get("channel_id")
+        or ""
+    )
+
+    if not channel_id:
+        # Fallback: usa token Bazar (canal principal)
+        return WHAPI_BAZAR_TOKEN or (WHAPI_LISTA_TOKENS[0] if WHAPI_LISTA_TOKENS else None)
+
+    # Tenta identificar pelo channel_id — cada canal tem um ID único no Whapi
+    # Consultamos a API para saber qual token corresponde ao channel_id recebido
+    all_tokens = list({t for t in [WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN] + WHAPI_LISTA_TOKENS if t})
+    for token in all_tokens:
+        try:
+            async with httpx.AsyncClient(timeout=8) as c:
+                r = await c.get(
+                    "https://gate.whapi.cloud/settings",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    cid = data.get("channel_id") or data.get("id") or ""
+                    if cid == channel_id:
+                        return token
+        except Exception:
+            pass
+
+    # Não encontrou — usa Bazar como fallback
+    return WHAPI_BAZAR_TOKEN or (WHAPI_LISTA_TOKENS[0] if WHAPI_LISTA_TOKENS else None)
+
+
 async def handle_whapi_webhook(payload: dict) -> dict:
     """Entry point para POST /webhook/whapi."""
-    messages = parse_whapi_payload(payload)
+    # Resolve token do canal para transcrição de áudio
+    token = await _resolve_whapi_token(payload)
+    messages = parse_whapi_payload(payload, whapi_token=token)
     if not messages:
         return {"status": "ok", "processed": 0}
     logger.info("Whapi webhook: %d mensagem(ns)", len(messages))
