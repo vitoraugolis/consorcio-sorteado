@@ -41,8 +41,15 @@ MSG_LANCE = (
     "{link}"
 )
 
-MSG_LANCE_ACEITE = (
-    "Ótimo, {nome}! Obrigado por enviar. Vamos fazer a análise e te retornamos em breve com nossa proposta. 😊"
+MSG_NAO_CONTEMPLADA = (
+    "Olá, {nome}! Tudo bem? 😊\n\n"
+    "Recebemos seu interesse em vender sua cota *{adm}*, obrigado!\n\n"
+    "No entanto, pelo formulário você nos informou que sua cota ainda *não está contemplada*. "
+    "Nós compramos apenas cotas já contempladas (por sorteio ou lance).\n\n"
+    "Assim que sua cota for contemplada, ficamos à disposição para fazer uma proposta! "
+    "Enquanto isso, te convido para o nosso grupo de novidades — sempre colocaremos as "
+    "melhores oportunidades por lá 👇\n"
+    "{link}"
 )
 
 # Estado da fila (em memória — persiste enquanto servidor estiver de pé)
@@ -118,12 +125,14 @@ async def _build_queue() -> list[dict]:
     queue = []
     for c in unique:
         contemp = str(c.get("Tipo contemplação") or "").lower()
-        if "sorteio" in contemp or "nao-contemplada" in contemp or not contemp:
+        if "sorteio" in contemp:
             tipo = "sorteio"
         elif "lance" in contemp:
             tipo = "lance"
+        elif "nao-contemplada" in contemp or "não contemplada" in contemp:
+            tipo = "nao_contemplada"
         else:
-            tipo = "sorteio"  # fallback seguro: pede extrato
+            tipo = "sorteio"  # sem info → pede extrato por precaução
         queue.append({
             "id":        c["id"],
             "nome":      get_name(c),
@@ -156,8 +165,10 @@ async def _dispatch_one(item: dict) -> bool:
         msg = MSG_SORTEIO_EXTRATO.format(nome=nome, adm=adm)
     elif tipo == "lance":
         msg = MSG_LANCE.format(nome=nome, adm=adm, link=_GROUP_LINK)
+    elif tipo == "nao_contemplada":
+        msg = MSG_NAO_CONTEMPLADA.format(nome=nome, adm=adm, link=_GROUP_LINK)
     else:
-        logger.info("LP retro: card %s tipo '%s' — pulando", card_id[:8], tipo)
+        logger.info("LP retro: card %s tipo '%s' desconhecido — pulando", card_id[:8], tipo)
         return False
 
     # Monta card mínimo para resolve_phone
@@ -175,14 +186,19 @@ async def _dispatch_one(item: dict) -> bool:
         async with WhapiClient(canal="lp") as w:
             await w.send_text(phone, msg, _log_nome=item["nome"], _log_card_id=card_id)
 
-        async with FaroClient() as faro:
-            await faro.move_card(card_id, Stage.ESPERA)
-            await faro.update_card(card_id, {
-                "Ultima atividade": datetime.now(timezone.utc).isoformat(),
-                "Situacao Negociacao": f"lp-retro-{tipo}",
-            })
+        stage_destino = Stage.PERDIDO if tipo == "nao_contemplada" else Stage.ESPERA
+        motivo = "nao-contemplada — convidado para o grupo" if tipo == "nao_contemplada" else f"lp-retro-{tipo}"
 
-        logger.info("LP retro: ✅ %s (%s) | %s | phone=%s → ESPERA", item["nome"], card_id[:8], tipo, phone[-4:])
+        async with FaroClient() as faro:
+            await faro.move_card(card_id, stage_destino)
+            update: dict = {"Ultima atividade": datetime.now(timezone.utc).isoformat(), "Situacao Negociacao": motivo}
+            if tipo == "nao_contemplada":
+                update["Motivo de perda"] = "Cota não contemplada — convidado para o grupo"
+            await faro.update_card(card_id, update)
+
+        logger.info("LP retro: ✅ %s (%s) | %s | phone=%s → %s",
+                    item["nome"], card_id[:8], tipo, phone[-4:],
+                    "PERDIDO" if tipo == "nao_contemplada" else "ESPERA")
         return True
 
     except WhapiError as e:
