@@ -291,14 +291,12 @@ async def route_message(msg: IncomingMessage) -> None:
         return
 
     # ESPERA: lead aguardando envio de extrato (LP retroativa)
-    # Mídia → qualifica extrato; texto → resposta simples lembrando do extrato
+    # Mídia → qualifica extrato; texto → silêncio total (não respondemos até receber o extrato)
     if current_stage == Stage.ESPERA:
         if msg.is_media_message:
             await handle_qualification(card=card, msg=msg)
-        elif msg.is_processable:
-            from webhooks.agente_espera import handle_message as handle_espera
-            debounce.schedule(phone=msg.phone, text=msg.text, card=card,
-                              dispatch=handle_espera)
+        else:
+            logger.info("Router: %s em ESPERA enviou texto — ignorando (aguardando extrato)", nome)
         return
 
     # ASSINATURA: qualquer mensagem nessa stage vai para agente_contrato — sem exceção
