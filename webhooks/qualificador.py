@@ -541,6 +541,49 @@ async def handle_qualification(card: dict, msg) -> None:
                 "Qualificador: cota QUALIFICADA — card %s | pago=%.0f | credito=%.0f | adm=%s",
                 card_id[:8], analise.valor_pago, analise.valor_credito, analise.administradora,
             )
+
+            # Leads em ESPERA (fluxo LP retroativa): verificar se adm está na nossa lista.
+            # Se não estiver, manter em ESPERA para o time humano trabalhar — sem precificação.
+            _stage_atual = card.get("stage_id") or ""
+            _veio_de_espera = (_stage_atual == Stage.ESPERA)
+            if _veio_de_espera:
+                from jobs.ativacao_bazar_site import _qualifica_lp, ADM_LP_TOKENS, _adm_matches, _LP_EXACT_SIGLAS
+                adm_extrato = analise.administradora or adm
+                _adm_ok, _adm_motivo = _qualifica_lp({
+                    "Adm": adm_extrato,
+                    "Tipo contemplação": analise.tipo_contemplacao or card.get("Tipo contemplação") or "",
+                })
+                if not _adm_ok:
+                    logger.info(
+                        "Qualificador: lead ESPERA — adm '%s' fora da lista LP (%s) → mantém em ESPERA para time humano",
+                        adm_extrato, _adm_motivo,
+                    )
+                    # Confirma recebimento mas não precifica automaticamente
+                    bot_msg = MSG_QUALIFICADO_LP.format(nome=nome, adm=adm_extrato)
+                    await _send_message(card, phone, bot_msg, history=history)
+                    history = history_append(history, "assistant", bot_msg)
+                    # Grava dados do extrato no FARO mas MANTÉM em ESPERA
+                    async with FaroClient() as faro:
+                        try:
+                            _update: dict = {}
+                            if analise.valor_pago:
+                                _update["Valor pago até o momento"] = str(analise.valor_pago)
+                            if analise.valor_credito:
+                                _update["Crédito"] = str(analise.valor_credito)
+                            if analise.administradora:
+                                _update["Adm"] = analise.administradora
+                            if analise.tipo_contemplacao:
+                                _update["Tipo contemplação"] = analise.tipo_contemplacao
+                            if media_url:
+                                _update["Link do Extrato"] = media_url
+                            if _update:
+                                await faro.update_card(card_id, _update)
+                            # permanece em ESPERA — não move para PRECIFICACAO
+                        except FaroError as e:
+                            logger.error("Qualificador: erro ao gravar dados ESPERA card %s: %s", card_id[:8], e)
+                        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                    return
+
             # Mensagem de confirmação: leads em ESPERA (fluxo LP retroativa) recebem
             # mensagem neutra sem prometer resultado — só confirma recebimento
             _stage_atual = card.get("stage_id") or ""
