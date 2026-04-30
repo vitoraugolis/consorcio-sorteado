@@ -520,7 +520,7 @@ async def handle_qualification(card: dict, msg) -> None:
                     await faro.update_card(card_id, {
                         "Motivo dispensa": analise.motivo,
                         "Valor do crédito": str(analise.valor_credito) if analise.valor_credito else "",
-                        "Valor pago extrato": str(analise.valor_pago) if analise.valor_pago else "",
+                        "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
                     })
                 except FaroError as e:
                     logger.error("Qualificador: erro ao mover card para NAO_QUALIFICADO: %s", e)
@@ -544,9 +544,9 @@ async def handle_qualification(card: dict, msg) -> None:
             history = history_append(history, "assistant", bot_msg)
 
             update_fields: dict = {
-                "Valor pago extrato": str(analise.valor_pago) if analise.valor_pago else "",
+                "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
                 "Parcelas pagas": str(analise.parcelas_pagas) if analise.parcelas_pagas else "",
-                "Total parcelas": str(analise.total_parcelas) if analise.total_parcelas else "",
+                "Quantidade total meses": str(analise.total_parcelas) if analise.total_parcelas else "",
             }
             if analise.valor_credito:
                 update_fields["Crédito"] = str(analise.valor_credito)
@@ -577,7 +577,7 @@ async def handle_qualification(card: dict, msg) -> None:
                 if dp.prazo_grupo_meses:
                     update_fields["Prazo do grupo"] = str(dp.prazo_grupo_meses)
                 if dp.meses_a_pagar:
-                    update_fields["Meses a pagar"] = str(dp.meses_a_pagar)
+                    update_fields["Quantidade meses a pagar"] = str(dp.meses_a_pagar)
                 if dp.taxa_administracao:
                     update_fields["Taxa administração"] = str(dp.taxa_administracao)
                 if dp.valor_parcela_atual:

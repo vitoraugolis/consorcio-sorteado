@@ -47,13 +47,34 @@ def _is_within_send_window() -> bool:
     return SEND_WINDOW_START <= datetime.now(TZ_BRASILIA).hour < SEND_WINDOW_END
 
 
+def _count_followups(card: dict) -> int:
+    """
+    Conta follow-ups já realizados.
+    Usa "Num Follow Ups" se disponível (campos de Lista), caso contrário
+    conta turns do assistente no histórico de conversa como proxy.
+    """
+    from_field = card.get("Num Follow Ups")
+    if from_field is not None:
+        try:
+            return int(from_field)
+        except (ValueError, TypeError):
+            pass
+    # Fallback: contar mensagens do assistente no histórico
+    from services.faro import load_history
+    history = load_history(card)
+    # Conta apenas turns de follow-up (após proposta enviada)
+    # Proxy conservador: metade dos turns do assistente (pois o primeiro é a proposta)
+    assistant_turns = sum(1 for t in history if t.get("role") == "assistant")
+    return max(0, assistant_turns - 1)  # -1 para não contar a mensagem de proposta
+
+
 def _get_interval(num_fups: int) -> int:
     """Retorna o intervalo mínimo em segundos para a próxima tentativa."""
     return _INTERVALS.get(num_fups + 1, _INTERVALS[4])
 
 
 def _should_followup(card: dict) -> bool:
-    num_fups = int(card.get("Num Follow Ups") or "0")
+    num_fups = _count_followups(card)
     if num_fups >= ESCALATION_AT:
         return False
     ultima = card.get("Ultima atividade") or ""
@@ -353,14 +374,14 @@ async def run_follow_up():
         cards = filter_test_cards(cards)
 
         # Escalar cards que atingiram o limite
-        para_escalar = [c for c in cards if int(c.get("Num Follow Ups") or "0") >= ESCALATION_AT]
+        para_escalar = [c for c in cards if _count_followups(c) >= ESCALATION_AT]
         for card in para_escalar:
             await _escalate_to_human(faro, card)
 
         # Follow-ups automáticos
         pendentes = [
             c for c in cards
-            if int(c.get("Num Follow Ups") or "0") < ESCALATION_AT and _should_followup(c)
+            if _count_followups(c) < ESCALATION_AT and _should_followup(c)
         ][:JOB_BATCH_LIMIT]
 
         if not pendentes:
@@ -369,16 +390,18 @@ async def run_follow_up():
             logger.info("%d cards para follow-up", len(pendentes))
             total_ok = 0
             for card in pendentes:
-                num_atual = int(card.get("Num Follow Ups") or "0")
+                num_atual = _count_followups(card)
                 followup_msg = await _generate_followup_message(ai, card, hora_atual)
                 success = await _send_followup(card, followup_msg)
                 if success:
                     total_ok += 1
                     try:
-                        await faro.update_card(card["id"], {
-                            "Num Follow Ups": str(num_atual + 1),
-                            "Ultima atividade": str(int(time.time())),
-                        })
+                        # Grava Num Follow Ups para cards de Lista (que têm o campo no schema)
+                        # Para Bazar/LP, o contador é inferido do histórico de conversa
+                        update = {"Ultima atividade": str(int(time.time()))}
+                        if card.get("Num Follow Ups") is not None:
+                            update["Num Follow Ups"] = str(num_atual + 1)
+                        await faro.update_card(card["id"], update)
                     except FaroError:
                         pass
                     logger.info(

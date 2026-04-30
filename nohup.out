@@ -48,3 +48,55 @@ INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
 INFO:     Finished server process [39463]
+nohup: failed to run command 'uvicorn': No such file or directory
+nohup: failed to run command 'uvicorn': No such file or directory
+nohup: failed to run command 'uvicorn': No such file or directory
+nohup: failed to run command 'uvicorn': No such file or directory
+INFO:     Started server process [510106]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:38648 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53268 - "POST /jobs/fila/start?key=cs-secret-change-me-2026 HTTP/1.1" 200 OK
+INFO:     37.27.56.240:46002 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:47700 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:44946 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:55908 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:45326 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:51248 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:51242 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:35474 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:39416 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:46056 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:58068 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:32938 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:50544 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:56214 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:53444 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:32966 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:49504 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:43670 - "POST /webhook/whapi HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     37.27.56.240:44148 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:36206 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:60232 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     Started server process [517593]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8000): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     127.0.0.1:54124 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54138 - "POST /jobs/fila/start?key=cs-secret-change-me-2026 HTTP/1.1" 200 OK
+INFO:     37.27.56.240:34638 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:52068 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:58674 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:57420 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     51.44.15.189:58466 - "POST /webhook/faro HTTP/1.1" 200 OK
+INFO:     37.27.141.248:33614 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:57888 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.141.248:57898 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:35104 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:59578 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:57138 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:41768 - "POST /webhook/whapi HTTP/1.1" 200 OK

@@ -478,7 +478,7 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         valor_pago       = _parse_float(card.get("Valor pago até o momento", "0"))
         percentual_pago  = _parse_float(card.get("Porcentagem paga até o momento", "0")) / 100
         adm              = get_adm(card)
-        meses_a_pagar    = int(_parse_float(card.get("Meses a pagar") or card.get("Quantidade meses restantes", "999")) or 999)
+        meses_a_pagar    = int(_parse_float(card.get("Quantidade meses a pagar") or card.get("Quantidade meses restantes", "999")) or 999)
         if credito > 0:
             proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
                 credito, valor_pago, percentual_pago,
@@ -496,11 +496,11 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             try:
                 await faro.update_card(card_id, {
                     "Proposta Realizada": proposta,
-                    "Sequencia_Proposta": sequencia,
+                    "Classes de Proposta": sequencia,
                     "Indice da Proposta": str(indice_usado),
                 })
                 card["Proposta Realizada"] = proposta
-                card["Sequencia_Proposta"] = sequencia
+                card["Classes de Proposta"] = sequencia
             except FaroError as e:
                 logger.warning("Precificação: erro ao gravar Proposta Realizada: %s", e)
         else:
@@ -509,8 +509,8 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
     if not proposta and not is_lista(card):
         # Bazar/LP: calcula pela mesma lógica usando dados do extrato (já gravados no FARO)
         credito       = _parse_float(card.get("Crédito") or "0")
-        valor_pago    = _parse_float(card.get("Valor pago extrato") or "0")
-        meses_a_pagar = int(_parse_float(card.get("Meses a pagar") or "999") or 999)
+        valor_pago    = _parse_float(card.get("Valor pago até o momento") or "0")
+        meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
         adm           = get_adm(card)
         percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
 
@@ -534,11 +534,11 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             try:
                 await faro.update_card(card_id, {
                     "Proposta Realizada": proposta,
-                    "Sequencia_Proposta": sequencia,
+                    "Classes de Proposta": sequencia,
                     "Indice da Proposta": str(indice_usado),
                 })
                 card["Proposta Realizada"] = proposta
-                card["Sequencia_Proposta"] = sequencia
+                card["Classes de Proposta"] = sequencia
             except FaroError as e:
                 logger.warning("Precificação: erro ao gravar proposta Bazar/LP: %s", e)
         else:

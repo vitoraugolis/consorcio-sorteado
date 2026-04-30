@@ -216,7 +216,7 @@ def _extract_lead_value(mensagem: str, proposta_atual: float = 0.0) -> float:
 
 def _parse_sequencia(card: dict) -> list[float]:
     """Retorna a lista de valores da Sequencia_Proposta do card."""
-    raw = (card.get("Sequencia_Proposta") or "").strip()
+    raw = (card.get("Classes de Proposta") or "").strip()
     result: list[float] = []
     if not raw:
         return result
@@ -308,7 +308,7 @@ def _get_next_proposal(card: dict) -> dict:
         pode_escalar   bool   — existe ao menos um valor maior que a proposta atual
         is_max_jump    bool   — saltou para o máximo (regra < 27% do crédito)
     """
-    sequencia_raw   = (card.get("Sequencia_Proposta") or "").strip()
+    sequencia_raw   = (card.get("Classes de Proposta") or "").strip()
     ultima_proposta = _parse_currency_value(card.get("Proposta Realizada") or "0")
     credito         = _parse_currency_value(card.get("Crédito") or "0")
 
@@ -731,7 +731,7 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
 
     if not prox["pode_escalar"]:
         # Sem Sequencia_Proposta → não encerra, mantém negociação
-        if not (card.get("Sequencia_Proposta") or "").strip():
+        if not (card.get("Classes de Proposta") or "").strip():
             logger.warning("Negociador: Sequencia_Proposta vazia para card %s — escalada ignorada.", card.get("id","")[:8])
             return NegotiationResult(
                 intent=intent,
