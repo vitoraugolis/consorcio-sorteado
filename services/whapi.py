@@ -225,9 +225,26 @@ class WhapiClient:
             logger.warning("check_phone(%s): erro de rede — assumindo True: %s", normalized[-4:], e)
             return True
 
+    async def _validate_lead_phone(self, phone: str) -> bool:
+        """
+        Verifica se o número tem WhatsApp ativo antes de disparos proativos.
+        Só aplica para números de leads (_is_lead_recipient). Grupos e equipe passam direto.
+        """
+        if not _is_lead_recipient(phone):
+            return True
+        ok = await self.check_phone(phone)
+        if not ok:
+            logger.warning(
+                "Whapi[%s] BLOQUEADO: %s não tem WA ativo — disparo cancelado",
+                self._canal, phone[-4:],
+            )
+        return ok
+
     async def send_text(self, to: str, message: str, _log_nome: str = "", _log_card_id: str = "") -> dict:
         """Envia mensagem de texto simples."""
         phone = self._normalize_phone(to)
+        if not await self._validate_lead_phone(phone):
+            return {"sent": False, "blocked": True, "reason": "no_whatsapp"}
         logger.info("Whapi[%s] send_text → %s", self._canal, phone)
         result = await self._post("/messages/text", {"to": phone, "body": message})
         # Log no #log-cs — ignora grupos (@g.us) e números internos da equipe
@@ -255,6 +272,8 @@ class WhapiClient:
     ) -> dict:
         """Envia mensagem interativa com botões de resposta rápida (máx 3)."""
         phone = self._normalize_phone(to)
+        if not await self._validate_lead_phone(phone):
+            return {"sent": False, "blocked": True, "reason": "no_whatsapp"}
         logger.info("Whapi[%s] send_buttons → %s (%d botões)", self._canal, phone, len(buttons))
         body: dict[str, Any] = {
             "to": phone,
@@ -327,6 +346,8 @@ class WhapiClient:
     async def send_image(self, to: str, image_url: str, caption: str = "", _log_nome: str = "", _log_card_id: str = "") -> dict:
         """Envia imagem com legenda opcional."""
         phone = self._normalize_phone(to)
+        if not await self._validate_lead_phone(phone):
+            return {"sent": False, "blocked": True, "reason": "no_whatsapp"}
         logger.info("Whapi[%s] send_image → %s", self._canal, phone)
         result = await self._post("/messages/image", {
             "to": phone,
