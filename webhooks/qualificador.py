@@ -187,6 +187,14 @@ MSG_QUALIFICADO = (
     "Um momento... 😊"
 )
 
+# Mensagem para leads do fluxo LP/Espera — sem prometer resultado, apenas confirma recebimento
+MSG_QUALIFICADO_LP = (
+    "Recebemos o seu extrato, {nome}! 📄✅\n\n"
+    "Vamos encaminhar para nossa equipe de precificação fazer uma análise completa da sua cota {adm} "
+    "e te daremos uma proposta personalizada em breve.\n\n"
+    "Qualquer dúvida, é só chamar! 😊"
+)
+
 MSG_ERRO_ANALISE = (
     "Olá, {nome}! Recebi seu documento, mas houve um pequeno problema "
     "técnico na análise automática. Nossa equipe vai revisar e entrar "
@@ -533,7 +541,14 @@ async def handle_qualification(card: dict, msg) -> None:
                 "Qualificador: cota QUALIFICADA — card %s | pago=%.0f | credito=%.0f | adm=%s",
                 card_id[:8], analise.valor_pago, analise.valor_credito, analise.administradora,
             )
-            bot_msg = MSG_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
+            # Mensagem de confirmação: leads em ESPERA (fluxo LP retroativa) recebem
+            # mensagem neutra sem prometer resultado — só confirma recebimento
+            _stage_atual = card.get("stage_id") or ""
+            _veio_de_espera = (_stage_atual == Stage.ESPERA)
+            if _veio_de_espera:
+                bot_msg = MSG_QUALIFICADO_LP.format(nome=nome, adm=analise.administradora or adm)
+            else:
+                bot_msg = MSG_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
             await _send_message(card, phone, bot_msg, history=history)
             history = history_append(
                 history, "user",
