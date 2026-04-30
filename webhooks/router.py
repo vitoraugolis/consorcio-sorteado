@@ -249,6 +249,11 @@ async def route_message(msg: IncomingMessage) -> None:
     nome = card.get("Nome do contato") or card.get("title") or "?"
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
 
+    # Stage TESTES: silêncio total — nenhum agente responde
+    if current_stage == Stage.TESTES:
+        logger.info("Router: %s em stage TESTES — mensagem ignorada.", nome)
+        return
+
     # Se proposta já foi enviada, negociador assume independente da stage
     if _proposta_ja_enviada(card) and msg.is_processable:
         async def _dispatch_neg(c: dict, texto: str) -> None:
