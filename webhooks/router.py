@@ -80,7 +80,7 @@ def _describe_media(msg: "IncomingMessage") -> str:
     return f"[{msg.media_type}]"
 
 
-HANDLED_STAGES = {Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ASSINATURA}
+HANDLED_STAGES = {Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ASSINATURA, Stage.FINALIZACAO_COMERCIAL}
 ACTIVATION_STAGES = {
     Stage.PRIMEIRA_ATIVACAO, Stage.SEGUNDA_ATIVACAO,
     Stage.TERCEIRA_ATIVACAO, Stage.QUARTA_ATIVACAO,
