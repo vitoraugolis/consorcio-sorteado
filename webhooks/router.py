@@ -160,7 +160,7 @@ def parse_whapi_payload(payload: dict, whapi_token: Optional[str] = None) -> lis
     return result
 
 
-async def _find_card(phone: str) -> Optional[dict]:
+async def _find_card(phone: str, canal_hint: str = "") -> Optional[dict]:
     digits = "".join(c for c in phone if c.isdigit())
     candidates = {digits}
     if digits.startswith("55"):
@@ -175,12 +175,26 @@ async def _find_card(phone: str) -> Optional[dict]:
     try:
         async with FaroClient() as faro:
             for candidate in candidates:
-                card = await faro.find_card_by_phone(candidate)
+                card = await faro.find_card_by_phone(candidate, canal_hint=canal_hint)
                 if card:
                     return card
     except FaroError as e:
         logger.error("Router: erro ao buscar card por telefone %s: %s", phone, e)
     return None
+
+
+def _canal_hint_from_token(whapi_token: Optional[str]) -> str:
+    """Deduz o canal ('bazar', 'lp', 'lista') a partir do token Whapi recebido no webhook."""
+    if not whapi_token:
+        return ""
+    from config import WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN, WHAPI_LISTA_TOKENS
+    if whapi_token == WHAPI_BAZAR_TOKEN:
+        return "bazar"
+    if whapi_token == WHAPI_LP_TOKEN:
+        return "lp"
+    if whapi_token in WHAPI_LISTA_TOKENS:
+        return "lista"
+    return ""
 
 
 async def route_message(msg: IncomingMessage) -> None:
@@ -204,7 +218,7 @@ async def route_message(msg: IncomingMessage) -> None:
     logger.info("Router [%s]: %s → media=%s texto='%s'",
                 msg.source, msg.phone, msg.media_type or "none", (msg.text or "")[:60])
 
-    card = await _find_card(msg.phone)
+    card = await _find_card(msg.phone, canal_hint=_canal_hint_from_token(msg.whapi_token))
 
     # Log no #log-cs independente de ter card no FARO
     try:

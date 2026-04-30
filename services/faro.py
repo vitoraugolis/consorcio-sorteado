@@ -143,10 +143,21 @@ class FaroClient:
         data = await self._get("/api-cards-get", {"card_id": card_id})
         return data.get("data") or data.get("card") or data
 
-    async def find_card_by_phone(self, phone: str) -> dict | None:
-        # Tenta com o número exato, depois com + prefixo e sem ele
+    async def find_card_by_phone(self, phone: str, canal_hint: str = "") -> dict | None:
+        """
+        Busca card pelo telefone. Quando há duplicatas (mesmo número em vários cards),
+        usa desempate inteligente:
+          1. Descarta stages terminais (Perdido, Não Qualificado, etc.)
+          2. Se canal_hint fornecido ("bazar", "lp", "lista"), prefere card cuja Fonte bate
+          3. Entre restantes, prefere o mais recentemente atualizado
+        """
         digits = "".join(c for c in phone if c.isdigit())
         variants = list(dict.fromkeys([phone, digits, f"+{digits}"]))
+
+        # Coleta todos os cards encontrados para desempate
+        all_cards: list[dict] = []
+        seen_ids: set[str] = set()
+
         for variant in variants:
             try:
                 data = await self._get("/api-cards-get", {
@@ -154,15 +165,70 @@ class FaroClient:
                     "field_name": "Telefone",
                     "field_value": variant,
                 })
-                # A API pode retornar o card diretamente (objeto) ou dentro de cards[]
                 if data.get("id"):
-                    return data
-                cards = data.get("cards") or data.get("data", {}).get("cards", [])
-                if cards:
-                    return cards[0]
+                    cid = data["id"]
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        all_cards.append(data)
+                else:
+                    cards = data.get("cards") or data.get("data", {}).get("cards", [])
+                    for c in (cards or []):
+                        cid = c.get("id", "")
+                        if cid and cid not in seen_ids:
+                            seen_ids.add(cid)
+                            all_cards.append(c)
             except FaroError:
                 continue
-        return None
+
+        if not all_cards:
+            return None
+        if len(all_cards) == 1:
+            return all_cards[0]
+
+        # Desempate: descarta stages terminais
+        _TERMINAL_STAGES = {
+            "d5c9a6e1-1b5b-424d-8659-4d002599586b",  # PERDIDO
+            "38c91042-2205-4d7d-9015-215a526acefc",  # NAO_QUALIFICADO
+            "b4f34818-ba01-478f-a163-e900ba51daef",  # FLUXO_CADENCIA
+            "fb52b454-de52-4057-bd2c-645014636cba",  # DISPENSADOS
+            "e86bd9b3-f2aa-4b32-9d80-3e1c249a50ad",  # LIXO
+            "c6ac32c6-74c2-459f-9a98-3e14cf81ebac",  # SUCESSO
+        }
+        ativos = [c for c in all_cards if c.get("stage_id") not in _TERMINAL_STAGES]
+        candidatos = ativos if ativos else all_cards
+
+        # Se canal_hint fornecido, prefere card cuja Fonte bate com o canal
+        if canal_hint and len(candidatos) > 1:
+            hint = canal_hint.lower()
+            _FONTE_MAP = {
+                "bazar": ["bazar", "bazar do consórcio", "bazar do consorcio"],
+                "lp":    ["lp", "site", "landing page"],
+                "lista": ["lista", "list"],
+            }
+            tokens = _FONTE_MAP.get(hint, [hint])
+            match_canal = [
+                c for c in candidatos
+                if any(t in (c.get("Fonte") or "").lower() for t in tokens)
+            ]
+            if match_canal:
+                candidatos = match_canal
+
+        # Entre os candidatos, prefere o mais recentemente atualizado
+        def _recency(c: dict) -> str:
+            return c.get("updated_at") or c.get("created_at") or ""
+
+        candidatos.sort(key=_recency, reverse=True)
+        if len(all_cards) > 1:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "find_card_by_phone: %d cards para telefone %s — usando [%s] Fonte='%s' (hint='%s', descartados: %s)",
+                len(all_cards), phone[-4:],
+                candidatos[0].get("id", "")[:8],
+                candidatos[0].get("Fonte", ""),
+                canal_hint,
+                [c.get("id", "")[:8] for c in all_cards if c.get("id") != candidatos[0].get("id")],
+            )
+        return candidatos[0]
 
     async def get_cards_from_stage(
         self,
