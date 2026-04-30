@@ -1,7 +1,5 @@
 #!/bin/bash
 # restart.sh — reinicia o servidor CS de forma limpa
-# Uso: ./restart.sh
-
 set -e
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="$WORKDIR/logs/server.log"
@@ -9,6 +7,10 @@ VENV="$WORKDIR/.venv/bin/uvicorn"
 
 echo "[restart.sh] Parando processo uvicorn anterior..."
 pkill -f "uvicorn main:app" 2>/dev/null && sleep 2 || true
+
+# Limpa flag de fila travado no Redis (evita fila "fantasma" após crash)
+echo "[restart.sh] Limpando flag Redis fila_ativacao:running..."
+redis-cli del fila_ativacao:running > /dev/null 2>&1 || true
 
 echo "[restart.sh] Subindo servidor..."
 cd "$WORKDIR"
