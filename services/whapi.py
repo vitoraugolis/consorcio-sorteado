@@ -206,21 +206,19 @@ class WhapiClient:
         """
         Verifica se um número tem WhatsApp ativo.
         Retorna True se existir, False se 404 (sem WA) ou erro.
-        Usa GET /contacts/{phone}@s.whatsapp.net
+        Usa GET /contacts/{phone} (só dígitos, sem @s.whatsapp.net)
         """
         normalized = self._normalize_phone(phone)
-        jid = f"{normalized}@s.whatsapp.net"
         try:
-            r = await self._client.get(f"/contacts/{jid}", timeout=10.0)
+            r = await self._client.get(f"/contacts/{normalized}", timeout=10.0)
             if r.status_code == 404:
                 return False
             if r.status_code == 200:
                 data = r.json()
-                # Se API retornar exists=false explicitamente, número não tem WA
                 if isinstance(data, dict) and data.get("exists") is False:
                     return False
                 return True
-            # Outros erros: assumir que tem WA (fail-open, não bloqueia o lead)
+            # Outros erros inesperados: fail-open (não bloqueia o lead)
             logger.warning("check_phone(%s): status inesperado %d — assumindo True", normalized[-4:], r.status_code)
             return True
         except Exception as e:
