@@ -64,7 +64,7 @@ def _get_consultant_phone(card: dict) -> str | None:
     return None
 
 
-def _build_handoff_notification(card: dict, mensagem: str) -> tuple[str, list[str]]:
+def _build_handoff_notification(card: dict, mensagem: str, history: list | None = None) -> tuple[str, list[str]]:
     nome     = get_name(card)
     adm      = get_adm(card)
     phone    = get_phone(card) or "não informado"
@@ -72,7 +72,7 @@ def _build_handoff_notification(card: dict, mensagem: str) -> tuple[str, list[st
     credito  = card.get("Crédito") or "a consultar"
     fonte    = get_fonte(card)
 
-    history = load_history(card)
+    history = history or load_history(card)
     resumo_turns = []
     for turn in history[-6:]:
         role = "Lead" if turn.get("role") == "user" else "Manuela"
@@ -234,7 +234,7 @@ def _parse_sequencia(card: dict) -> list[float]:
     return result
 
 
-def _build_contraproposta_notification(card: dict, mensagem: str) -> tuple[str, list[str]]:
+def _build_contraproposta_notification(card: dict, mensagem: str, history: list | None = None) -> tuple[str, list[str]]:
     """Monta notificação específica para handoff de contraproposta fora do nosso alcance."""
     nome     = get_name(card)
     adm      = get_adm(card)
@@ -244,7 +244,7 @@ def _build_contraproposta_notification(card: dict, mensagem: str) -> tuple[str, 
     lead_val = _extract_lead_value(mensagem, _parse_currency_value(card.get("Proposta Realizada") or "0"))
     lead_val_fmt = _fmt_currency(lead_val) if lead_val else mensagem[:80]
 
-    history = load_history(card)
+    history = history or load_history(card)
     resumo_turns = []
     for turn in history[-6:]:
         role = "Lead" if turn.get("role") == "user" else "Manuela"
@@ -297,16 +297,20 @@ def _fmt_currency(value: float) -> str:
     return f"R$ {inteiro_str},{centavos:02d}"
 
 
-def _get_next_proposal(card: dict) -> dict:
+def _get_next_proposal(card: dict, lead_value: float = 0.0) -> dict:
     """
-    Calcula a próxima proposta com base na Sequencia_Proposta do FARO.
+    Calcula a próxima proposta com base na Classes de Proposta do FARO.
+
+    lead_value: se > 0, representa uma contraproposta específica do lead.
+                Nesse caso, usamos o menor step da sequência que cubra o valor,
+                em vez de pular ao máximo (regra < 27%).
 
     Returns:
         nova_proposta  float  — valor a oferecer
         indice         int    — novo índice 1-based para gravar no FARO
         viavel         bool   — ainda há propostas maiores depois desta
         pode_escalar   bool   — existe ao menos um valor maior que a proposta atual
-        is_max_jump    bool   — saltou para o máximo (regra < 27% do crédito)
+        is_max_jump    bool   — saltou para o máximo (regra < 27%, sem valor específico)
     """
     sequencia_raw   = (card.get("Classes de Proposta") or "").strip()
     ultima_proposta = _parse_currency_value(card.get("Proposta Realizada") or "0")
@@ -344,7 +348,40 @@ def _get_next_proposal(card: dict) -> dict:
     if not candidatos:
         return {**_no_escalation, "indice": len(sequencia)}
 
-    # Regra dos 27%: se última < 27% do crédito → salta direto para o máximo disponível
+    # Se o lead deu uma CONTRA_PROPOSTA com valor específico:
+    # usar o menor step da sequência que seja >= ao valor pedido pelo lead
+    # Isso evita pular ao máximo quando o lead pediu apenas um pouco mais
+    if lead_value > 0:
+        # Candidatos que cobrem a contraproposta do lead
+        cobre = [(i, v) for i, v in candidatos if v >= lead_value]
+        if cobre:
+            # Menor valor que cobre a contraproposta
+            novo_i, nova = min(cobre, key=lambda x: x[1])
+            viavel = any(v > nova for v in sequencia)
+            logger.info(
+                "_get_next_proposal: CONTRA_PROPOSTA lead=%.0f → cobrindo com step %.0f (sequência: %s)",
+                lead_value, nova, sequencia,
+            )
+            return {
+                "nova_proposta": nova,
+                "indice": novo_i + 1,
+                "viavel": viavel,
+                "pode_escalar": True,
+                "is_max_jump": False,
+            }
+        # Se nenhum step cobre (lead quer mais que nosso máximo) → retorna o máximo
+        novo_i, nova = max(candidatos, key=lambda x: x[1])
+        viavel = False
+        return {
+            "nova_proposta": nova,
+            "indice": novo_i + 1,
+            "viavel": viavel,
+            "pode_escalar": True,
+            "is_max_jump": False,
+        }
+
+    # Sem valor específico: regra dos 27%
+    # Se proposta atual < 27% do crédito → salta direto para o máximo disponível
     pct_atual  = (ultima_proposta / credito * 100) if credito > 0 else 100.0
     is_max_jump = pct_atual < 27.0
 
@@ -727,7 +764,14 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
 
     # ── Intents que envolvem escalada de preço ────────────────────────────────
     # RECUSAR · MELHORAR_VALOR · NEGOCIAR  (e CONTRA_PROPOSTA que passou pelo caso 1️⃣)
-    prox = _get_next_proposal(card)
+    # Para CONTRA_PROPOSTA com valor específico: passa lead_value para _get_next_proposal
+    # evita o salto ao máximo quando o lead pediu apenas um pouco mais
+    _lead_val_for_escalada = 0.0
+    if intent == Intent.CONTRA_PROPOSTA and _message_has_value(mensagem):
+        _proposta_ctx = _parse_currency_value(card.get("Proposta Realizada") or "0")
+        _lead_val_for_escalada = _extract_lead_value(mensagem, _proposta_ctx)
+
+    prox = _get_next_proposal(card, lead_value=_lead_val_for_escalada)
 
     if not prox["pode_escalar"]:
         # Sem Sequencia_Proposta → não encerra, mantém negociação
@@ -979,7 +1023,7 @@ async def _handle_assinatura_message(card: dict, mensagem: str) -> str:
 
     # Gera resposta contextual com IA para dúvidas genéricas em ASSINATURA
     try:
-        history_ctx = history_to_text(load_history(card), max_turns=4)
+        history_ctx = history_to_text(load_history(card) or [], max_turns=4)
         from services.ai import AIClient, AIError
         system = (
             "Você é Manuela, consultora da Consórcio Sorteado. "
@@ -1031,6 +1075,50 @@ async def _notify_team(message: str, target_phones: list[str] | None = None) -> 
     else:
         from services.whapi import notify_team as _nt
         await _nt(message)
+
+
+def _count_followups_from_history(history: list) -> int:
+    """Conta turns do assistente no histórico como proxy de num_negociacoes."""
+    return max(0, sum(1 for t in history if t.get("role") == "assistant") - 1)
+
+
+async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) -> None:
+    """
+    Disparado imediatamente após o lead aceitar a proposta.
+    Envia mensagem pedindo os dados necessários para gerar o contrato ZapSign,
+    e move o card para ASSINATURA para que agente_contrato assuma.
+    """
+    nome       = get_name(card).split()[0] if get_name(card) else "você"
+    card_id    = card.get("id", "")
+    proposta   = card.get("Proposta Realizada") or "o valor combinado"
+    adm        = get_adm(card)
+
+    msg = (
+        f"Ótimo, {nome}! 🎉 Vou repassar as informações ao nosso time agora.\n\n"
+        f"Para agilizar o contrato da sua cota *{adm}* por *R$ {proposta}*, "
+        f"preciso de alguns dados:\n\n"
+        f"1️⃣ Nome completo\n"
+        f"2️⃣ CPF\n"
+        f"3️⃣ Data de nascimento\n"
+        f"4️⃣ Estado civil\n"
+        f"5️⃣ Profissão\n"
+        f"6️⃣ Endereço completo (rua, número, bairro, cidade, CEP)\n\n"
+        f"Pode me enviar? Assim a gente finaliza tudo rapidinho! 🚀"
+    )
+
+    try:
+        await _send_response(card, phone, msg)
+        new_history = history_append(history, "assistant", msg)
+        async with FaroClient() as faro:
+            await save_history_smart(phone, new_history, faro_client=faro, card_id=card_id)
+            # Move para ASSINATURA para agente_contrato assumir a coleta
+            await faro.move_card(card_id, Stage.ASSINATURA)
+            await faro.update_card(card_id, {
+                "Ultima atividade": datetime.now(timezone.utc).isoformat(),
+            })
+        logger.info("Negociador: coleta de dados iniciada para card %s → ASSINATURA", card_id[:8])
+    except Exception as e:
+        logger.error("Negociador: erro ao iniciar coleta dados card %s: %s", card_id[:8], e)
 
 
 # ---------------------------------------------------------------------------
@@ -1122,7 +1210,7 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                 await faro.move_card(card_id, result.next_stage)
                 logger.info("Negociador: card %s → %s", card_id[:8], result.next_stage[:8])
 
-                # Ao aceitar: registra snapshot da negociação na jornada
+                # Ao aceitar: coleta dados para contrato e registra snapshot na jornada
                 if result.next_stage == Stage.ACEITO:
                     try:
                         proposta_str = card_fresh.get("Proposta Realizada") or ""
@@ -1133,17 +1221,20 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                             proposta_num = float(nums) if nums else 0.0
                         except (ValueError, TypeError):
                             proposta_num = 0.0
-
-                        num_neg = int(card_fresh.get("Num Follow Ups") or 0)
+                        num_neg = _count_followups_from_history(history)
                         journey = load_journey(card_fresh)
                         journey.update({
-                            "proposta_final":    proposta_num,
-                            "num_negociacoes":   num_neg,
-                            "ultima_intencao":   result.intent.value,
+                            "proposta_final":  proposta_num,
+                            "num_negociacoes": num_neg,
+                            "ultima_intencao": result.intent.value,
                         })
                         await save_journey(faro, card_id, journey)
                     except Exception as _je:
                         logger.warning("Negociador: erro ao salvar jornada card %s: %s", card_id[:8], _je)
+
+                    # Inicia coleta de dados para contrato (nome, endereço, estado civil etc.)
+                    import asyncio as _asyncio
+                    _asyncio.create_task(_iniciar_coleta_dados_contrato(card_fresh, phone, history))
 
         except FaroError as e:
             logger.error("Negociador: erro ao atualizar card %s: %s", card_id[:8], e)

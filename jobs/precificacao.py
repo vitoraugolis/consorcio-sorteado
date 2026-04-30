@@ -513,7 +513,6 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
         adm           = get_adm(card)
         percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
-
         if credito > 0:
             proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
                 credito, valor_pago, percentual_pago,
@@ -543,6 +542,31 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
                 logger.warning("Precificação: erro ao gravar proposta Bazar/LP: %s", e)
         else:
             logger.warning("Precificação Bazar/LP: card %s sem crédito para calcular proposta", card_id[:8])
+
+    # Bazar/LP: proposta já existe mas Classes de Proposta está vazio → recalcular sequência
+    elif proposta and not is_lista(card) and not (card.get("Classes de Proposta") or "").strip():
+        credito       = _parse_float(card.get("Crédito") or "0")
+        valor_pago    = _parse_float(card.get("Valor pago até o momento") or "0")
+        meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
+        adm           = get_adm(card)
+        percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
+        if credito > 0 and valor_pago > 0:
+            _, indice_usado, cluster = calcular_proposta_listas(
+                credito, valor_pago, percentual_pago, adm=adm, meses_a_pagar=meses_a_pagar,
+            )
+            sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
+            logger.info(
+                "Precificação Bazar/LP: card %s recalculando sequência (proposta=%s já existe) → seq=%s",
+                card_id[:8], proposta, sequencia,
+            )
+            try:
+                await faro.update_card(card_id, {
+                    "Classes de Proposta": sequencia,
+                    "Indice da Proposta": str(indice_usado),
+                })
+                card["Classes de Proposta"] = sequencia
+            except FaroError as e:
+                logger.warning("Precificação: erro ao gravar sequência Bazar/LP: %s", e)
 
     if not proposta:
         logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])

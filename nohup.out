@@ -100,3 +100,44 @@ INFO:     37.27.56.240:35104 - "POST /webhook/whapi HTTP/1.1" 200 OK
 INFO:     37.27.56.240:59578 - "POST /webhook/whapi HTTP/1.1" 200 OK
 INFO:     37.27.56.240:57138 - "POST /webhook/whapi HTTP/1.1" 200 OK
 INFO:     37.27.56.240:41768 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [510106]
+INFO:     Started server process [519451]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56186 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56198 - "POST /jobs/fila/start?key=cs-secret-change-me-2026 HTTP/1.1" 200 OK
+INFO:     37.27.56.240:33356 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:33348 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:39314 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:54994 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:55366 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:46368 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:33500 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:52998 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:58970 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:50408 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:42492 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:42506 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:51398 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:47684 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:51444 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:51456 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:38246 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:38258 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:53466 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:46204 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:54914 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:37426 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:34832 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:35866 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:49640 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:33188 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:44424 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:45714 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:40734 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:42196 - "POST /webhook/whapi HTTP/1.1" 200 OK
+INFO:     37.27.56.240:52814 - "POST /webhook/whapi HTTP/1.1" 200 OK
