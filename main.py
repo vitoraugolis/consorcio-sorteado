@@ -159,6 +159,10 @@ def setup_scheduler():
     scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
                       id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
                       max_instances=1, misfire_grace_time=60)
+    # Bazar: 1 disparo a cada 30 min com jitter de ±2 min para humanização
+    scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=30, jitter=120),
+                      id="ativacao_bazar", name="Ativação Bazar (30min)",
+                      max_instances=1, misfire_grace_time=300)
     # Bazar/Site periódicos desativados — substituídos pela fila com jitter
     # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5), ...)
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
@@ -319,11 +323,11 @@ async def fila_status(key: str = ""):
 
 
 @app.post("/jobs/lp-retro/start")
-async def lp_retro_start(key: str = "", interval: int = 20):
+async def lp_retro_start(key: str = "", interval_min: int = 15, interval_max: int = 20, resume_from: int = 0):
     if key != SECRET_KEY:
         raise HTTPException(status_code=401, detail="Chave inválida")
     from jobs.ativacao_lp_retroativa import start
-    return await start(interval_minutes=interval)
+    return await start(interval_min=interval_min, interval_max=interval_max, resume_from=resume_from)
 
 
 @app.get("/jobs/lp-retro/status")

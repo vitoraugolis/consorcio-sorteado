@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from config import Stage
 from services.faro import FaroClient, get_phone, get_name, get_adm
 from services.whapi import WhapiClient, WhapiError
-from services.slack import notify_team
+from services.slack import slack_info as notify_team
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,14 @@ MSG_LANCE_ACEITE = (
 # Estado da fila (em memória — persiste enquanto servidor estiver de pé)
 _state: dict = {
     "running": False,
-    "queue": [],       # lista de dicts com id, nome, tipo (sorteio|lance)
+    "queue": [],
     "done": [],
     "current_idx": 0,
     "task": None,
     "started_at": None,
     "last_sent_at": None,
-    "interval_minutes": 20,
+    "interval_min": 15,
+    "interval_max": 20,
 }
 
 
@@ -179,8 +180,8 @@ async def _dispatch_one(item: dict) -> bool:
 
 
 async def _run_loop() -> None:
-    """Loop principal: processa 1 item, dorme 20 min, repete."""
-    interval_s = _state["interval_minutes"] * 60
+    """Loop principal: processa 1 item, dorme intervalo aleatório, repete."""
+    import random
 
     while _state["running"] and _state["current_idx"] < len(_state["queue"]):
         item = _state["queue"][_state["current_idx"]]
@@ -210,9 +211,12 @@ async def _run_loop() -> None:
         if remaining == 0:
             break
 
-        # Aguarda intervalo antes do próximo
-        logger.info("LP retro: aguardando %d min para próximo disparo...", _state["interval_minutes"])
-        await asyncio.sleep(interval_s)
+        # Intervalo aleatório entre min_minutes e max_minutes
+        min_s = _state["interval_min"] * 60
+        max_s = _state["interval_max"] * 60
+        wait_s = random.randint(min_s, max_s)
+        logger.info("LP retro: próximo disparo em %ds (~%.1fmin)...", wait_s, wait_s / 60)
+        await asyncio.sleep(wait_s)
 
     _state["running"] = False
     logger.info("LP retro: fila concluída. Total: %d | OK: %d",
@@ -226,32 +230,44 @@ async def _run_loop() -> None:
         pass
 
 
-async def start(interval_minutes: int = 20) -> dict:
-    """Inicia a fila retroativa. Idempotente — ignora se já rodando."""
+async def start(interval_min: int = 15, interval_max: int = 20, resume_from: int = 0) -> dict:
+    """Inicia (ou retoma) a fila retroativa. interval_min/max em minutos."""
     if _state["running"]:
         return {"status": "already_running", **get_status()}
 
-    logger.info("LP retro: montando fila...")
-    queue = await _build_queue()
-
-    if not queue:
-        return {"status": "empty_queue", "total": 0}
-
-    _state.update({
-        "running": True,
-        "queue": queue,
-        "done": [],
-        "current_idx": 0,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "last_sent_at": None,
-        "interval_minutes": interval_minutes,
-    })
+    # Se retomando e já tem fila montada, usa a existente
+    if resume_from > 0 and _state["queue"]:
+        _state.update({
+            "running": True,
+            "current_idx": resume_from,
+            "interval_min": interval_min,
+            "interval_max": interval_max,
+        })
+        logger.info("LP retro: retomando do índice %d (intervalo %d-%dmin)", resume_from, interval_min, interval_max)
+    else:
+        logger.info("LP retro: montando fila...")
+        queue = await _build_queue()
+        if not queue:
+            return {"status": "empty_queue", "total": 0}
+        _state.update({
+            "running": True,
+            "queue": queue,
+            "done": _state.get("done", []),
+            "current_idx": resume_from,
+            "started_at": _state.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "last_sent_at": _state.get("last_sent_at"),
+            "interval_min": interval_min,
+            "interval_max": interval_max,
+        })
 
     loop = asyncio.get_event_loop()
     task = loop.create_task(_run_loop())
     _state["task"] = task
 
-    logger.info("LP retro: iniciado. %d leads na fila (intervalo=%dmin)", len(queue), interval_minutes)
+    logger.info(
+        "LP retro: iniciado. %d leads na fila, índice=%d, intervalo=%d-%dmin",
+        len(_state["queue"]), _state["current_idx"], interval_min, interval_max,
+    )
     return {"status": "started", **get_status()}
 
 
