@@ -194,7 +194,7 @@ async def _dispatch_one(item: dict) -> bool:
 
 
 async def _run_loop() -> None:
-    """Loop principal: processa 1 item, dorme intervalo aleatório, repete."""
+    """Loop principal: processa itens, dorme apenas quando efetivamente enviou."""
     import random
 
     while _state["running"] and _state["current_idx"] < len(_state["queue"]):
@@ -211,13 +211,14 @@ async def _run_loop() -> None:
         _state["current_idx"] += 1
 
         remaining = len(_state["queue"]) - _state["current_idx"]
-        # Notifica Slack a cada 5 disparos ou no último
-        if _state["current_idx"] % 5 == 0 or remaining == 0:
-            successes = sum(1 for d in _state["done"] if d["ok"])
+
+        # Notifica Slack a cada 5 enviados com sucesso ou no último
+        successes = sum(1 for d in _state["done"] if d["ok"])
+        if successes > 0 and (successes % 5 == 0 or remaining == 0):
             try:
                 await notify_team(
-                    f"📊 *LP Retroativa* — {_state['current_idx']}/{len(_state['queue'])} disparados "
-                    f"({successes} OK) | Restam: {remaining}"
+                    f"📊 *LP Retroativa* — {_state['current_idx']}/{len(_state['queue'])} processados "
+                    f"({successes} enviados) | Restam: {remaining}"
                 )
             except Exception:
                 pass
@@ -225,12 +226,15 @@ async def _run_loop() -> None:
         if remaining == 0:
             break
 
-        # Intervalo aleatório entre min_minutes e max_minutes
-        min_s = _state["interval_min"] * 60
-        max_s = _state["interval_max"] * 60
-        wait_s = random.randint(min_s, max_s)
-        logger.info("LP retro: próximo disparo em %ds (~%.1fmin)...", wait_s, wait_s / 60)
-        await asyncio.sleep(wait_s)
+        # Só dorme se enviou com sucesso — se pulou, avança imediatamente para o próximo
+        if ok:
+            min_s = _state["interval_min"] * 60
+            max_s = _state["interval_max"] * 60
+            wait_s = random.randint(min_s, max_s)
+            logger.info("LP retro: ✉️  enviado — próximo disparo em %ds (~%.1fmin)...", wait_s, wait_s / 60)
+            await asyncio.sleep(wait_s)
+        else:
+            logger.info("LP retro: ⏩ pulado — avançando para o próximo imediatamente")
 
     _state["running"] = False
     logger.info("LP retro: fila concluída. Total: %d | OK: %d",
