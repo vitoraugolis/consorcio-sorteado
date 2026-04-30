@@ -260,8 +260,9 @@ async def route_message(msg: IncomingMessage) -> None:
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=agente_bazar.handle_message)
         return
-    # Lista em ASSINATURA coletando dados/extrato (ZapSign ainda não gerado)
-    if current_stage == Stage.ASSINATURA and is_lista(card) and not card.get("ZapSign Token"):
+    # ASSINATURA: coleta dados faltantes + extrato antes de gerar ZapSign
+    # Válido para Listas E Bazar/LP — qualquer lead sem ZapSign Token ainda
+    if current_stage == Stage.ASSINATURA and not card.get("ZapSign Token"):
         if msg.is_media_message:
             asyncio.create_task(handle_extrato_recebido(card, msg))
         elif msg.is_processable:

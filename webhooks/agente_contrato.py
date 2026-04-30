@@ -33,22 +33,36 @@ logger = logging.getLogger(__name__)
 # Campos obrigatórios e labels
 # ---------------------------------------------------------------------------
 
-_REQUIRED_FIELDS = ["CPF", "RG", "Endereco", "Email"]
+_REQUIRED_FIELDS_LISTA = ["CPF", "RG", "Endereco", "Email"]
+_REQUIRED_FIELDS_BAZAR = ["Endereco", "Email", "EstadoCivil", "Ocupacao", "Nacionalidade"]
+
+_REQUIRED_FIELDS = _REQUIRED_FIELDS_LISTA  # compat legado (listas)
 
 _FIELD_LABELS = {
-    "CPF":      "CPF",
-    "RG":       "RG ou CNH",
-    "Endereco": "Endereço completo (rua, número, bairro, cidade, CEP)",
-    "Email":    "E-mail para receber o contrato",
+    "CPF":          "CPF",
+    "RG":           "RG ou CNH",
+    "Endereco":     "Endereço completo (rua, número, bairro, cidade, CEP)",
+    "Email":        "E-mail para receber o contrato",
+    "EstadoCivil":  "Estado civil (solteiro, casado, etc.)",
+    "Ocupacao":     "Profissão / ocupação",
+    "Nacionalidade":"Nacionalidade",
 }
 
-# Mapeamento para campos do FARO (tenta salvar individualmente)
+# Mapeamento para campos do FARO
 _FARO_FIELD_MAP = {
-    "CPF":      "CPF",
-    "RG":       "RG",
-    "Endereco": "Endereço",
-    "Email":    "Email",
+    "CPF":          "CPF",
+    "RG":           "RG",
+    "Endereco":     "Endereço",
+    "Email":        "Email",
+    "EstadoCivil":  "Estado Civil",
+    "Ocupacao":     "Ocupação",
+    "Nacionalidade":"Nacionalidade",
 }
+
+
+def _required_fields_for_card(card: dict) -> list[str]:
+    """Retorna lista de campos obrigatórios conforme origem do lead."""
+    return _REQUIRED_FIELDS_LISTA if is_lista(card) else _REQUIRED_FIELDS_BAZAR
 
 # ---------------------------------------------------------------------------
 # Extração de dados com IA
@@ -69,7 +83,10 @@ JSON esperado:
   "CPF": "xxx.xxx.xxx-xx ou null",
   "RG": "número do RG ou número da CNH ou null",
   "Endereco": "endereço completo com rua, número, bairro, cidade e CEP (se informados) ou null",
-  "Email": "endereço de e-mail ou null"
+  "Email": "endereço de e-mail ou null",
+  "EstadoCivil": "solteiro/casado/divorciado/viúvo ou null",
+  "Ocupacao": "profissão ou ocupação ou null",
+  "Nacionalidade": "ex: Brasileira ou null"
 }}
 """
 
@@ -148,9 +165,10 @@ Máximo 5 linhas. Apenas o texto da mensagem, sem aspas.
 """.strip()
 
 
-def _build_response_static(nome: str, collected: dict, adm: str) -> tuple[str, bool]:
+def _build_response_static(nome: str, collected: dict, adm: str, required: list | None = None) -> tuple[str, bool]:
     """Fallback estático caso a IA falhe."""
-    missing = [f for f in _REQUIRED_FIELDS if not collected.get(f)]
+    req = required or _REQUIRED_FIELDS
+    missing = [f for f in req if not collected.get(f)]
     if not missing:
         msg = (
             f"Perfeito, {nome}! Todos os seus dados foram confirmados ✅\n\n"
@@ -160,7 +178,7 @@ def _build_response_static(nome: str, collected: dict, adm: str) -> tuple[str, b
             f"é diferente do comprovante de pagamento)_ 📄"
         )
         return msg, True
-    received = [_FIELD_LABELS[f] for f in _REQUIRED_FIELDS if collected.get(f)]
+    received = [_FIELD_LABELS[f] for f in req if collected.get(f)]
     missing_labels = [_FIELD_LABELS[f] for f in missing]
     partes = []
     if received:
@@ -171,22 +189,26 @@ def _build_response_static(nome: str, collected: dict, adm: str) -> tuple[str, b
 
 
 async def _build_response(
-    nome: str, collected: dict, adm: str, history: list, journey: dict | None = None
+    nome: str, collected: dict, adm: str, history: list,
+    journey: dict | None = None, required: list | None = None,
 ) -> tuple[str, bool]:
     """
     Gera resposta personalizada para a coleta de dados pessoais.
     Usa IA com contexto do histórico + jornada completa da conversa.
     Fallback para resposta estática se IA falhar.
     """
-    missing = [f for f in _REQUIRED_FIELDS if not collected.get(f)]
+    req     = required or _REQUIRED_FIELDS
+    missing = [f for f in req if not collected.get(f)]
     is_complete = not missing
     history_ctx = history_to_text(history)
     journey_ctx = journey_to_text(journey or {})
 
+    campos_str = ", ".join(_FIELD_LABELS[f] for f in req)
+
     if is_complete:
         prompt = (
             f"Lead: {nome} | Administradora: {adm}\n"
-            f"Todos os dados pessoais foram coletados (CPF, RG, Endereço, E-mail).\n\n"
+            f"Todos os dados pessoais foram coletados ({campos_str}).\n\n"
             f"Jornada do lead:\n{journey_ctx}\n\n"
             f"Histórico da conversa:\n{history_ctx}\n\n"
             f"Escreva uma mensagem curta confirmando que recebeu todos os dados "
@@ -194,7 +216,7 @@ async def _build_response(
             f"Mencione que o extrato mostra o histórico completo da cota — diferente do comprovante."
         )
     else:
-        received_labels = [_FIELD_LABELS[f] for f in _REQUIRED_FIELDS if collected.get(f)]
+        received_labels = [_FIELD_LABELS[f] for f in req if collected.get(f)]
         missing_labels  = [_FIELD_LABELS[f] for f in missing]
         received_str = ", ".join(received_labels) if received_labels else "nenhum ainda"
         missing_bullets = "\n".join(f"• *{l}*" for l in missing_labels)
@@ -214,7 +236,7 @@ async def _build_response(
         return msg.strip(), is_complete
     except (AIError, Exception) as e:
         logger.warning("agente_contrato: IA falhou na geração de resposta: %s — usando fallback", e)
-        return _build_response_static(nome, collected, adm)
+        return _build_response_static(nome, collected, adm, required=req)
 
 
 # ---------------------------------------------------------------------------
@@ -223,19 +245,18 @@ async def _build_response(
 
 async def handle_dados_pessoais(card: dict, texto: str) -> None:
     """
-    Chamado quando lead de lista em ASSINATURA envia texto.
+    Chamado quando lead em ASSINATURA envia texto (Listas e Bazar/LP).
     Extrai dados pessoais, confirma e guia para os campos faltantes.
-    Usa histórico completo da conversa para personalizar a resposta.
     """
-    card_id = card.get("id", "")
-    nome    = get_name(card)
-    phone   = get_phone(card)
-    adm     = get_adm(card)
+    card_id  = card.get("id", "")
+    nome     = get_name(card)
+    phone    = get_phone(card)
+    adm      = get_adm(card)
+    required = _required_fields_for_card(card)
 
     if not phone:
         return
 
-    # Carrega histórico + jornada + dados já coletados
     history   = load_history(card)
     journey   = load_journey(card)
     collected = _load_collected(card)
@@ -248,14 +269,12 @@ async def handle_dados_pessoais(card: dict, texto: str) -> None:
         "agente_contrato: card=%s | novos=%s | coletados=%s | faltam=%s",
         card_id[:8],
         list(novos.keys()),
-        [f for f in _REQUIRED_FIELDS if collected.get(f)],
-        [f for f in _REQUIRED_FIELDS if not collected.get(f)],
+        [f for f in required if collected.get(f)],
+        [f for f in required if not collected.get(f)],
     )
 
-    # Gera resposta personalizada com IA (usando histórico + jornada)
-    msg, completo = await _build_response(nome, collected, adm, history, journey)
+    msg, completo = await _build_response(nome, collected, adm, history, journey, required=required)
 
-    # Salva dados coletados + histórico atualizado
     history = history_append(history, "user", texto)
     history = history_append(history, "assistant", msg)
     async with FaroClient() as faro:
@@ -284,7 +303,8 @@ async def handle_extrato_recebido(card: dict, msg) -> None:
     adm     = get_adm(card)
 
     collected = _load_collected(card)
-    missing   = [f for f in _REQUIRED_FIELDS if not collected.get(f)]
+    required  = _required_fields_for_card(card)
+    missing   = [f for f in required if not collected.get(f)]
 
     if missing:
         # Dados incompletos — pede os que faltam antes de aceitar o extrato

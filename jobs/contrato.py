@@ -127,9 +127,10 @@ async def _process_card_locked(card: dict) -> None:
             logger.error("Contrato: falha ao mover %s para ASSINATURA: %s", card_id[:8], e)
             return
 
-    # Leads de lista: coleta dados pessoais antes do ZapSign
+    # Todos os leads (Lista e Bazar/LP): coleta dados faltantes antes do ZapSign
+    primeiro_nome = nome.split()[0] if nome else "prezado(a)"
     if lista_src:
-        primeiro_nome = nome.split()[0] if nome else "prezado(a)"
+        # Listas: pede CPF, RG, Endereço, E-mail + extrato
         msg_dados = await _generate_assinatura_welcome(card)
         if not msg_dados:
             msg_dados = (
@@ -140,20 +141,27 @@ async def _process_card_locked(card: dict) -> None:
                 f"4️⃣ *E-mail* para receber o contrato\n\n"
                 f"Após os dados, envie o *extrato detalhado* da sua cota {adm}. 📄"
             )
-        if phone:
-            await _send(card, phone, msg_dados)
-        history = load_history(card)
-        history = history_append(history, "assistant", msg_dados)
-        async with FaroClient() as faro:
-            await faro.update_card(card_id, {"Ultima atividade": datetime.now().isoformat()})
-            await save_history(faro, card_id, history)
-        return
+    else:
+        # Bazar/LP: CPF e dados da cota já temos — pede só o que falta
+        msg_dados = (
+            f"Ótimo, {primeiro_nome}! 🎉 Vamos preparar o contrato agora.\n\n"
+            f"Para finalizar, preciso de mais alguns dados:\n\n"
+            f"1️⃣ *Endereço completo* (rua, número, bairro, cidade, CEP)\n"
+            f"2️⃣ *E-mail* para receber o contrato\n"
+            f"3️⃣ *Estado civil* (solteiro, casado, etc.)\n"
+            f"4️⃣ *Profissão / ocupação*\n"
+            f"5️⃣ *Nacionalidade*\n\n"
+            f"Pode me mandar tudo de uma vez! 😊"
+        )
 
-    # Bazar/Site: vai direto para ZapSign
-    template_token = get_template_for_adm(adm)
-    if not template_token:
-        await _notify_team(f"⚠️ *Contrato sem template ZapSign*\nLead: {nome}\nAdm: {adm}")
-        return
+    if phone:
+        await _send(card, phone, msg_dados)
+    history = load_history(card)
+    history = history_append(history, "assistant", msg_dados)
+    async with FaroClient() as faro:
+        await faro.update_card(card_id, {"Ultima atividade": datetime.now().isoformat()})
+        await save_history(faro, card_id, history)
+    return
 
     sign_url = None
     doc_token = None
