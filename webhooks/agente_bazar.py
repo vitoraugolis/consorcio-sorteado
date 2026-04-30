@@ -42,18 +42,22 @@ COMO SE COMPORTAR:
 - Respostas curtas. Máximo 3-4 linhas.
 - Nunca revele ser IA.
 
-OBJETIVO: Ajudar o lead a enviar o extrato atualizado da cota.
+OBJETIVO: Ajudar o lead a enviar o extrato atualizado da cota AQUI pelo WhatsApp.
 
 QUANDO O LEAD RECUSAR:
 Respeite. Convide para o grupo: {group_link}
+
+QUANDO O LEAD DISSER QUE JÁ ENVIOU POR E-MAIL OU OUTRO CANAL:
+Use intent JA_ENVIOU_OUTRO_CANAL. Responda agradecendo e informando que
+o time vai verificar e que um consultor entrará em contato em breve.
 
 QUANDO PERGUNTAREM SOBRE A EMPRESA:
 - CNPJ: 07.931.205/0001-30 | Rua Irmã Carolina 45, Belenzinho-SP
 - Compra à vista, direto na conta do lead, ANTES de qualquer transferência.
 
-FORMATO — JSON puro:
+FORMATO — JSON puro, sem markdown, sem texto fora do JSON:
 {{
-  "intent": "AGUARDANDO_EXTRATO|RECUSA_COTA_VENDIDA|RECUSA_SEM_INTERESSE|REDIRECIONAR|OUTRO",
+  "intent": "AGUARDANDO_EXTRATO|JA_ENVIOU_OUTRO_CANAL|RECUSA_COTA_VENDIDA|RECUSA_SEM_INTERESSE|REDIRECIONAR|OUTRO",
   "response": "mensagem para enviar ao lead"
 }}
 """.strip()
@@ -68,6 +72,11 @@ _FALLBACKS_OUTRO = [
     "Entendido! O que você precisar, pode falar. 🙏",
 ]
 
+_FALLBACK_JA_ENVIOU = (
+    "Obrigada, {nome}! Vou avisar nosso time para verificar. "
+    "Um consultor entrará em contato em breve. 😊"
+)
+
 
 def _fallback_response(intent: str, nome: str) -> str:
     primeiro = nome.split()[0] if nome else ""
@@ -77,6 +86,8 @@ def _fallback_response(intent: str, nome: str) -> str:
         return f"Claro{', ' + primeiro if primeiro else ''}! Vou acionar o consultor responsável agora. 🙏"
     if intent == "AGUARDANDO_EXTRATO":
         return random.choice(_FALLBACKS_AGUARDANDO)
+    if intent == "JA_ENVIOU_OUTRO_CANAL":
+        return _FALLBACK_JA_ENVIOU.format(nome=primeiro or "")
     return random.choice(_FALLBACKS_OUTRO)
 
 
@@ -88,6 +99,24 @@ async def _handle_intent(intent: str, card: dict) -> None:
                 await faro.move_card(card_id, Stage.PERDIDO)
             except FaroError as e:
                 logger.error("Erro ao mover %s para PERDIDO: %s", card_id[:8], e)
+
+    elif intent == "JA_ENVIOU_OUTRO_CANAL":
+        # Lead disse que já enviou por e-mail ou outro canal → handoff comercial
+        async with FaroClient() as faro:
+            try:
+                await faro.move_card(card_id, Stage.FINALIZACAO_COMERCIAL)
+            except FaroError as e:
+                logger.error("Erro ao mover %s para FINALIZACAO_COMERCIAL: %s", card_id[:8], e)
+        nome  = card.get("Nome do contato") or card.get("title") or "?"
+        adm   = card.get("Adm") or "?"
+        phone = card.get("Telefone") or ""
+        from services.whapi import notify_team
+        await notify_team(
+            f"📧 *Lead enviou extrato por outro canal — verificar*\n"
+            f"Lead: {nome} | Adm: {adm} | Tel: {phone}\n"
+            f"Card: `{card_id[:8]}` | Movido para FINALIZACAO COMERCIAL"
+        )
+
     elif intent == "REDIRECIONAR":
         async with FaroClient() as faro:
             try:
@@ -137,13 +166,17 @@ async def _respond(card: dict, texto: str) -> None:
                 model="gpt-4o-mini",
                 fallback_model="gpt-4o-mini",
             )
-            m = re.search(r"\{.*\}", resposta_raw, re.DOTALL)
+            # Tenta extrair JSON — tolera texto antes/depois e blocos ```json
+            raw_clean = re.sub(r"```(?:json)?|```", "", resposta_raw).strip()
+            m = re.search(r"\{.*\}", raw_clean, re.DOTALL)
             if m:
                 data = json.loads(m.group())
                 intent = data.get("intent", "OUTRO").upper()
                 texto_resposta = (data.get("response") or "").strip() or _fallback_response(intent, nome)
             else:
-                logger.warning("Agente Bazar: resposta sem JSON para card %s.", card_id[:8])
+                # Modelo retornou texto puro — usa como resposta direta, intent OUTRO
+                logger.warning("Agente Bazar: resposta sem JSON para card %s — usando texto direto.", card_id[:8])
+                texto_resposta = resposta_raw.strip() or _fallback_response("OUTRO", nome)
     except Exception as e:
         logger.error("Agente Bazar: IA falhou para card %s: %s", card_id[:8], e)
         await slack_error("Falha no Agente SDR Bazar", exception=e,
