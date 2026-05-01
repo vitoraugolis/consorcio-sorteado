@@ -350,8 +350,8 @@ body {{
       foi contemplada por <strong>{tipo_contemplacao}</strong>. Nossa proposta de compra do consórcio de
       <strong>{tipo_bem}</strong> é no valor de <strong>{proposta}</strong>. Todas as despesas relativas à
       transferência e às parcelas futuras do consórcio são de nossa responsabilidade. Aceitando a proposta,
-      solicitamos os dados pessoais para formalizar o contrato eletrônico de compra e venda — após a assinatura,
-      efetuamos o pagamento imediato.
+      solicitamos os dados pessoais para formalizar o contrato eletrônico de compra e venda —
+      <strong>o pagamento é efetuado à vista, diretamente na sua conta, ANTES de qualquer transferência da cota.</strong>
       <div class="signature">
         Atenciosamente,<br>
         <strong>Equipe Consórcio Sorteado</strong>

@@ -25,6 +25,7 @@ from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_l
 from jobs.follow_up import run_follow_up_safe
 from jobs.contrato import run_contrato_safe
 from jobs.precificacao import run_precificacao_safe
+from jobs.sla_monitor import run_sla_monitor_safe
 from webhooks.router import handle_whapi_webhook
 from services.safety_car import run_pipeline_monitor
 
@@ -197,6 +198,9 @@ def setup_scheduler():
     scheduler.add_job(run_precificacao_safe, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
+    scheduler.add_job(run_sla_monitor_safe, IntervalTrigger(hours=4),
+                      id="sla_monitor", name="Monitor de SLA — Finalização Comercial",
+                      max_instances=1, misfire_grace_time=300)
     # Safety Car pausado — reativar após testes
     # scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
     #                   id="safety_car", name="Safety Car — Monitor de Pipeline",
