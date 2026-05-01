@@ -54,20 +54,40 @@ class FaroError(Exception):
         self.endpoint = endpoint
 
 
+# Connection pool HTTP compartilhado — evita criar/destruir conexões a cada `async with FaroClient()`
+_HTTP_LIMITS = httpx.Limits(max_connections=10, max_keepalive_connections=5, keepalive_expiry=30)
+_shared_faro_client: httpx.AsyncClient | None = None
 
-class FaroClient:
-    def __init__(self):
-        self._client = httpx.AsyncClient(
+
+def _get_shared_http() -> httpx.AsyncClient:
+    global _shared_faro_client
+    if _shared_faro_client is None or _shared_faro_client.is_closed:
+        _shared_faro_client = httpx.AsyncClient(
             base_url=FARO_BASE_URL,
             headers={
                 "Authorization": f"Bearer {FARO_API_KEY}",
                 "Content-Type": "application/json",
             },
             timeout=30.0,
+            limits=_HTTP_LIMITS,
         )
+    return _shared_faro_client
+
+
+async def close_faro_pool() -> None:
+    """Fecha o pool HTTP — chamar no shutdown do servidor."""
+    global _shared_faro_client
+    if _shared_faro_client and not _shared_faro_client.is_closed:
+        await _shared_faro_client.aclose()
+        _shared_faro_client = None
+
+
+class FaroClient:
+    def __init__(self):
+        self._client = _get_shared_http()
 
     async def aclose(self):
-        await self._client.aclose()
+        pass  # pool compartilhado — não fechar por instância
 
     async def __aenter__(self):
         return self
