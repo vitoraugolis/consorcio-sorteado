@@ -167,6 +167,9 @@ def setup_scheduler():
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
     # Reativador pausado — alto impacto, ativar manualmente
     # scheduler.add_job(run_reativador, IntervalTrigger(hours=1), ...)
+    scheduler.add_job(run_reativador, IntervalTrigger(hours=4),
+                      id="reativador", name="Reativador de Leads Inativos",
+                      max_instances=1, misfire_grace_time=300)
     scheduler.add_job(run_follow_up_safe, IntervalTrigger(minutes=30),
                       id="follow_up", name="Follow-up de Propostas",
                       max_instances=1, misfire_grace_time=120)
@@ -195,6 +198,59 @@ async def _start_lp_retro_async():
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
+
+async def _recover_debounce() -> None:
+    """
+    Varredura de startup: detecta e reprocessa mensagens de debounce
+    que sobreviveram a um restart (buffer Redis ainda presente).
+    Aguarda 5s para estabilização antes de iniciar.
+    """
+    from services.session_store import get_redis, pop_debounce_buffer
+    from services.faro import FaroClient, FaroError, get_canal
+    from config import Stage
+    await asyncio.sleep(5)
+    try:
+        r = await get_redis()
+        keys = await r.keys("cs:debounce:*")
+        if not keys:
+            return
+        logger.info("Debounce recovery: %d chaves encontradas no Redis", len(keys))
+        for key in keys:
+            raw_key = key if isinstance(key, str) else key.decode()
+            phone = raw_key.replace("cs:debounce:", "")
+            texts = await pop_debounce_buffer(phone)
+            if not texts:
+                continue
+            combined = " ".join(t if isinstance(t, str) else t.decode() for t in texts)
+            logger.info("Debounce recovery: phone=...%s, %d msg(s) pendente(s)", phone[-6:], len(texts))
+            try:
+                async with FaroClient() as faro:
+                    card = await faro.find_card_by_phone(phone)
+                if not card:
+                    logger.warning("Debounce recovery: card não encontrado para ...%s — descartando", phone[-6:])
+                    continue
+                stage = card.get("stage_id") or ""
+                canal = get_canal(card)
+                # Rotear para o agente correto pelo stage/canal
+                if stage in (Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ASSINATURA):
+                    from webhooks.negociador import handle_message as _neg_handle
+                    await _neg_handle(card, combined, stage)
+                elif canal == "lista":
+                    from webhooks.agente_listas import handle_message as _lista_handle
+                    await _lista_handle(card, combined)
+                elif canal in ("bazar", "lp"):
+                    from webhooks.agente_bazar import handle_message as _bazar_handle
+                    await _bazar_handle(card, combined)
+                else:
+                    logger.info("Debounce recovery: stage/canal desconhecido para ...%s — descartando", phone[-6:])
+                    continue
+                logger.info("Debounce recovery: mensagem reprocessada para ...%s (stage=%s)", phone[-6:], stage[:8])
+            except Exception as e:
+                logger.warning("Debounce recovery: erro ao reprocessar ...%s: %s", phone[-6:], e)
+    except Exception as e:
+        logger.warning("Debounce recovery: falha na varredura Redis: %s", e)
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -229,6 +285,10 @@ async def lifespan(app: FastAPI):
                     _start_lp_retro_async(),
                     "lp_retro startup"
                 ))
+
+    # Recovery de debounce: reprocessa mensagens acumuladas antes do restart
+    if redis_ok:
+        asyncio.create_task(_guarded_task(_recover_debounce(), "debounce_recovery"))
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))

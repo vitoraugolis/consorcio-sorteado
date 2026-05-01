@@ -7,7 +7,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-from config import NOTIFY_PHONES, Stage, TEST_MODE, filter_test_cards
+from config import NOTIFY_PHONES, Stage, TEST_MODE, filter_test_cards, SEND_WINDOW_START, SEND_WINDOW_END, TZ_BRASILIA
 
 _processing: dict[str, asyncio.Lock] = {}
 
@@ -262,6 +262,9 @@ async def generate_and_send_contract(card: dict) -> bool:
 
 async def run_contrato() -> None:
     logger.info("Job contrato: verificando stage ACEITO")
+    if not (SEND_WINDOW_START <= datetime.now(TZ_BRASILIA).hour < SEND_WINDOW_END):
+        logger.info("Contrato: fora da janela de envio, pulando.")
+        return
     try:
         async with FaroClient() as faro:
             cards = await faro.watch_new(Stage.ACEITO)

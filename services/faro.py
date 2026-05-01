@@ -238,6 +238,52 @@ class FaroClient:
             )
         return candidatos[0]
 
+    async def find_all_cards_by_phone(self, phone: str) -> list[dict]:
+        """
+        Busca TODOS os cards ativos associados ao telefone, em todos os canais.
+        Retorna lista deduplicada por card id, excluindo stages terminais.
+
+        Usado pelo negociador para consciência coletiva cross-fluxo:
+        se o lead aparece em Bazar E Lista, ambos os cards são retornados.
+        """
+        seen_ids: set[str] = set()
+        all_cards: list[dict] = []
+        digits = "".join(c for c in phone if c.isdigit())
+        variants = list(dict.fromkeys([phone, digits, f"+{digits}"]))
+
+        for variant in variants:
+            try:
+                data = await self._get("/api-cards-get", {
+                    "pipeline_id": PIPELINE_ID,
+                    "field_name": "Telefone",
+                    "field_value": variant,
+                })
+                if data.get("id"):
+                    cid = data["id"]
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        all_cards.append(data)
+                else:
+                    cards = data.get("cards") or data.get("data", {}).get("cards", [])
+                    for c in (cards or []):
+                        cid = c.get("id", "")
+                        if cid and cid not in seen_ids:
+                            seen_ids.add(cid)
+                            all_cards.append(c)
+            except FaroError:
+                continue
+
+        # Exclui stages terminais
+        _TERMINAL_STAGES = {
+            "d5c9a6e1-1b5b-424d-8659-4d002599586b",  # PERDIDO
+            "38c91042-2205-4d7d-9015-215a526acefc",  # NAO_QUALIFICADO
+            "b4f34818-ba01-478f-a163-e900ba51daef",  # FLUXO_CADENCIA
+            "fb52b454-de52-4057-bd2c-645014636cba",  # DISPENSADOS
+            "e86bd9b3-f2aa-4b32-9d80-3e1c249a50ad",  # LIXO
+            "c6ac32c6-74c2-459f-9a98-3e14cf81ebac",  # SUCESSO
+        }
+        return [c for c in all_cards if c.get("stage_id") not in _TERMINAL_STAGES]
+
     async def get_cards_from_stage(
         self,
         stage_id: str = None,
