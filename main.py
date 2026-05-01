@@ -46,7 +46,7 @@ if not any(isinstance(h, RotatingFileHandler) for h in _root.handlers):
     _root.addHandler(_file_handler)
 
 import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
+# FastApiIntegration removida — conflito com asynccontextmanager lifespan
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ _SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 if _SENTRY_DSN:
     sentry_sdk.init(
         dsn=_SENTRY_DSN,
-        integrations=[FastApiIntegration(), AsyncioIntegration()],
+        integrations=[AsyncioIntegration()],
         traces_sample_rate=0.05,
         environment=os.getenv("ENVIRONMENT", "production"),
     )
