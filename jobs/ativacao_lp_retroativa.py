@@ -80,16 +80,23 @@ def get_status() -> dict:
 
 
 async def _build_queue() -> list[dict]:
-    """Monta fila de todos os LP (sorteio + lance) em stages ativas, ordem desc updated_at."""
+    """
+    Monta fila de leads LP que AINDA NÃO receberam mensagem inicial.
+
+    Regras de exclusão (porteiro):
+      1. Stage LP: incluídos (nunca ativados)
+      2. PRIMEIRA_ATIVACAO em diante: EXCLUÍDOS — já receberam mensagem
+      3. LP_LANCE: EXCLUÍDO — já receberam msg de lance (sorteio/lance), não reativar
+      4. Qualquer stage terminal: EXCLUÍDOS
+
+    Objetivo: esta fila é de ativação inicial, não de follow-up.
+    Cards que já saíram de LP já foram tocados.
+    """
     from config import Stage
 
+    # APENAS stage LP (nunca ativados) — não reprocessar leads que já avançaram
     STAGES_VARRER = [
         Stage.LP,
-        Stage.PRIMEIRA_ATIVACAO,
-        Stage.SEGUNDA_ATIVACAO,
-        Stage.TERCEIRA_ATIVACAO,
-        Stage.QUARTA_ATIVACAO,
-        Stage.LP_LANCE,
     ]
 
     todos: list[dict] = []
@@ -148,9 +155,16 @@ async def _build_queue() -> list[dict]:
 
 
 async def _dispatch_one(item: dict) -> bool:
-    """Envia mensagem para um lead e move para PRIMEIRA_ATIVACAO. Retorna True se OK."""
+    """
+    Envia mensagem para um lead e move para PRIMEIRA_ATIVACAO. Retorna True se OK.
+
+    Porteiro pré-envio: consulta o FARO imediatamente antes de enviar.
+    Se o card não está mais em stage LP, foi ativado entre a construção da fila
+    e agora — descarta sem enviar.
+    """
     from services.whapi import resolve_phone
     from services.faro import FaroClient, FaroError
+    from config import Stage
 
     card_id = item["id"]
     nome    = item["nome"].split()[0] if item["nome"] else "você"
@@ -160,6 +174,35 @@ async def _dispatch_one(item: dict) -> bool:
     if not item["phone"] and not item.get("phone_alt"):
         logger.warning("LP retro: card %s sem telefone — pulando", card_id[:8])
         return False
+
+    # ── PORTEIRO: verificar stage atual antes de enviar ──────────────────────
+    # Evita reativar leads que já avançaram desde que a fila foi montada
+    # (ex: Sander estava em LP_LANCE mas a fila foi construída quando estava em LP)
+    try:
+        async with FaroClient() as faro:
+            card_atual = await faro.get_card(card_id)
+            stage_atual = card_atual.get("stage_id", "") if card_atual else ""
+            data_ativacao = card_atual.get("Data de primeira ativação", "") if card_atual else ""
+
+            # Se já saiu do stage LP original, já foi ativado — não reenviar
+            if stage_atual and stage_atual != Stage.LP:
+                logger.info(
+                    "LP retro porteiro: card %s já está em stage %s (não é LP) — DESCARTANDO sem enviar",
+                    card_id[:8], stage_atual[:8],
+                )
+                return False
+
+            # Se tem data de primeira ativação gravada, já foi ativado antes
+            if data_ativacao and data_ativacao.strip():
+                logger.info(
+                    "LP retro porteiro: card %s já tem 'Data de primeira ativação' = '%s' — DESCARTANDO",
+                    card_id[:8], data_ativacao,
+                )
+                return False
+    except Exception as e:
+        logger.warning("LP retro porteiro: falha ao verificar card %s — prosseguindo por segurança: %s",
+                       card_id[:8], e)
+    # ─────────────────────────────────────────────────────────────────────────
 
     if tipo == "sorteio":
         msg = MSG_SORTEIO_EXTRATO.format(nome=nome, adm=adm)
@@ -187,9 +230,17 @@ async def _dispatch_one(item: dict) -> bool:
             await w.send_text(phone, msg, _log_nome=item["nome"], _log_card_id=card_id)
 
         # nao_contemplada → PERDIDO (não vão enviar extrato)
-        # sorteio/lance → PRIMEIRA_ATIVACAO (aguarda resposta normal; extrato move para ESPERA)
-        stage_destino = Stage.PERDIDO if tipo == "nao_contemplada" else Stage.PRIMEIRA_ATIVACAO
-        motivo = "nao-contemplada — convidado para o grupo" if tipo == "nao_contemplada" else f"lp-retro-{tipo}"
+        # lance          → LP_LANCE  (silêncio total até humano intervir)
+        # sorteio        → PRIMEIRA_ATIVACAO (aguarda extrato)
+        if tipo == "nao_contemplada":
+            stage_destino = Stage.PERDIDO
+            motivo = "nao-contemplada — convidado para o grupo"
+        elif tipo == "lance":
+            stage_destino = Stage.LP_LANCE
+            motivo = "lp-retro-lance"
+        else:
+            stage_destino = Stage.PRIMEIRA_ATIVACAO
+            motivo = "lp-retro-sorteio"
 
         async with FaroClient() as faro:
             await faro.move_card(card_id, stage_destino)
