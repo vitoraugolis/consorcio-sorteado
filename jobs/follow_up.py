@@ -34,18 +34,62 @@ logger = logging.getLogger(__name__)
 MAX_FOLLOW_UPS = 5          # 5 mensagens automáticas; na 6ª → escala para humano
 ESCALATION_AT  = 6          # num_fups == ESCALATION_AT → handoff
 
-# Intervalos mínimos entre cada tentativa (em segundos)
-_INTERVALS = {
-    1: 45  * 60,    # #1 → 45 min após proposta
-    2: 3   * 3600,  # #2 → 3h após #1
-    3: 8   * 3600,  # #3 → 8h após #2  (próximo período do dia)
-    4: 24  * 3600,  # #4 → 1 dia após #3
-    5: 48  * 3600,  # #5 → 2 dias após #4 — última mensagem automática
+# Intervalos mínimos entre cada tentativa (em horas — usados por _next_send_time)
+# U2: #1 passou de 45min para 4h — evita mensagem enviada antes do lead processar a proposta
+_INTERVAL_HOURS = {
+    1: 4,    # #1 → 4h após proposta  (antes: 45min — muito agressivo)
+    2: 24,   # #2 → 1 dia após #1     (antes: 3h)
+    3: 48,   # #3 → 2 dias após #2    (antes: 8h)
+    4: 96,   # #4 → 4 dias após #3    (antes: 1 dia)
+    5: 168,  # #5 → 7 dias após #4    (antes: 2 dias) — cadência 14 dias total
 }
+# Backward compat em segundos para código que ainda usa _INTERVALS
+_INTERVALS = {k: v * 3600 for k, v in _INTERVAL_HOURS.items()}
 
 
 def _is_within_send_window() -> bool:
+    """Verifica se agora está dentro da janela de envio (08h–20h BRT)."""
     return SEND_WINDOW_START <= datetime.now(TZ_BRASILIA).hour < SEND_WINDOW_END
+
+
+def _next_send_time(last_activity_ts: float, num_fups: int) -> float:
+    """
+    Calcula o timestamp Unix do próximo envio permitido para este lead.
+
+    Regras:
+      1. Soma o intervalo em horas ao último timestamp de atividade
+      2. Se o resultado cair fora da janela 08h–20h BRT, avança para
+         as 08h do próximo dia útil dentro da janela
+      3. Garante que o lead nunca receba mensagem fora de 08h–20h BRT
+
+    Exemplo: proposta às 18h + intervalo 4h = 22h → avança para 08h amanhã
+    """
+    from datetime import timedelta
+    import math
+
+    interval_h = _INTERVAL_HOURS.get(num_fups + 1, _INTERVAL_HOURS[5])
+    candidate_ts = last_activity_ts + interval_h * 3600
+
+    candidate_dt = datetime.fromtimestamp(candidate_ts, tz=TZ_BRASILIA)
+    hora = candidate_dt.hour
+
+    if SEND_WINDOW_START <= hora < SEND_WINDOW_END:
+        return candidate_ts  # já está na janela — ok
+
+    # Fora da janela: avança para 08h do dia seguinte (ou mesmo dia se ainda não chegou)
+    if hora >= SEND_WINDOW_END:
+        # Passou das 20h → amanhã às 08h
+        next_day = candidate_dt.date() + timedelta(days=1)
+    else:
+        # Antes das 08h → hoje às 08h
+        next_day = candidate_dt.date()
+
+    next_window = datetime(
+        year=next_day.year, month=next_day.month, day=next_day.day,
+        hour=SEND_WINDOW_START, minute=0, second=0,
+        tzinfo=TZ_BRASILIA,
+    )
+    return next_window.timestamp()
 
 
 def _count_followups(card: dict) -> int:
@@ -92,6 +136,14 @@ def _get_interval(num_fups: int) -> int:
 
 
 def _should_followup(card: dict) -> bool:
+    """
+    Retorna True se este card está pronto para receber o próximo follow-up.
+
+    Usa _next_send_time para garantir que:
+      - O intervalo configurado já passou
+      - O horário calculado está dentro da janela 08h–20h BRT
+      - Nenhum follow-up é enviado fora da janela, mesmo que o intervalo tenha passado
+    """
     num_fups = _count_followups(card)
     if num_fups >= ESCALATION_AT:
         return False
@@ -102,8 +154,8 @@ def _should_followup(card: dict) -> bool:
         ts = int(ultima) if str(ultima).isdigit() else int(
             datetime.fromisoformat(ultima.replace("Z", "+00:00")).timestamp()
         )
-        intervalo = _get_interval(num_fups)
-        return (time.time() - ts) >= intervalo
+        next_ts = _next_send_time(ts, num_fups)
+        return time.time() >= next_ts
     except (ValueError, TypeError):
         return True
 
