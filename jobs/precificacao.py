@@ -572,16 +572,14 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
         return False
 
-    # ── Aprovação antes de enviar ─────────────────────────────────────────────
-    # Listas: requer aprovação manual (proposta calculada, mas Vitor valida antes de enviar)
-    # Bazar/LP: auto-aprovado — extrato foi analisado pelo Gemini com confidence > 0.5
-    #           e proposta calculada com base em dados reais do extrato.
+    # ── Envio da proposta — totalmente automático ────────────────────────────
+    # Todos os fluxos têm proposta calculada automaticamente:
+    #   Bazar/LP → a partir dos dados do extrato analisado pelo Gemini
+    #   Listas   → a partir do crédito já inserido no card no FARO
+    # Não há etapa de aprovação manual.
     #
     # SEGURANÇA: Só compramos cotas contempladas por SORTEIO.
-    # Auto-aprovação bloqueada se Tipo contemplação for LANCE.
-    # (O qualificador já bloqueia, mas esta é uma segunda camada de defesa.)
-    aprovado = str(card.get("Aprovado Precificacao") or "").strip().lower()
-    link_extrato = str(card.get("Link do Extrato") or card.get("Link do extrato") or "").strip()
+    # Bloqueio de lance abaixo — segunda camada de defesa (camada 1 está no qualificador).
     fonte_bazar_lp = not is_lista(card)
     tipo_cont = (card.get("Tipo contemplação") or "").strip().lower()
     _e_lance = tipo_cont in ("lance", "contemplada-lance")
@@ -609,41 +607,15 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         )
         return False
 
-    auto_aprovado = fonte_bazar_lp and bool(link_extrato)
-
-    if aprovado != "sim" and not auto_aprovado:
-        ja_notificado = str(card.get("Notificado Precificacao") or "").strip().lower()
-        if ja_notificado != "sim":
-            adm = get_adm(card)
-            credito = _parse_float(card.get("Crédito") or "0")
-            percentual = _parse_float(card.get("Porcentagem paga até o momento") or "0")
-            fonte = card.get("Fonte") or ("Listas" if is_lista(card) else "Bazar/LP")
-            notif = (
-                f"💰 *Proposta para aprovação*\n\n"
-                f"*Lead:* {nome}\n"
-                f"*Fonte:* {fonte}\n"
-                f"*Adm:* {adm}\n"
-                f"*Crédito:* {_fmt_currency(str(int(credito))) if credito else 'a verificar'}\n"
-                f"*% Pago:* {percentual:.1f}%\n"
-                f"*Proposta calculada:* *{_fmt_currency(proposta)}*\n\n"
-                f"Para aprovar, marque *Aprovado Precificacao = sim* no card:\n"
-                f"https://app.faro.com/cards/{card_id}"
-            )
-            try:
-                await notify_team(notif)
-                await faro.update_card(card_id, {"Notificado Precificacao": "sim"})
-                logger.info("Precificação: aguardando aprovação para card %s — notificado", card_id[:8])
-            except Exception as e:
-                logger.warning("Precificação: falha ao notificar aprovação: %s", e)
-        else:
-            logger.info("Precificação: card %s aguardando aprovação (já notificado)", card_id[:8])
-        return False
+    # Auto-aprovação:
+    #   Bazar/LP — extrato analisado pelo Gemini (link_extrato preenchido)
+    #   Listas   — proposta calculada diretamente do crédito já no card (sem extrato)
+    # Ambos os fluxos têm proposta calculada automaticamente → envio direto, sem aprovação manual.
+    auto_aprovado = fonte_bazar_lp or is_lista(card)
 
     if auto_aprovado:
-        logger.info(
-            "Precificação: Bazar/LP card %s auto-aprovado (extrato Gemini: %s)",
-            card_id[:8], link_extrato[-60:],
-        )
+        fonte_log = "Bazar/LP (extrato Gemini)" if fonte_bazar_lp else "Listas (crédito do card)"
+        logger.info("Precificação: card %s auto-aprovado — %s", card_id[:8], fonte_log)
 
     agora = datetime.now(timezone.utc).isoformat()
 
