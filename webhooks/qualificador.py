@@ -685,6 +685,14 @@ async def handle_qualification(card: dict, msg) -> None:
                     update_fields["Bem"] = dp.bem
                 if dc.cpf:
                     update_fields["CPF"] = dc.cpf
+                # Tipo Pessoa extraído do extrato: "PF" ou "PJ"
+                # Bazar/LP: único momento em que sabemos se a cota é CPF ou CNPJ
+                if dc.tipo_pessoa:
+                    _tp = dc.tipo_pessoa.strip().upper()
+                    if _tp in ("PF", "CPF", "PESSOA FÍSICA", "PESSOA FISICA"):
+                        update_fields["Tipo Pessoa"] = "PF"
+                    elif _tp in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA"):
+                        update_fields["Tipo Pessoa"] = "PJ"
                 if dc.nome and not card.get("Nome do contato"):
                     update_fields["Nome do contato"] = dc.nome
                 logger.info(
