@@ -1184,6 +1184,14 @@ async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) 
     proposta = card.get("Proposta Realizada") or "o valor combinado"
     adm      = get_adm(card)
 
+    # Limpa o guard para este lead — ele aceitou, pode receber novas mensagens
+    # (coleta de dados tem prefixo diferente da ativação, mas por segurança zeramos)
+    try:
+        from services.message_guard import clear_guard
+        await clear_guard(phone)
+    except Exception:
+        pass
+
     tipo_pessoa = str(card.get("Tipo Pessoa") or "").strip().upper()
     is_pj = tipo_pessoa in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA")
 

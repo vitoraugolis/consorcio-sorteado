@@ -262,6 +262,23 @@ class WhapiClient:
         phone = self._normalize_phone(to)
         if not await self._validate_lead_phone(phone):
             return {"sent": False, "blocked": True, "reason": "no_whatsapp"}
+
+        # ── PORTEIRO DE DEDUPLICAÇÃO ──────────────────────────────────────────
+        # Bloqueia reenvio de mensagem idêntica (ou muito similar) para o mesmo
+        # número dentro de uma janela de tempo. Fail-open: se Redis falhar, envia.
+        try:
+            from services.message_guard import check_and_register
+            bloqueado, motivo = await check_and_register(phone, message, canal=self._canal)
+            if bloqueado:
+                logger.warning(
+                    "Whapi[%s] PORTEIRO bloqueou envio → %s | motivo: %s",
+                    self._canal, phone[-4:], motivo,
+                )
+                return {"sent": False, "blocked": True, "reason": f"porteiro:{motivo}"}
+        except Exception as _pg_err:
+            logger.warning("Whapi: porteiro falhou (%s) — prosseguindo por segurança", _pg_err)
+        # ─────────────────────────────────────────────────────────────────────
+
         logger.info("Whapi[%s] send_text → %s", self._canal, phone)
         result = await self._post("/messages/text", {"to": phone, "body": message})
         # Log no #log-cs — ignora grupos (@g.us) e números internos da equipe
