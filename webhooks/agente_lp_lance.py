@@ -180,6 +180,9 @@ async def handle_message(card: dict, text: str) -> None:
         logger.info("agente_lp_lance: card %s sem interesse — movendo para PERDIDO", card_id[:8])
         async with FaroClient() as faro:
             try:
+                await faro.update_card(card_id, {
+                    "Motivo de perda": "SEM_INTERESSE — lead LP Lance recusou contato inicial"
+                })
                 await faro.move_card(card_id, Stage.PERDIDO)
             except FaroError as e:
                 logger.error("agente_lp_lance: erro ao mover card %s: %s", card_id[:8], e)

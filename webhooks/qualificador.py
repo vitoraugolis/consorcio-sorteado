@@ -456,6 +456,9 @@ async def handle_qualification(card: dict, msg) -> None:
         history = history_append(history, "assistant", bot_msg)
         async with FaroClient() as faro:
             try:
+                await faro.update_card(card_id, {
+                    "Motivo de perda": "SEM_INTERESSE — recusa verbal antes de enviar extrato"
+                })
                 await faro.move_card(card_id, Stage.PERDIDO)
             except FaroError as e:
                 logger.error("Qualificador: erro ao mover card para PERDIDO: %s", e)

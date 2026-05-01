@@ -105,8 +105,14 @@ async def _handle_intent(intent: str, card: dict) -> None:
         # a equipe preencher "Proposta Realizada" no FARO.
         logger.info("Agente Listas: card %s → PRECIFICACAO (aguarda proposta manual)", card_id[:8])
     elif intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
+        motivo = (
+            "COTA_VENDIDA — lead informou que a cota já foi vendida"
+            if intent == "RECUSA_COTA_VENDIDA"
+            else "SEM_INTERESSE — lead de lista recusou contato inicial"
+        )
         async with FaroClient() as faro:
             try:
+                await faro.update_card(card_id, {"Motivo de perda": motivo})
                 await faro.move_card(card_id, Stage.DISPENSADOS)
             except FaroError as e:
                 logger.error("Erro ao mover %s para DISPENSADOS: %s", card_id[:8], e)

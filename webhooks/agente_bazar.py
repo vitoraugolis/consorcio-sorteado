@@ -94,8 +94,14 @@ def _fallback_response(intent: str, nome: str) -> str:
 async def _handle_intent(intent: str, card: dict) -> None:
     card_id = card.get("id", "")
     if intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
+        motivo = (
+            "COTA_VENDIDA — lead informou que a cota já foi vendida"
+            if intent == "RECUSA_COTA_VENDIDA"
+            else "SEM_INTERESSE — lead não tem interesse em vender no momento"
+        )
         async with FaroClient() as faro:
             try:
+                await faro.update_card(card_id, {"Motivo de perda": motivo})
                 await faro.move_card(card_id, Stage.PERDIDO)
             except FaroError as e:
                 logger.error("Erro ao mover %s para PERDIDO: %s", card_id[:8], e)

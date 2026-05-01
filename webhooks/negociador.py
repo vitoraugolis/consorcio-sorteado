@@ -450,6 +450,7 @@ class NegotiationResult:
     notify_message:           str            = ""
     notify_phones:            Optional[list] = None
     extra_fields:             Optional[dict] = None
+    lost_reason:              Optional[str]  = None   # preenchido quando next_stage == PERDIDO
     # Resposta atrasada (simula "fui verificar com o diretor")
     delayed_followup:         Optional[str]  = None
     delayed_followup_seconds: int            = 0
@@ -843,6 +844,7 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
             intent=intent,
             response_message=response,
             next_stage=Stage.PERDIDO,
+            lost_reason="VALOR_INSUFICIENTE — teto da sequência atingido sem aceite",
         )
 
     # Formata nova proposta e injeta na resposta da IA
@@ -1346,6 +1348,9 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
             }
             if result.extra_fields:
                 update_fields.update(result.extra_fields)
+            # Registra motivo de perda automaticamente ao mover para PERDIDO
+            if result.next_stage == Stage.PERDIDO and result.lost_reason:
+                update_fields["Motivo de perda"] = result.lost_reason
             await faro.update_card(card_id, update_fields)
 
             if result.next_stage and result.next_stage != current_stage_id:
