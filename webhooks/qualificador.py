@@ -645,6 +645,11 @@ async def handle_qualification(card: dict, msg) -> None:
                 "Parcelas pagas": str(analise.parcelas_pagas) if analise.parcelas_pagas else "",
                 "Quantidade total meses": str(analise.total_parcelas) if analise.total_parcelas else "",
             }
+            # Gravar % pago diretamente — precificação lê este campo para calcular proposta correta
+            # SEM ele gravado aqui, precificação calcula 0% e envia proposta mínima (bug Gabriell)
+            if analise.valor_pago and analise.valor_credito:
+                _pct = round(analise.valor_pago / analise.valor_credito * 100, 2)
+                update_fields["Porcentagem paga até o momento"] = str(_pct)
             if analise.valor_credito:
                 update_fields["Crédito"] = str(analise.valor_credito)
             if analise.administradora:

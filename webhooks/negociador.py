@@ -433,6 +433,7 @@ class Intent(str, Enum):
     DUVIDA          = "DUVIDA"
     DESCONFIANCA    = "DESCONFIANCA"
     AGENDAR         = "AGENDAR"
+    DADOS_PESSOAIS  = "DADOS_PESSOAIS"   # lead enviando dados para o contrato
     OUTRO           = "OUTRO"
 
 
@@ -511,7 +512,8 @@ MENSAGEM ATUAL DO LEAD: "{mensagem}"
 REGRA ANTI-ALUCINAÇÃO: use apenas os dados acima. Se não souber, classifique como AGENDAR.
 
 INTENTS — escolha o que melhor descreve a INTENÇÃO real por trás da mensagem:
-- ACEITAR:          aceitação INCONDICIONAL ("aceito", "pode fechar", "topei", "bora")
+- ACEITAR:          aceitação INCONDICIONAL ("aceito", "pode fechar", "topei", "bora",
+                    "perfeito", "confirmado", "combinado", "pode enviar o contrato")
                     ATENÇÃO: "aceito por R$ X" ou "fecho se você me der X" → CONTRA_PROPOSTA
 - RECUSAR:          recusa a vender ou pedido para parar o contato
 - MELHORAR_VALOR:   quer mais dinheiro mas sem citar valor específico
@@ -519,9 +521,13 @@ INTENTS — escolha o que melhor descreve a INTENÇÃO real por trás da mensage
                     Se apenas pergunta SE pode fazer contraproposta → DUVIDA
 - OFERECERAM_MAIS:  outro comprador ou empresa ofereceu valor maior (pode ou não ter citado o valor)
 - NEGOCIAR:         objeção ao valor sem especificar quanto quer; quer "negociar" sem dizer o número
-- DUVIDA:           pergunta sobre processo, documentação, prazo — respondível com os dados acima
+- DUVIDA:           pergunta sobre processo, documentação, prazo, contrato, pagamento, segurança —
+                    qualquer pergunta operacional. Responda com clareza e segurança.
 - DESCONFIANCA:     medo de golpe, dúvida sobre idoneidade, pedido de CNPJ/comprovação
-- AGENDAR:          quer falar com consultor humano, ligar, ou pergunta fora dos dados disponíveis
+- AGENDAR:          quer falar com consultor humano, ligar, ou pergunta completamente fora do escopo
+- DADOS_PESSOAIS:   o lead está enviando dados para o contrato (nome, CPF, RG, endereço, e-mail,
+                    dados bancários, CNPJ, nome da empresa). Detectar por padrões como
+                    "nome:", "cpf:", "rg:", "endereço:", "cnpj:", "email:" ou lista de dados pessoais.
 - OUTRO:            saudação, agradecimento, "ok", mensagem sem conteúdo decisório
 
 COMO CONSTRUIR A RESPOSTA (campo "response"):
@@ -553,8 +559,15 @@ RETORNE EXCLUSIVAMENTE JSON VÁLIDO (sem markdown, sem texto fora do JSON):
 
 _KEYWORD_MAP = {
     Intent.ACEITAR: [
+        # Aceites explícitos
         "aceito", "aceitar", "quero fechar", "fechado", "topei", "vamos fechar",
         "pode mandar contrato", "concordo", "combinado", "ok pode ser",
+        # Aceites implícitos confirmados nas jornadas reais (Marta: "Perfeito!", "Confirmado", "Combinado")
+        "perfeito", "confirmado", "confirmo", "isso mesmo", "pode ser",
+        "tá bom", "ta bom", "tá ótimo", "ta otimo", "ótimo", "otimo",
+        "fechamos", "fechar", "bora", "vamos nessa", "pode ir", "pode fazer",
+        "tá certo", "ta certo", "correto", "certo", "pode", "sim pode",
+        "ok fechado", "ok combinado", "pode enviar o contrato", "manda o contrato",
     ],
     Intent.RECUSAR: [
         "não quero", "nao quero", "sem interesse", "não tenho interesse",
@@ -568,6 +581,12 @@ _KEYWORD_MAP = {
     ],
     Intent.CONTRA_PROPOSTA: [
         "aceito por", "quero pelo menos", "me paga", "fecho por", "se pagar",
+    ],
+    Intent.DADOS_PESSOAIS: [
+        "nome:", "cpf:", "rg:", "cnpj:", "endereço:", "endereco:", "e-mail:",
+        "email:", "profissão:", "profissao:", "estado civil:", "cep:",
+        "nome da empresa:", "nome completo:", "dados bancários:", "dados bancarios:",
+        "agência:", "agencia:", "conta:", "pix:",
     ],
     Intent.OFERECERAM_MAIS: [
         "outro lugar", "outra empresa", "me ofereceram", "recebi proposta",
@@ -659,6 +678,23 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
                 f"*Administradora:* {adm}\n"
                 f"*Telefone:* {get_phone(card) or 'não informado'}\n\n"
                 f"O sistema vai iniciar a coleta de dados para contrato. ✅"
+            ),
+        )
+
+    # ── DADOS_PESSOAIS ────────────────────────────────────────────────────────
+    # Lead enviou dados para contrato (CPF, nome, endereço, etc.) sem ter sido solicitado
+    # formalmente — acontece quando lead aceita e já manda tudo junto.
+    # Mover para ASSINATURA e deixar agente_contrato processar.
+    if intent == Intent.DADOS_PESSOAIS:
+        return NegotiationResult(
+            intent=intent,
+            response_message="",   # agente_contrato assumirá e confirmará os dados
+            next_stage=Stage.ACEITO,  # aciona _iniciar_coleta que move para ASSINATURA
+            notify_team=True,
+            notify_message=(
+                f"📋 *Lead enviou dados para contrato espontaneamente!*\n\n"
+                f"*Cliente:* {nome} | *Adm:* {adm}\n"
+                f"O sistema vai processar os dados e iniciar a coleta via agente_contrato. ✅"
             ),
         )
 
@@ -992,6 +1028,7 @@ async def _classify_with_ai(
     card: dict,
     stage_nome: str,
     history: list[dict] | None = None,
+    extra_system: str = "",
 ) -> NegotiationResult:
     """
     Classifica a mensagem e gera resposta via IA.
@@ -999,6 +1036,7 @@ async def _classify_with_ai(
     """
     historico_txt = _history_to_text(history or [], exclude_last=True)
 
+    _system = SYSTEM_PROMPT + extra_system if extra_system else SYSTEM_PROMPT
     prompt = CLASSIFY_PROMPT_TEMPLATE.format(
         stage_nome=stage_nome,
         dados_card=build_card_context(card),
@@ -1009,7 +1047,7 @@ async def _classify_with_ai(
     try:
         raw = await ai.complete(
             prompt=prompt,
-            system=SYSTEM_PROMPT,
+            system=_system,
             max_tokens=500,
         )
 
@@ -1236,10 +1274,29 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
     history = await load_history_smart(phone, card_fresh)
     history = history_append(history, "user", mensagem)
 
+    # ── Consciência cross-fluxo: verifica outros cards do mesmo lead ────────────
+    _cross_context = ""
+    try:
+        async with FaroClient() as _faro_all:
+            _all_cards = await _faro_all.find_all_cards_by_phone(phone)
+        _outros = [c for c in _all_cards if c.get("id") != card_id]
+        if _outros:
+            from services.faro import get_fonte as _get_fonte
+            _linhas = []
+            for _oc in _outros:
+                _fluxo = _get_fonte(_oc) or "fluxo desconhecido"
+                _stage_oc = _oc.get("stage_id", "")[:8]
+                _prop_oc = _oc.get("Proposta Realizada") or "nenhuma"
+                _linhas.append(f"fluxo {_fluxo} (stage {_stage_oc}, proposta: {_prop_oc})")
+            _cross_context = "\n\nCONTEXTO CROSS-FLUXO: Este lead também aparece em " + "; ".join(_linhas) + ". Não duplicar propostas já feitas."
+            logger.info("Negociador: cross-fluxo detectado para %s — %d outros cards", card_id[:8], len(_outros))
+    except Exception as _cfe:
+        logger.debug("Negociador: erro ao buscar cross-fluxo: %s", _cfe)
+
     stage_nome = "Precificação" if current_stage_id == Stage.PRECIFICACAO else "Em Negociação"
 
     async with AIClient() as ai:
-        result = await _classify_with_ai(ai, mensagem, card_fresh, stage_nome, history)
+        result = await _classify_with_ai(ai, mensagem, card_fresh, stage_nome, history, extra_system=_cross_context)
 
     logger.info(
         "Negociador: %s (%s) → intent=%s | next_stage=%s",
