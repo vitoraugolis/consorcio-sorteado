@@ -50,10 +50,26 @@ def _is_within_send_window() -> bool:
 
 def _count_followups(card: dict) -> int:
     """
-    Conta follow-ups já realizados.
-    Usa "Num Follow Ups" se disponível (campos de Lista), caso contrário
-    conta turns do assistente no histórico de conversa como proxy.
+    Conta follow-ups já realizados para a proposta ATUAL.
+
+    Lógica de reset: se Proposta Realizada mudou desde o último ciclo
+    (nova proposta escalada pelo negociador), o contador zera — o lead
+    recebe a sequência completa de follow-ups para a nova proposta.
+
+    Compara 'Follow Up Proposta Base' (gravado no primeiro FU do ciclo)
+    com 'Proposta Realizada' atual. Se divergirem → contador = 0.
     """
+    proposta_atual = str(card.get("Proposta Realizada") or "").strip()
+    proposta_base  = str(card.get("Follow Up Proposta Base") or "").strip()
+
+    # Nova proposta desde o último ciclo → zera a sequência
+    if proposta_atual and proposta_base and proposta_atual != proposta_base:
+        logger.info(
+            "Follow-up: card %s — nova proposta detectada (%.0s → %.0s), resetando contador.",
+            str(card.get("id", ""))[:8], proposta_base, proposta_atual,
+        )
+        return 0
+
     from_field = card.get("Num Follow Ups")
     if from_field is not None:
         try:
@@ -63,8 +79,6 @@ def _count_followups(card: dict) -> int:
     # Fallback: contar mensagens do assistente no histórico
     from services.faro import load_history
     history = load_history(card)
-    # Conta apenas turns de follow-up (após proposta enviada)
-    # Proxy conservador: metade dos turns do assistente (pois o primeiro é a proposta)
     assistant_turns = sum(1 for t in history if t.get("role") == "assistant")
     return max(0, assistant_turns - 1)  # -1 para não contar a mensagem de proposta
 
@@ -438,11 +452,23 @@ async def run_follow_up():
                 if success:
                     total_ok += 1
                     try:
-                        # Grava Num Follow Ups para cards de Lista (que têm o campo no schema)
-                        # Para Bazar/LP, o contador é inferido do histórico de conversa
+                        proposta_atual = str(card.get("Proposta Realizada") or "").strip()
+                        proposta_base  = str(card.get("Follow Up Proposta Base") or "").strip()
+                        houve_reset    = bool(proposta_atual and proposta_base and proposta_atual != proposta_base)
+
                         update = {"Ultima atividade": str(int(time.time()))}
-                        if card.get("Num Follow Ups") is not None:
+
+                        # Ancora a proposta base para detectar mudanças no próximo ciclo
+                        if proposta_atual:
+                            update["Follow Up Proposta Base"] = proposta_atual
+
+                        # Grava / zera Num Follow Ups
+                        if houve_reset:
+                            # Nova proposta: contador começa em 1 (acabamos de enviar o #1)
+                            update["Num Follow Ups"] = "1"
+                        elif card.get("Num Follow Ups") is not None:
                             update["Num Follow Ups"] = str(num_atual + 1)
+
                         await faro.update_card(card["id"], update)
                     except FaroError:
                         pass
