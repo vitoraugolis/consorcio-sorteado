@@ -576,9 +576,39 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
     # Listas: requer aprovação manual (proposta calculada, mas Vitor valida antes de enviar)
     # Bazar/LP: auto-aprovado — extrato foi analisado pelo Gemini com confidence > 0.5
     #           e proposta calculada com base em dados reais do extrato.
+    #
+    # SEGURANÇA: Só compramos cotas contempladas por SORTEIO.
+    # Auto-aprovação bloqueada se Tipo contemplação for LANCE.
+    # (O qualificador já bloqueia, mas esta é uma segunda camada de defesa.)
     aprovado = str(card.get("Aprovado Precificacao") or "").strip().lower()
     link_extrato = str(card.get("Link do Extrato") or card.get("Link do extrato") or "").strip()
     fonte_bazar_lp = not is_lista(card)
+    tipo_cont = (card.get("Tipo contemplação") or "").strip().lower()
+    _e_lance = tipo_cont in ("lance", "contemplada-lance")
+
+    # Segunda camada de defesa: bloqueia proposta para cota de lance antes de enviar
+    if _e_lance:
+        logger.error(
+            "Precificação: BLOQUEIO DE SEGURANÇA — card %s tem Tipo contemplação='%s'. "
+            "Proposta NÃO enviada. Movendo para Não Qualificado.",
+            card_id[:8], tipo_cont,
+        )
+        try:
+            await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
+            await faro.update_card(card_id, {
+                "Motivo dispensa": f"Bloqueio precificação: cota contemplada por lance (tipo='{tipo_cont}')",
+            })
+        except FaroError as e:
+            logger.error("Precificação: erro no rollback de lance para card %s: %s", card_id[:8], e)
+        from services.slack import slack_error as _slack_err
+        await _slack_err(
+            f"🚨 BLOQUEIO SEGURANÇA — Proposta de lance interceptada na precificação\n"
+            f"Lead: {nome} | Card: `{card_id[:8]}` | Tipo: `{tipo_cont}`\n"
+            f"Movido para Não Qualificado automaticamente.",
+            context={"card_id": card_id, "nome": nome, "tipo_contemplacao": tipo_cont},
+        )
+        return False
+
     auto_aprovado = fonte_bazar_lp and bool(link_extrato)
 
     if aprovado != "sim" and not auto_aprovado:
