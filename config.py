@@ -42,7 +42,8 @@ class Stage:
     NAO_QUALIFICADO = "38c91042-2205-4d7d-9015-215a526acefc"
     LP = "f3d1c2ea-ab74-4275-9583-bcec89c58c0c"
     PROBLEMA_CONTATO = "0f593ed2-3c5e-477e-9b0d-1740808fe145"
-    LP_LANCE = "090a876f-09ba-4bc1-a0a0-92f30a0d7cab"  # Lead LP Lance
+    LP_LANCE   = "090a876f-09ba-4bc1-a0a0-92f30a0d7cab"  # Lead LP Lance
+    EM_CONTATO = "417d8c74-c96b-413d-95fe-7226f50cdc2e"  # Lead em conversa ativa aguardando extrato
 
 
 TERMINAL_STAGES: frozenset = frozenset({

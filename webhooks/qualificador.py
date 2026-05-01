@@ -40,7 +40,8 @@ QUALIFICATION_STAGES = {
     Stage.SEGUNDA_ATIVACAO,
     Stage.TERCEIRA_ATIVACAO,
     Stage.QUARTA_ATIVACAO,
-    Stage.TESTES,  # stage de testes — processa normalmente
+    Stage.TESTES,    # stage de testes — processa normalmente
+    Stage.EM_CONTATO,  # lead em conversa ativa aguardando extrato
 }
 
 # Máximo de extratos incorretos antes de escalar para humano
@@ -746,6 +747,13 @@ async def handle_qualification(card: dict, msg) -> None:
     history = history_append(history, "assistant", bot_msg)
     async with FaroClient() as faro:
         await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+        # Mover para EM_CONTATO — lead está em conversa ativa aguardando extrato
+        if card.get("stage_id") != Stage.EM_CONTATO:
+            try:
+                await faro.move_card(card_id, Stage.EM_CONTATO)
+                logger.info("Qualificador: card %s → EM_CONTATO (aguardando extrato)", card_id[:8])
+            except FaroError as e:
+                logger.warning("Qualificador: erro ao mover %s para EM_CONTATO: %s", card_id[:8], e)
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +813,13 @@ async def _handle_extrato_incorreto(
         async with FaroClient() as faro:
             await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
             await save_journey(faro, card_id, journey)
+            # Mover para EM_CONTATO — lead tentou enviar extrato, está em conversa ativa
+            if card.get("stage_id") != Stage.EM_CONTATO:
+                try:
+                    await faro.move_card(card_id, Stage.EM_CONTATO)
+                    logger.info("Qualificador: card %s → EM_CONTATO (extrato incorreto, tentativa %d)", card_id[:8], erros)
+                except FaroError as e:
+                    logger.warning("Qualificador: erro ao mover %s para EM_CONTATO: %s", card_id[:8], e)
 
     logger.info(
         "Qualificador: extrato incorreto card %s — tentativa %d/%d",
