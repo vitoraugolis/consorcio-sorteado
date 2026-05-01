@@ -127,7 +127,7 @@ async def _handle_intent(intent: str, card: dict) -> None:
         notif_msg, notif_phones = _build_handoff_notification(card, "")
         if notif_phones:
             try:
-                async with WhapiClient(canal="lista") as w:
+                async with get_whapi_for_card(card) as w:
                     for np in notif_phones:
                         await w.send_text(np, notif_msg)
             except WhapiError as e:

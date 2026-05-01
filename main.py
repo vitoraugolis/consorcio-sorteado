@@ -126,7 +126,9 @@ async def _whapi_monitor():
 
 
 async def _fila_watchdog():
-    """Verifica a cada 5 min se a fila está rodando e relança se necessário."""
+    """Verifica a cada 5 min se a fila está rodando e relança se necessário.
+    NOTA: Bazar cadenciado (ativacao_bazar_cadenciada) foi desativado em favor da fila Redis.
+    """
     import redis.asyncio as aioredis
     await asyncio.sleep(60)  # aguarda 60s após startup antes de começar a checar
     while True:
@@ -144,10 +146,6 @@ async def _fila_watchdog():
                 if got_lock:
                     logger.warning("🔁 Watchdog: fila parada (%d cards) — relançando.", queue_len)
                     asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
-            # Lança loop Bazar cadenciado (1 lead a cada 15-20 min)
-            from jobs.ativacao_bazar_cadenciada import start as start_bazar_loop
-            start_bazar_loop(interval_min=15, interval_max=20)
-            logger.info("Bazar loop iniciado (15-20 min entre disparos)")
             await _r.aclose()
         except Exception as e:
             logger.warning("Watchdog fila: erro: %s", e)
@@ -185,6 +183,15 @@ def setup_scheduler():
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
 
 
+
+
+async def _start_lp_retro_async():
+    from jobs.ativacao_lp_retroativa import start as _start
+    result = await _start(interval_min=15, interval_max=20)
+    if result.get("total", 0) == 0:
+        logger.info("LP Retro startup: nenhum lead pendente.")
+    else:
+        logger.info("LP Retro startup: %d leads na fila.", result.get("total", 0))
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -212,10 +219,16 @@ async def lifespan(app: FastAPI):
             # Lança fila Bazar/LP no startup
             logger.info("▶️  Lançando fila_ativacao Bazar/LP...")
             asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
-            # Lança loop Bazar cadenciado (1 lead a cada 15-20 min)
-            from jobs.ativacao_bazar_cadenciada import start as start_bazar_loop
-            start_bazar_loop(interval_min=15, interval_max=20)
-            logger.info("Bazar loop iniciado (15-20 min entre disparos)")
+            # NOTA: Bazar cadenciado desativado (item 2) — fila Redis é o mecanismo principal
+            # Relança LP Retroativa se houver leads pendentes
+            from jobs.ativacao_lp_retroativa import get_status as lp_retro_status
+            _lp_status = lp_retro_status()
+            if not _lp_status.get("running"):
+                logger.info("▶️  Relançando LP Retroativa no startup...")
+                asyncio.create_task(_guarded_task(
+                    _start_lp_retro_async(),
+                    "lp_retro startup"
+                ))
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))

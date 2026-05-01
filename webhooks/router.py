@@ -9,6 +9,7 @@ Endpoint único: POST /webhook/whapi
 """
 
 import asyncio
+import time
 import logging
 import re
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from webhooks.agente_contrato import handle_dados_pessoais, handle_extrato_receb
 from webhooks import debounce
 import webhooks.agente_listas as agente_listas
 import webhooks.agente_bazar as agente_bazar
+import webhooks.agente_lp as agente_lp
 import webhooks.agente_lp_lance as agente_lp_lance
 
 logger = logging.getLogger(__name__)
@@ -282,12 +284,16 @@ async def route_message(msg: IncomingMessage) -> None:
         return
 
     # Qualificação: stages de ativação, apenas Bazar/Site (Fonte definida)
+    # LP usa agente_lp (prompt correto para leads de site/landing page)
+    # Bazar usa agente_bazar
     if current_stage in QUALIFICATION_STAGES and not _is_lista_card:
         if msg.is_media_message:
             await handle_qualification(card=card, msg=msg)
         elif msg.is_processable:
+            fonte = str(card.get("Fonte") or "").lower()
+            _dispatch = agente_lp.handle_message if "lp" in fonte or "site" in fonte else agente_bazar.handle_message
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
-                              dispatch=agente_bazar.handle_message)
+                              dispatch=_dispatch)
         return
 
     # ESPERA: lead aguardando envio de extrato (LP retroativa)
@@ -323,6 +329,31 @@ async def route_message(msg: IncomingMessage) -> None:
 
     logger.info("Router: stage %s não tratado para %s.", current_stage[:8], nome)
 
+
+
+_token_cache: dict[str, tuple[str, float]] = {}  # channel_id -> (token, timestamp)
+_TOKEN_CACHE_TTL = 300  # 5 minutos
+
+
+async def _resolve_whapi_token_cached(payload: dict) -> Optional[str]:
+    """Versão cacheada de _resolve_whapi_token — TTL 5 min por channel_id."""
+    channel_id = (
+        payload.get("channel_id")
+        or payload.get("channelId")
+        or (payload.get("event") or {}).get("channel_id")
+        or ""
+    )
+    if channel_id:
+        now = time.time()
+        if channel_id in _token_cache:
+            token, ts = _token_cache[channel_id]
+            if now - ts < _TOKEN_CACHE_TTL:
+                return token
+        token = await _resolve_whapi_token(payload)
+        if token:
+            _token_cache[channel_id] = (token, now)
+        return token
+    return await _resolve_whapi_token(payload)
 
 async def _resolve_whapi_token(payload: dict) -> Optional[str]:
     """
@@ -367,7 +398,7 @@ async def _resolve_whapi_token(payload: dict) -> Optional[str]:
 async def handle_whapi_webhook(payload: dict) -> dict:
     """Entry point para POST /webhook/whapi."""
     # Resolve token do canal para transcrição de áudio
-    token = await _resolve_whapi_token(payload)
+    token = await _resolve_whapi_token_cached(payload)
     messages = parse_whapi_payload(payload, whapi_token=token)
     if not messages:
         return {"status": "ok", "processed": 0}

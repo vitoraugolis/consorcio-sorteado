@@ -30,6 +30,14 @@ async def _with_retry(coro_fn, label: str):
                 await asyncio.sleep(delay)
             else:
                 logger.error("FARO %s: todas as tentativas esgotadas. Último erro: %s", label, e)
+    try:
+        from services.slack import slack_error as _slack_err
+        asyncio.create_task(_slack_err(
+            f"🔴 FARO indisponível após 3 tentativas — endpoint: {label}",
+            context={"endpoint": label}
+        ))
+    except Exception:
+        pass
     raise last_exc
 
 
