@@ -31,7 +31,7 @@ from config import Stage, NOTIFY_PHONES, CONSULTANT_PHONES as _CONSULTANT_PHONES
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
-    get_name, get_phone, get_adm, get_fonte, is_lista,
+    get_name, get_phone, get_adm, get_fonte, is_lista, is_pj,
     load_history, history_append, build_card_context, history_to_text,
     load_journey, save_journey,
 )
@@ -1192,10 +1192,8 @@ async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) 
     except Exception:
         pass
 
-    tipo_pessoa = str(card.get("Tipo Pessoa") or "").strip().upper()
-    is_pj = tipo_pessoa in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA")
 
-    if is_pj:
+    if is_pj(card):
         msg = (
             f"Ótimo, {nome}! 🎉 Vou iniciar o contrato da cota *{adm}* pelo valor de *R$ {proposta}*.\n\n"
             f"Como a cota está em nome de pessoa jurídica, precisarei dos seguintes dados:\n\n"
@@ -1238,7 +1236,7 @@ async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) 
                 "Ultima atividade": datetime.now(timezone.utc).isoformat(),
             })
         logger.info("Negociador: coleta de dados iniciada para card %s → ASSINATURA (tipo=%s)",
-                    card_id[:8], "PJ" if is_pj else "PF")
+                    card_id[:8], "PJ" if is_pj(card) else "PF")
     except Exception as e:
         logger.error("Negociador: erro ao iniciar coleta dados card %s: %s", card_id[:8], e)
 

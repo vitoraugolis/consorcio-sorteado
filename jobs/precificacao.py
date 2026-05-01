@@ -451,215 +451,235 @@ async def _process_card(faro: FaroClient, card: dict) -> bool:
 
 
 async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
+    from services.session_store import acquire_mutex, release_mutex
+    mutex_key = f"job:precificacao:{card_id}"
+    if not await acquire_mutex(mutex_key, ttl=120):
+        logger.info("Precificacao: card %s ja em processamento - pulando", card_id[:8])
+        return False
     try:
-        card = await faro.get_card(card_id)
-    except FaroError as e:
-        logger.error("Precificação: erro ao buscar card %s: %s", card_id[:8], e)
-        return False
-
-    current_stage = card.get("stage_id") or card.get("stageId") or ""
-    if current_stage != Stage.PRECIFICACAO:
-        return False
-
-    nome = get_name(card)
-    phone = get_phone(card)
-    if not phone:
-        return False
-
-    proposta = card.get("Proposta Realizada", "")
-    # Ignora valores zerados ou inválidos (ex: '0.00', '0', 'R$ 0')
-    proposta_num = _parse_float(proposta)
-    if proposta_num <= 0:
-        proposta = ""
-
-    if not proposta and is_lista(card):
-        # Calcula automaticamente pelo fluxograma completo
-        credito          = _parse_float(card.get("Crédito") or card.get("Valor do crédito", "0"))
-        valor_pago       = _parse_float(card.get("Valor pago até o momento", "0"))
-        percentual_pago  = _parse_float(card.get("Porcentagem paga até o momento", "0")) / 100
-        adm              = get_adm(card)
-        meses_a_pagar    = int(_parse_float(card.get("Quantidade meses a pagar") or card.get("Quantidade meses restantes", "999")) or 999)
-        if credito > 0:
-            proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
-                credito, valor_pago, percentual_pago,
-                adm=adm, meses_a_pagar=meses_a_pagar,
-            )
-            if proposta_calculada <= 0:
-                logger.warning("Precificação Listas: card %s não se qualifica (% pago > 30%% ou meses < 80)", card_id[:8])
-                return False
-            proposta = str(int(proposta_calculada))
-            sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
-            logger.info(
-                "Precificação Listas: card %s | adm=%s | %%pago=%.1f%% | indice=%d | proposta=%s | seq=%s",
-                card_id[:8], adm, percentual_pago*100, indice_usado, proposta, sequencia,
-            )
-            try:
-                await faro.update_card(card_id, {
-                    "Proposta Realizada": proposta,
-                    "Classes de Proposta": sequencia,
-                    "Indice da Proposta": str(indice_usado),
-                })
-                card["Proposta Realizada"] = proposta
-                card["Classes de Proposta"] = sequencia
-            except FaroError as e:
-                logger.warning("Precificação: erro ao gravar Proposta Realizada: %s", e)
-        else:
-            logger.warning("Precificação Listas: card %s sem crédito para calcular proposta", card_id[:8])
-
-    if not proposta and not is_lista(card):
-        # Bazar/LP: calcula pela mesma lógica usando dados do extrato (já gravados no FARO)
-        credito       = _parse_float(card.get("Crédito") or "0")
-        valor_pago    = _parse_float(card.get("Valor pago até o momento") or "0")
-        meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
-        adm           = get_adm(card)
-        percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
-        if credito > 0:
-            proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
-                credito, valor_pago, percentual_pago,
-                adm=adm, meses_a_pagar=meses_a_pagar,
-            )
-            if proposta_calculada <= 0:
-                logger.warning(
-                    "Precificação Bazar/LP: card %s não se qualifica (%%pago=%.1f%%)",
-                    card_id[:8], percentual_pago * 100,
-                )
-                return False
-            proposta = str(int(proposta_calculada))
-            sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
-            logger.info(
-                "Precificação Bazar/LP: card %s | adm=%s | %%pago=%.1f%% | indice=%d | proposta=%s",
-                card_id[:8], adm, percentual_pago * 100, indice_usado, proposta,
-            )
-            try:
-                await faro.update_card(card_id, {
-                    "Proposta Realizada": proposta,
-                    "Classes de Proposta": sequencia,
-                    "Indice da Proposta": str(indice_usado),
-                })
-                card["Proposta Realizada"] = proposta
-                card["Classes de Proposta"] = sequencia
-            except FaroError as e:
-                logger.warning("Precificação: erro ao gravar proposta Bazar/LP: %s", e)
-        else:
-            logger.warning("Precificação Bazar/LP: card %s sem crédito para calcular proposta", card_id[:8])
-
-    # Bazar/LP: proposta já existe mas Classes de Proposta está vazio → recalcular sequência
-    elif proposta and not is_lista(card) and not (card.get("Classes de Proposta") or "").strip():
-        credito       = _parse_float(card.get("Crédito") or "0")
-        valor_pago    = _parse_float(card.get("Valor pago até o momento") or "0")
-        meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
-        adm           = get_adm(card)
-        percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
-        if credito > 0 and valor_pago > 0:
-            _, indice_usado, cluster = calcular_proposta_listas(
-                credito, valor_pago, percentual_pago, adm=adm, meses_a_pagar=meses_a_pagar,
-            )
-            sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
-            logger.info(
-                "Precificação Bazar/LP: card %s recalculando sequência (proposta=%s já existe) → seq=%s",
-                card_id[:8], proposta, sequencia,
-            )
-            try:
-                await faro.update_card(card_id, {
-                    "Classes de Proposta": sequencia,
-                    "Indice da Proposta": str(indice_usado),
-                })
-                card["Classes de Proposta"] = sequencia
-            except FaroError as e:
-                logger.warning("Precificação: erro ao gravar sequência Bazar/LP: %s", e)
-
-    if not proposta:
-        logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
-        return False
-
-    # ── Envio da proposta — totalmente automático ────────────────────────────
-    # Todos os fluxos têm proposta calculada automaticamente:
-    #   Bazar/LP → a partir dos dados do extrato analisado pelo Gemini
-    #   Listas   → a partir do crédito já inserido no card no FARO
-    # Não há etapa de aprovação manual.
-    #
-    # SEGURANÇA: Só compramos cotas contempladas por SORTEIO.
-    # Bloqueio de lance abaixo — segunda camada de defesa (camada 1 está no qualificador).
-    fonte_bazar_lp = not is_lista(card)
-    tipo_cont = (card.get("Tipo contemplação") or "").strip().lower()
-    _e_lance = tipo_cont in ("lance", "contemplada-lance")
-
-    # Segunda camada de defesa: bloqueia proposta para cota de lance antes de enviar
-    if _e_lance:
-        logger.error(
-            "Precificação: BLOQUEIO DE SEGURANÇA — card %s tem Tipo contemplação='%s'. "
-            "Proposta NÃO enviada. Movendo para Não Qualificado.",
-            card_id[:8], tipo_cont,
-        )
         try:
-            await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-            await faro.update_card(card_id, {
-                "Motivo dispensa": f"Bloqueio precificação: cota contemplada por lance (tipo='{tipo_cont}')",
-            })
+            card = await faro.get_card(card_id)
         except FaroError as e:
-            logger.error("Precificação: erro no rollback de lance para card %s: %s", card_id[:8], e)
-        await slack_error(
-            f"🚨 BLOQUEIO SEGURANÇA — Proposta de lance interceptada na precificação\n"
-            f"Lead: {nome} | Card: `{card_id[:8]}` | Tipo: `{tipo_cont}`\n"
-            f"Movido para Não Qualificado automaticamente.",
-            context={"card_id": card_id, "nome": nome, "tipo_contemplacao": tipo_cont},
-        )
-        return False
-
-    # Auto-aprovação:
-    #   Bazar/LP — extrato analisado pelo Gemini (link_extrato preenchido)
-    #   Listas   — proposta calculada diretamente do crédito já no card (sem extrato)
-    # Ambos os fluxos têm proposta calculada automaticamente → envio direto, sem aprovação manual.
-    auto_aprovado = fonte_bazar_lp or is_lista(card)
-
-    if auto_aprovado:
-        fonte_log = "Bazar/LP (extrato Gemini)" if fonte_bazar_lp else "Listas (crédito do card)"
-        logger.info("Precificação: card %s auto-aprovado — %s", card_id[:8], fonte_log)
-
-    agora = datetime.now(timezone.utc).isoformat()
-
-    # Move para EM_NEGOCIACAO ANTES de enviar (stage-as-mutex)
-    try:
-        await faro.move_card(card_id, Stage.EM_NEGOCIACAO)
-    except FaroError as e:
-        logger.error("Precificação: erro ao reservar card %s: %s", card_id[:8], e)
-        return False
-
-    sucesso = await _send_proposal(phone, card)
-
-    if sucesso:
-        try:
-            await faro.update_card(card_id, {"Ultima atividade": agora})
-        except FaroError:
-            pass
-        try:
-            history = load_history(card)
-            history = history_append(history, "assistant", _build_proposal_message(card))
-            await save_history(faro, card_id, history)
-            import re as _re
-            proposta_str = card.get("Proposta Realizada", "") or ""
-            nums = _re.sub(r"[^\d,.]", "", proposta_str).replace(".", "").replace(",", ".")
-            proposta_num = float(nums) if nums else 0.0
-            journey = load_journey(card)
-            journey["proposta_inicial"] = proposta_num
-            await save_journey(faro, card_id, journey)
-        except Exception as e:
-            logger.warning("Precificação: erro ao salvar histórico/jornada %s: %s", card_id[:8], e)
-        logger.info("Precificação: proposta enviada para card %s", card_id[:8])
-    else:
-        # Rollback — devolve para PRECIFICACAO
-        try:
-            await faro.move_card(card_id, Stage.PRECIFICACAO)
-            logger.warning("Precificação: envio falhou, card %s devolvido a PRECIFICACAO", card_id[:8])
-        except FaroError as rollback_err:
-            logger.error("Precificação: CRÍTICO — rollback falhou card %s", card_id[:8])
-            await slack_error(
-                f"Card {card_id[:8]} preso em EM_NEGOCIACAO sem proposta",
-                exception=rollback_err,
-                context={"card_id": card_id, "nome": nome, "phone": phone},
+            logger.error("Precificação: erro ao buscar card %s: %s", card_id[:8], e)
+            return False
+    
+        current_stage = card.get("stage_id") or card.get("stageId") or ""
+        if current_stage != Stage.PRECIFICACAO:
+            return False
+    
+        nome = get_name(card)
+        phone = get_phone(card)
+        if not phone:
+            return False
+    
+        proposta = card.get("Proposta Realizada", "")
+        # Ignora valores zerados ou inválidos (ex: '0.00', '0', 'R$ 0')
+        proposta_num = _parse_float(proposta)
+        if proposta_num <= 0:
+            proposta = ""
+    
+        if not proposta and is_lista(card):
+            # Calcula automaticamente pelo fluxograma completo
+            credito          = _parse_float(card.get("Crédito") or card.get("Valor do crédito", "0"))
+            valor_pago       = _parse_float(card.get("Valor pago até o momento", "0"))
+            # Validação de formato: o campo pode conter percentual (6.1) ou fração (0.061)
+            # Convenção: qualificador grava como percentual (0-100). Se valor > 1.0, assumir percentual.
+            _pct_raw = _parse_float(card.get("Porcentagem paga até o momento", "0"))
+            if _pct_raw > 1.0:
+                percentual_pago = _pct_raw / 100   # estava em formato percentual (ex: 6.1 → 0.061)
+            else:
+                percentual_pago = _pct_raw         # já estava em formato fração (ex: 0.061)
+            # Fallback: recalcular a partir dos valores brutos se campo vazio ou zero
+            if percentual_pago == 0.0 and credito > 0 and valor_pago > 0:
+                percentual_pago = valor_pago / credito
+                logger.info("Precificação Listas: card %s — recalculando %%pago=%.1f%% a partir dos valores brutos",
+                            card.get("id","")[:8], percentual_pago * 100)
+            adm              = get_adm(card)
+            meses_a_pagar    = int(_parse_float(card.get("Quantidade meses a pagar") or card.get("Quantidade meses restantes", "999")) or 999)
+            if credito > 0:
+                proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
+                    credito, valor_pago, percentual_pago,
+                    adm=adm, meses_a_pagar=meses_a_pagar,
+                )
+                if proposta_calculada <= 0:
+                    logger.warning("Precificação Listas: card %s não se qualifica (% pago > 30%% ou meses < 80)", card_id[:8])
+                    return False
+                proposta = str(int(proposta_calculada))
+                sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
+                logger.info(
+                    "Precificação Listas: card %s | adm=%s | %%pago=%.1f%% | indice=%d | proposta=%s | seq=%s",
+                    card_id[:8], adm, percentual_pago*100, indice_usado, proposta, sequencia,
+                )
+                try:
+                    await faro.update_card(card_id, {
+                        "Proposta Realizada": proposta,
+                        "Classes de Proposta": sequencia,
+                        "Indice da Proposta": str(indice_usado),
+                    })
+                    card["Proposta Realizada"] = proposta
+                    card["Classes de Proposta"] = sequencia
+                except FaroError as e:
+                    logger.warning("Precificação: erro ao gravar Proposta Realizada: %s", e)
+            else:
+                logger.warning("Precificação Listas: card %s sem crédito para calcular proposta", card_id[:8])
+    
+        if not proposta and not is_lista(card):
+            # Bazar/LP: calcula pela mesma lógica usando dados do extrato (já gravados no FARO)
+            credito       = _parse_float(card.get("Crédito") or "0")
+            valor_pago    = _parse_float(card.get("Valor pago até o momento") or "0")
+            meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
+            adm           = get_adm(card)
+            percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
+            if credito > 0:
+                proposta_calculada, indice_usado, cluster = calcular_proposta_listas(
+                    credito, valor_pago, percentual_pago,
+                    adm=adm, meses_a_pagar=meses_a_pagar,
+                )
+                if proposta_calculada <= 0:
+                    logger.warning(
+                        "Precificação Bazar/LP: card %s não se qualifica (%%pago=%.1f%%)",
+                        card_id[:8], percentual_pago * 100,
+                    )
+                    return False
+                proposta = str(int(proposta_calculada))
+                sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
+                logger.info(
+                    "Precificação Bazar/LP: card %s | adm=%s | %%pago=%.1f%% | indice=%d | proposta=%s",
+                    card_id[:8], adm, percentual_pago * 100, indice_usado, proposta,
+                )
+                try:
+                    await faro.update_card(card_id, {
+                        "Proposta Realizada": proposta,
+                        "Classes de Proposta": sequencia,
+                        "Indice da Proposta": str(indice_usado),
+                    })
+                    card["Proposta Realizada"] = proposta
+                    card["Classes de Proposta"] = sequencia
+                except FaroError as e:
+                    logger.warning("Precificação: erro ao gravar proposta Bazar/LP: %s", e)
+            else:
+                logger.warning("Precificação Bazar/LP: card %s sem crédito para calcular proposta", card_id[:8])
+    
+        # Bazar/LP: proposta já existe mas Classes de Proposta está vazio → recalcular sequência
+        elif proposta and not is_lista(card) and not (card.get("Classes de Proposta") or "").strip():
+            credito       = _parse_float(card.get("Crédito") or "0")
+            valor_pago    = _parse_float(card.get("Valor pago até o momento") or "0")
+            meses_a_pagar = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
+            adm           = get_adm(card)
+            percentual_pago = (valor_pago / credito) if credito > 0 else 0.0
+            if credito > 0 and valor_pago > 0:
+                _, indice_usado, cluster = calcular_proposta_listas(
+                    credito, valor_pago, percentual_pago, adm=adm, meses_a_pagar=meses_a_pagar,
+                )
+                sequencia = ",".join(str(int(_arredondar_milhar(p * credito))) for p in cluster[indice_usado:])
+                logger.info(
+                    "Precificação Bazar/LP: card %s recalculando sequência (proposta=%s já existe) → seq=%s",
+                    card_id[:8], proposta, sequencia,
+                )
+                try:
+                    await faro.update_card(card_id, {
+                        "Classes de Proposta": sequencia,
+                        "Indice da Proposta": str(indice_usado),
+                    })
+                    card["Classes de Proposta"] = sequencia
+                except FaroError as e:
+                    logger.warning("Precificação: erro ao gravar sequência Bazar/LP: %s", e)
+    
+        if not proposta:
+            logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
+            return False
+    
+        # ── Envio da proposta — totalmente automático ────────────────────────────
+        # Todos os fluxos têm proposta calculada automaticamente:
+        #   Bazar/LP → a partir dos dados do extrato analisado pelo Gemini
+        #   Listas   → a partir do crédito já inserido no card no FARO
+        # Não há etapa de aprovação manual.
+        #
+        # SEGURANÇA: Só compramos cotas contempladas por SORTEIO.
+        # Bloqueio de lance abaixo — segunda camada de defesa (camada 1 está no qualificador).
+        fonte_bazar_lp = not is_lista(card)
+        tipo_cont = (card.get("Tipo contemplação") or "").strip().lower()
+        _e_lance = tipo_cont in ("lance", "contemplada-lance")
+    
+        # Segunda camada de defesa: bloqueia proposta para cota de lance antes de enviar
+        if _e_lance:
+            logger.error(
+                "Precificação: BLOQUEIO DE SEGURANÇA — card %s tem Tipo contemplação='%s'. "
+                "Proposta NÃO enviada. Movendo para Não Qualificado.",
+                card_id[:8], tipo_cont,
             )
+            try:
+                await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
+                await faro.update_card(card_id, {
+                    "Motivo dispensa": f"Bloqueio precificação: cota contemplada por lance (tipo='{tipo_cont}')",
+                })
+            except FaroError as e:
+                logger.error("Precificação: erro no rollback de lance para card %s: %s", card_id[:8], e)
+            await slack_error(
+                f"🚨 BLOQUEIO SEGURANÇA — Proposta de lance interceptada na precificação\n"
+                f"Lead: {nome} | Card: `{card_id[:8]}` | Tipo: `{tipo_cont}`\n"
+                f"Movido para Não Qualificado automaticamente.",
+                context={"card_id": card_id, "nome": nome, "tipo_contemplacao": tipo_cont},
+            )
+            return False
+    
+        # Auto-aprovação:
+        #   Bazar/LP — extrato analisado pelo Gemini (link_extrato preenchido)
+        #   Listas   — proposta calculada diretamente do crédito já no card (sem extrato)
+        # Ambos os fluxos têm proposta calculada automaticamente → envio direto, sem aprovação manual.
+        auto_aprovado = fonte_bazar_lp or is_lista(card)
+    
+        if auto_aprovado:
+            fonte_log = "Bazar/LP (extrato Gemini)" if fonte_bazar_lp else "Listas (crédito do card)"
+            logger.info("Precificação: card %s auto-aprovado — %s", card_id[:8], fonte_log)
+    
+        agora = datetime.now(timezone.utc).isoformat()
+    
+        # Move para EM_NEGOCIACAO ANTES de enviar (stage-as-mutex)
+        try:
+            await faro.move_card(card_id, Stage.EM_NEGOCIACAO)
+        except FaroError as e:
+            logger.error("Precificação: erro ao reservar card %s: %s", card_id[:8], e)
+            return False
+    
+        sucesso = await _send_proposal(phone, card)
+    
+        if sucesso:
+            try:
+                await faro.update_card(card_id, {"Ultima atividade": agora})
+            except FaroError:
+                pass
+            try:
+                history = load_history(card)
+                history = history_append(history, "assistant", _build_proposal_message(card))
+                await save_history(faro, card_id, history)
+                import re as _re
+                proposta_str = card.get("Proposta Realizada", "") or ""
+                nums = _re.sub(r"[^\d,.]", "", proposta_str).replace(".", "").replace(",", ".")
+                proposta_num = float(nums) if nums else 0.0
+                journey = load_journey(card)
+                journey["proposta_inicial"] = proposta_num
+                await save_journey(faro, card_id, journey)
+            except Exception as e:
+                logger.warning("Precificação: erro ao salvar histórico/jornada %s: %s", card_id[:8], e)
+            logger.info("Precificação: proposta enviada para card %s", card_id[:8])
+        else:
+            # Rollback — devolve para PRECIFICACAO
+            try:
+                await faro.move_card(card_id, Stage.PRECIFICACAO)
+                logger.warning("Precificação: envio falhou, card %s devolvido a PRECIFICACAO", card_id[:8])
+            except FaroError as rollback_err:
+                logger.error("Precificação: CRÍTICO — rollback falhou card %s", card_id[:8])
+                await slack_error(
+                    f"Card {card_id[:8]} preso em EM_NEGOCIACAO sem proposta",
+                    exception=rollback_err,
+                    context={"card_id": card_id, "nome": nome, "phone": phone},
+                )
+    
+        return sucesso
+    finally:
+        await release_mutex(mutex_key)
 
-    return sucesso
 
 
 # ---------------------------------------------------------------------------

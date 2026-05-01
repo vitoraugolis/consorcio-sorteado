@@ -45,6 +45,16 @@ class Stage:
     LP_LANCE = "090a876f-09ba-4bc1-a0a0-92f30a0d7cab"  # Lead LP Lance
 
 
+TERMINAL_STAGES: frozenset = frozenset({
+    Stage.PERDIDO,
+    Stage.NAO_QUALIFICADO,
+    Stage.FLUXO_CADENCIA,
+    Stage.DISPENSADOS,
+    Stage.LIXO,
+    Stage.SUCESSO,
+})
+
+
 ACTIVATION_SEQUENCE = {
     Stage.LISTAS: Stage.PRIMEIRA_ATIVACAO,
     Stage.BAZAR: Stage.PRIMEIRA_ATIVACAO,

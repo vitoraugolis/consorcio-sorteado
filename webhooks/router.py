@@ -355,9 +355,16 @@ async def _resolve_whapi_token_cached(payload: dict) -> Optional[str]:
 async def _resolve_whapi_token(payload: dict) -> Optional[str]:
     """
     Identifica o token do canal Whapi a partir do payload do webhook.
-    O Whapi envia o channel_id no payload — usamos para mapear ao token correto.
+
+    Estratégia (em ordem de prioridade):
+      1. Mapeamento estático via variáveis de ambiente WHAPI_CHANNEL_ID_BAZAR/LP/LISTA_N
+         — custo zero, determinístico, sem chamada HTTP
+      2. Cache em memória do resultado anterior (TTL 5 min)
+      3. Fallback: chamada à API Whapi para descoberta dinâmica (apenas se não mapeado)
+      4. Fallback final: token Bazar
     """
     from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN
+    import os
 
     channel_id = (
         payload.get("channel_id")
@@ -367,11 +374,25 @@ async def _resolve_whapi_token(payload: dict) -> Optional[str]:
     )
 
     if not channel_id:
-        # Fallback: usa token Bazar (canal principal)
         return WHAPI_BAZAR_TOKEN or (WHAPI_LISTA_TOKENS[0] if WHAPI_LISTA_TOKENS else None)
 
-    # Tenta identificar pelo channel_id — cada canal tem um ID único no Whapi
-    # Consultamos a API para saber qual token corresponde ao channel_id recebido
+    # ── Mapeamento estático via env (I2 — elimina lookup dinâmico) ────────────
+    # Configure no .env: WHAPI_CHANNEL_ID_BAZAR=abc123, WHAPI_CHANNEL_ID_LP=def456
+    # WHAPI_CHANNEL_ID_LISTA_1=ghi789, WHAPI_CHANNEL_ID_LISTA_2=...
+    _static_map: dict[str, Optional[str]] = {
+        os.getenv("WHAPI_CHANNEL_ID_BAZAR", ""): WHAPI_BAZAR_TOKEN,
+        os.getenv("WHAPI_CHANNEL_ID_LP", ""):    WHAPI_LP_TOKEN,
+    }
+    for i, tok in enumerate(WHAPI_LISTA_TOKENS, 1):
+        cid_env = os.getenv(f"WHAPI_CHANNEL_ID_LISTA_{i}", "")
+        if cid_env:
+            _static_map[cid_env] = tok
+
+    if channel_id in _static_map and _static_map[channel_id]:
+        return _static_map[channel_id]
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Fallback: descoberta dinâmica via API Whapi (cold start ou env não configurado)
     all_tokens = list({t for t in [WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN] + WHAPI_LISTA_TOKENS if t})
     for token in all_tokens:
         try:
@@ -384,11 +405,15 @@ async def _resolve_whapi_token(payload: dict) -> Optional[str]:
                     data = r.json()
                     cid = data.get("channel_id") or data.get("id") or ""
                     if cid == channel_id:
+                        logger.info(
+                            "router: channel_id '%s' resolvido dinamicamente — configure "
+                            "WHAPI_CHANNEL_ID_BAZAR/LP/LISTA_N no .env para eliminar este lookup",
+                            channel_id,
+                        )
                         return token
         except Exception:
             pass
 
-    # Não encontrou — usa Bazar como fallback
     return WHAPI_BAZAR_TOKEN or (WHAPI_LISTA_TOKENS[0] if WHAPI_LISTA_TOKENS else None)
 
 

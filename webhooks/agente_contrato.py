@@ -21,7 +21,7 @@ from typing import Optional
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
-    get_name, get_phone, get_adm, is_lista,
+    get_name, get_phone, get_adm, is_lista, is_pj,
     load_history, history_append, save_history, history_to_text,
     load_journey, journey_to_text,
 )
@@ -78,8 +78,7 @@ _FARO_FIELD_MAP = {
 
 def _required_fields_for_card(card: dict) -> list[str]:
     """Retorna lista de campos obrigatórios conforme titularidade da cota."""
-    tipo_pessoa = str(card.get("Tipo Pessoa") or "").strip().upper()
-    if tipo_pessoa in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA"):
+    if is_pj(card):
         return _REQUIRED_FIELDS_PJ
     return _REQUIRED_FIELDS_LISTA  # PF padrão (Listas e Bazar)
 

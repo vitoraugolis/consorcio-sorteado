@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from config import FARO_API_KEY, FARO_BASE_URL, PIPELINE_ID, HISTORY_MAX_TURNS
+from config import FARO_API_KEY, FARO_BASE_URL, PIPELINE_ID, HISTORY_MAX_TURNS, TERMINAL_STAGES
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +26,14 @@ async def _with_retry(coro_fn, label: str):
                 raise
             last_exc = e
             if delay is not None:
-                logger.warning("FARO %s: tentativa %d falhou (%s). Retry em %.0fs…", label, attempt, e, delay)
+                logger.warning("FARO %s: tentativa %d falhou (%s). Retry em %.0fs...", label, attempt, e, delay)
                 await asyncio.sleep(delay)
             else:
-                logger.error("FARO %s: todas as tentativas esgotadas. Último erro: %s", label, e)
+                logger.error("FARO %s: todas as tentativas esgotadas. Ultimo erro: %s", label, e)
     try:
         from services.slack import slack_error as _slack_err
         asyncio.create_task(_slack_err(
-            f"🔴 FARO indisponível após 3 tentativas — endpoint: {label}",
+            f"FARO indisponivel apos 3 tentativas - endpoint: {label}",
             context={"endpoint": label}
         ))
     except Exception:
@@ -41,11 +41,18 @@ async def _with_retry(coro_fn, label: str):
     raise last_exc
 
 
+def is_pj(card: dict) -> bool:
+    """Retorna True se o card pertence a Pessoa Juridica. Single source of truth."""
+    tipo = str(card.get("Tipo Pessoa") or "").strip().upper()
+    return tipo in ("PJ", "CNPJ", "PESSOA JURIDICA")
+
+
 class FaroError(Exception):
     def __init__(self, message: str, status_code: int = 0, endpoint: str = ""):
         super().__init__(message)
         self.status_code = status_code
         self.endpoint = endpoint
+
 
 
 class FaroClient:
@@ -119,13 +126,12 @@ class FaroClient:
         return await _with_retry(_do, f"POST {endpoint}")
 
     async def _patch(self, endpoint: str, body: dict) -> dict:
-        """PATCH com validação de success=false (fix: versão anterior não validava)."""
+        """PATCH com validacao de success=false (fix: versao anterior nao validava)."""
         async def _do():
             try:
                 r = await self._client.patch(endpoint, json=body)
                 r.raise_for_status()
                 data = r.json()
-                # Fix: valida success=false mesmo com HTTP 200
                 if not data.get("success", True):
                     raise FaroError(
                         f"API retornou success=false: {data}",
@@ -153,16 +159,15 @@ class FaroClient:
 
     async def find_card_by_phone(self, phone: str, canal_hint: str = "") -> dict | None:
         """
-        Busca card pelo telefone. Quando há duplicatas (mesmo número em vários cards),
+        Busca card pelo telefone. Quando ha duplicatas (mesmo numero em varios cards),
         usa desempate inteligente:
-          1. Descarta stages terminais (Perdido, Não Qualificado, etc.)
+          1. Descarta stages terminais (Perdido, Nao Qualificado, etc.)
           2. Se canal_hint fornecido ("bazar", "lp", "lista"), prefere card cuja Fonte bate
           3. Entre restantes, prefere o mais recentemente atualizado
         """
         digits = "".join(c for c in phone if c.isdigit())
         variants = list(dict.fromkeys([phone, digits, f"+{digits}"]))
 
-        # Coleta todos os cards encontrados para desempate
         all_cards: list[dict] = []
         seen_ids: set[str] = set()
 
@@ -193,23 +198,14 @@ class FaroClient:
         if len(all_cards) == 1:
             return all_cards[0]
 
-        # Desempate: descarta stages terminais
-        _TERMINAL_STAGES = {
-            "d5c9a6e1-1b5b-424d-8659-4d002599586b",  # PERDIDO
-            "38c91042-2205-4d7d-9015-215a526acefc",  # NAO_QUALIFICADO
-            "b4f34818-ba01-478f-a163-e900ba51daef",  # FLUXO_CADENCIA
-            "fb52b454-de52-4057-bd2c-645014636cba",  # DISPENSADOS
-            "e86bd9b3-f2aa-4b32-9d80-3e1c249a50ad",  # LIXO
-            "c6ac32c6-74c2-459f-9a98-3e14cf81ebac",  # SUCESSO
-        }
-        ativos = [c for c in all_cards if c.get("stage_id") not in _TERMINAL_STAGES]
+        # Desempate: descarta stages terminais (TERMINAL_STAGES centralizado em config.py)
+        ativos = [c for c in all_cards if c.get("stage_id") not in TERMINAL_STAGES]
         candidatos = ativos if ativos else all_cards
 
-        # Se canal_hint fornecido, prefere card cuja Fonte bate com o canal
         if canal_hint and len(candidatos) > 1:
             hint = canal_hint.lower()
             _FONTE_MAP = {
-                "bazar": ["bazar", "bazar do consórcio", "bazar do consorcio"],
+                "bazar": ["bazar", "bazar do consorcio"],
                 "lp":    ["lp", "site", "landing page"],
                 "lista": ["lista", "list"],
             }
@@ -221,7 +217,6 @@ class FaroClient:
             if match_canal:
                 candidatos = match_canal
 
-        # Entre os candidatos, prefere o mais recentemente atualizado
         def _recency(c: dict) -> str:
             return c.get("updated_at") or c.get("created_at") or ""
 
@@ -229,7 +224,7 @@ class FaroClient:
         if len(all_cards) > 1:
             import logging as _log
             _log.getLogger(__name__).warning(
-                "find_card_by_phone: %d cards para telefone %s — usando [%s] Fonte='%s' (hint='%s', descartados: %s)",
+                "find_card_by_phone: %d cards para telefone %s - usando [%s] Fonte='%s' (hint='%s', descartados: %s)",
                 len(all_cards), phone[-4:],
                 candidatos[0].get("id", "")[:8],
                 candidatos[0].get("Fonte", ""),
@@ -242,9 +237,6 @@ class FaroClient:
         """
         Busca TODOS os cards ativos associados ao telefone, em todos os canais.
         Retorna lista deduplicada por card id, excluindo stages terminais.
-
-        Usado pelo negociador para consciência coletiva cross-fluxo:
-        se o lead aparece em Bazar E Lista, ambos os cards são retornados.
         """
         seen_ids: set[str] = set()
         all_cards: list[dict] = []
@@ -273,16 +265,8 @@ class FaroClient:
             except FaroError:
                 continue
 
-        # Exclui stages terminais
-        _TERMINAL_STAGES = {
-            "d5c9a6e1-1b5b-424d-8659-4d002599586b",  # PERDIDO
-            "38c91042-2205-4d7d-9015-215a526acefc",  # NAO_QUALIFICADO
-            "b4f34818-ba01-478f-a163-e900ba51daef",  # FLUXO_CADENCIA
-            "fb52b454-de52-4057-bd2c-645014636cba",  # DISPENSADOS
-            "e86bd9b3-f2aa-4b32-9d80-3e1c249a50ad",  # LIXO
-            "c6ac32c6-74c2-459f-9a98-3e14cf81ebac",  # SUCESSO
-        }
-        return [c for c in all_cards if c.get("stage_id") not in _TERMINAL_STAGES]
+        # Exclui stages terminais (TERMINAL_STAGES centralizado em config.py)
+        return [c for c in all_cards if c.get("stage_id") not in TERMINAL_STAGES]
 
     async def get_cards_from_stage(
         self,
@@ -363,11 +347,11 @@ class FaroClient:
         return data.get("data", {}).get("cards", []) or data.get("cards", [])
 
     # ------------------------------------------------------------------
-    # Mutação de cards
+    # Mutacao de cards
     # ------------------------------------------------------------------
 
     async def move_card(self, card_id: str, to_stage_id: str) -> dict:
-        logger.info("Movendo card %s → stage %s", card_id, to_stage_id)
+        logger.info("Movendo card %s para stage %s", card_id, to_stage_id)
         return await self._post("/api-cards-move", {
             "card_id": card_id,
             "stage_id": to_stage_id,
@@ -392,7 +376,7 @@ class FaroClient:
 
 
 # ---------------------------------------------------------------------------
-# Utilitários de campo
+# Utilitarios de campo
 # ---------------------------------------------------------------------------
 
 _HISTORY_FIELD = "Historico Conversa"
@@ -416,17 +400,17 @@ def history_append(history: list[dict], role: str, content: str) -> list[dict]:
 
 
 async def save_history(faro: "FaroClient", card_id: str, history: list[dict]) -> None:
-    """Persiste o histórico. Deve ser chamado com o FaroClient ainda aberto."""
+    """Persiste o historico. Deve ser chamado com o FaroClient ainda aberto."""
     import json
     try:
         await faro.update_card(card_id, {_HISTORY_FIELD: json.dumps(history, ensure_ascii=False)})
     except FaroError as e:
-        logging.getLogger(__name__).warning("Erro ao salvar histórico card %s: %s", card_id[:8], e)
+        logging.getLogger(__name__).warning("Erro ao salvar historico card %s: %s", card_id[:8], e)
 
 
 def history_to_text(history: list[dict], max_turns: int = 10) -> str:
     if not history:
-        return "(sem histórico anterior)"
+        return "(sem historico anterior)"
     recent = history[-(max_turns * 2):]
     lines = []
     for turn in recent:
@@ -457,9 +441,7 @@ def get_fonte(card: dict) -> str:
 def is_lista(card: dict) -> bool:
     """
     Retorna True se o lead veio de uma lista fria (usa Whapi pool Lista).
-    Retorna False para leads orgânicos Bazar/Site (usa Whapi pool Bazar).
-
-    Blindado contra campos nulos, tipos inesperados e strings vazias.
+    Retorna False para leads organicos Bazar/Site (usa Whapi pool Bazar).
     """
     fonte = str(card.get("Fonte") or "").strip().lower()
     etiqueta = str(card.get("Etiquetas") or "").strip().lower()
@@ -486,9 +468,9 @@ def get_canal(card: dict) -> str:
 def get_etiqueta(card: dict) -> str:
     """Retorna a etiqueta normalizada para fins de roteamento/logging."""
     etiqueta = (card.get("Etiquetas") or "").lower()
-    for key in ["itau", "itaú", "santander", "bradesco", "porto", "caixa"]:
+    for key in ["itau", "santander", "bradesco", "porto", "caixa"]:
         if key in etiqueta:
-            return key.replace("itaú", "itau")
+            return key
     return "default"
 
 
@@ -524,14 +506,14 @@ def journey_to_text(journey: dict) -> str:
     _labels = {
         "origem": "Origem",
         "adm": "Administradora",
-        "credito": "Crédito",
-        "pago_pct": "Já pago (%)",
+        "credito": "Credito",
+        "pago_pct": "Ja pago (%)",
         "qualificado_em": "Qualificado em",
         "proposta_inicial": "Proposta inicial",
         "proposta_final": "Proposta aceita",
-        "num_negociacoes": "Negociações",
-        "ultima_intencao": "Última intenção",
-        "observacoes": "Observações",
+        "num_negociacoes": "Negociacoes",
+        "ultima_intencao": "Ultima intencao",
+        "observacoes": "Observacoes",
         "tom": "Tom do lead",
     }
     lines = []
@@ -540,11 +522,11 @@ def journey_to_text(journey: dict) -> str:
         if val is None or val == "" or val == 0:
             continue
         if key in ("credito", "proposta_inicial", "proposta_final") and isinstance(val, (int, float)):
-            lines.append(f"• {label}: R$ {val:,.0f}")
+            lines.append(f"* {label}: R$ {val:,.0f}")
         elif key == "pago_pct" and isinstance(val, (int, float)):
-            lines.append(f"• {label}: {val:.0f}%")
+            lines.append(f"* {label}: {val:.0f}%")
         else:
-            lines.append(f"• {label}: {val}")
+            lines.append(f"* {label}: {val}")
     return "\n".join(lines) if lines else "(sem contexto de jornada registrado)"
 
 
@@ -570,4 +552,4 @@ def build_card_context(card: dict) -> str:
     return "\n".join(lines) if lines else "- (sem dados disponíveis)"
 
 
-import logging  # noqa: E402 — necessário para uso nos helpers acima
+import logging  # noqa: E402 - necessario para uso nos helpers acima

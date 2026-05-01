@@ -90,16 +90,23 @@ async def _notify_team(text: str) -> None:
         logger.warning("Falha ao notificar equipe: %s", e)
 async def _process_card(card: dict) -> None:
     card_id = card.get("id", "")
+    from services.session_store import acquire_mutex, release_mutex
+    mutex_key = f"job:contrato:{card_id}"
+    if not await acquire_mutex(mutex_key, ttl=300):
+        logger.info("Contrato: card %s ja em processamento - pulando", card_id[:8])
+        return
     if card_id not in _processing:
         _processing[card_id] = asyncio.Lock()
     lock = _processing[card_id]
     if lock.locked():
+        await release_mutex(mutex_key)
         logger.info("Contrato: card %s ja em processamento -- ignorado.", card_id[:8])
         return
-    async with lock:
-        await _process_card_locked(card)
-
-
+    try:
+        async with lock:
+            await _process_card_locked(card)
+    finally:
+        await release_mutex(mutex_key)
 
 async def _process_card_locked(card: dict) -> None:
     card_id = card.get("id", "")
@@ -277,12 +284,20 @@ async def run_contrato() -> None:
     if not cards:
         return
     logger.info("Job contrato: %d card(s)", len(cards))
-    for card in cards:
-        try:
-            await _process_card(card)
-        except Exception as e:
-            logger.exception("Job contrato: erro inesperado card %s: %s", card.get("id", "?")[:8], e)
-        await asyncio.sleep(3)
+
+    # Processar em paralelo com semáforo (máx 3 simultâneos — ZapSign tem rate limit)
+    sem = asyncio.Semaphore(3)
+
+    async def _bounded(card: dict) -> None:
+        async with sem:
+            try:
+                await _process_card(card)
+            except Exception as e:
+                logger.exception("Job contrato: erro inesperado card %s: %s",
+                                 card.get("id", "?")[:8], e)
+            await asyncio.sleep(2)
+
+    await asyncio.gather(*[_bounded(c) for c in cards], return_exceptions=True)
 
 
 async def process_contrato_card(card: dict) -> None:

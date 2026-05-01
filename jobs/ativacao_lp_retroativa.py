@@ -214,6 +214,13 @@ async def _dispatch_one(item: dict) -> bool:
         logger.info("LP retro: card %s tipo '%s' desconhecido — pulando", card_id[:8], tipo)
         return False
 
+    # Porteiro de ativacao por numero (cross-card, 48h)
+    from services.message_guard import check_activation, register_activation
+    _phone_check = item["phone"] or ""
+    if _phone_check and await check_activation(_phone_check):
+        logger.warning("LP retro porteiro ativacao: %s ja ativado nas ultimas 48h - descartando", _phone_check[-4:])
+        return False
+
     # Monta card mínimo para resolve_phone
     card_stub = {
         "id":                  card_id,
@@ -256,6 +263,7 @@ async def _dispatch_one(item: dict) -> bool:
         logger.info("LP retro: ✅ %s (%s) | %s | phone=%s → %s",
                     item["nome"], card_id[:8], tipo, phone[-4:],
                     "PERDIDO" if tipo == "nao_contemplada" else "PRIMEIRA_ATIVACAO")
+        await register_activation(phone)
         return True
 
     except WhapiError as e:

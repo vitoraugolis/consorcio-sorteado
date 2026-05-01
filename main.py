@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from config import PORT, SECRET_KEY, NOTIFY_PHONES, Stage
 from services.slack import slack_error, slack_info
 from services.session_store import health_check as redis_health, close_redis
+from services.faro import close_faro_pool
 from jobs.reativador import run_reativador
 from jobs.ativacao_listas import run_ativacao_listas_safe
 from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
@@ -44,7 +45,24 @@ _root.setLevel(logging.INFO)
 if not any(isinstance(h, RotatingFileHandler) for h in _root.handlers):
     _root.addHandler(_file_handler)
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.asyncio import AsyncioIntegration
+
 logger = logging.getLogger(__name__)
+
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if _SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        integrations=[FastApiIntegration(), AsyncioIntegration()],
+        traces_sample_rate=0.05,
+        environment=os.getenv("ENVIRONMENT", "production"),
+    )
+    # logger ainda não está configurado aqui — imprimimos diretamente
+    print("[startup] Sentry inicializado")
+else:
+    print("[startup] Sentry: SENTRY_DSN não configurado — monitoramento de erros desabilitado")
 
 # ---------------------------------------------------------------------------
 # Scheduler
@@ -145,7 +163,7 @@ async def _fila_watchdog():
                 got_lock = await _r.set("fila_watchdog:lock", "1", nx=True, ex=60)
                 if got_lock:
                     logger.warning("🔁 Watchdog: fila parada (%d cards) — relançando.", queue_len)
-                    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+                    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao", critical=True))
             await _r.aclose()
         except Exception as e:
             logger.warning("Watchdog fila: erro: %s", e)
@@ -274,7 +292,7 @@ async def lifespan(app: FastAPI):
     elif redis_ok:
             # Lança fila Bazar/LP no startup
             logger.info("▶️  Lançando fila_ativacao Bazar/LP...")
-            asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+            asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao", critical=True))
             # NOTA: Bazar cadenciado desativado (item 2) — fila Redis é o mecanismo principal
             # Relança LP Retroativa se houver leads pendentes
             from jobs.ativacao_lp_retroativa import get_status as lp_retro_status
@@ -283,12 +301,13 @@ async def lifespan(app: FastAPI):
                 logger.info("▶️  Relançando LP Retroativa no startup...")
                 asyncio.create_task(_guarded_task(
                     _start_lp_retro_async(),
-                    "lp_retro startup"
+                    "lp_retro startup",
+                    critical=True,
                 ))
 
     # Recovery de debounce: reprocessa mensagens acumuladas antes do restart
     if redis_ok:
-        asyncio.create_task(_guarded_task(_recover_debounce(), "debounce_recovery"))
+        asyncio.create_task(_guarded_task(_recover_debounce(), "debounce_recovery", critical=True))
 
     # Monitor Whapi sempre ativo (independente de JOBS_PAUSED)
     asyncio.create_task(_guarded_task(_whapi_monitor(), "whapi_monitor"))
@@ -302,14 +321,20 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Encerrando sistema...")
     scheduler.shutdown(wait=False)
     await close_redis()
+    await close_faro_pool()
+    logger.info("Shutdown completo.")
 
 
-async def _guarded_task(coro, label: str = "task"):
-    """Wrapper para asyncio.create_task — loga exceções em vez de silenciá-las."""
+async def _guarded_task(coro, label: str = "task", critical: bool = False):
+    """Wrapper para asyncio.create_task — loga exceções em vez de silenciá-las.
+    critical=True: captura no Sentry quando SENTRY_DSN configurado.
+    """
     try:
         await coro
     except Exception as e:
         logger.error("Task '%s' falhou: %s", label, e)
+        if critical and _SENTRY_DSN:
+            sentry_sdk.capture_exception(e)
         try:
             await slack_error(f"Task assíncrona falhou: {label}", exception=e)
         except Exception:
@@ -382,7 +407,7 @@ async def start_fila_ativacao(key: str = ""):
     result = await build_queue()
     if result["total"] == 0:
         return {"status": "empty", "message": "Nenhum card encontrado em Bazar ou LP"}
-    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao"))
+    asyncio.create_task(_guarded_task(run_fila_ativacao(), "fila_ativacao", critical=True))
 
 
 @app.get("/jobs/fila/status")
@@ -453,13 +478,23 @@ async def bazar_loop_stop(key: str = ""):
 
 @app.post("/webhook/whapi")
 async def webhook_whapi(request: Request):
+    from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN
+    valid_tokens = set(t for t in [WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN] + WHAPI_LISTA_TOKENS if t)
+    if valid_tokens:
+        received = (
+            request.headers.get("X-Whapi-Token", "")
+            or request.headers.get("Authorization", "").removeprefix("Bearer ")
+            or request.query_params.get("token", "")
+        )
+        if received not in valid_tokens:
+            logger.warning("Webhook Whapi: token invalido de %s", getattr(request.client, 'host', '?'))
+            raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         payload = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Payload inválido")
+        raise HTTPException(status_code=400, detail="Payload invalido")
     result = await handle_whapi_webhook(payload)
     return JSONResponse(result)
-
 
 # ---------------------------------------------------------------------------
 # Webhook ZapSign

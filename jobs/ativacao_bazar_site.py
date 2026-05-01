@@ -256,6 +256,11 @@ async def _activate_card(card: dict, message_template: str,
         return False
 
     # Lead qualificado — envia mensagem de ativação
+    # Porteiro: evita ativar mesmo numero 2x em 48h (cross-card)
+    from services.message_guard import check_activation, register_activation
+    if await check_activation(phone):
+        logger.warning("Porteiro ativacao: %s ja recebeu ativacao nas ultimas 48h - descartando", phone[-4:])
+        return False
     logger.info("Card %s qualificado (adm='%s') — ativando", card_id[:8], adm)
     message = message_template.format(nome=nome, adm=adm)
 
@@ -277,6 +282,7 @@ async def _activate_card(card: dict, message_template: str,
             "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
         })
         logger.info("Whapi OK: card=%s phone=%s canal=%s", card_id[:8], phone[-4:], canal_card)
+        await register_activation(phone)
         return True
 
     except WhapiError as e:

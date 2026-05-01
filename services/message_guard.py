@@ -126,8 +126,8 @@ async def clear_guard(phone: str) -> int:
             return 0
 
         # Varrer e deletar todas as chaves deste telefone
-        keys_exact  = await redis.keys(f"cs:guard:exact:{phone}:*")
-        keys_prefix = await redis.keys(f"cs:guard:prefix:{phone}:*")
+        keys_exact  = [k async for k in redis.scan_iter(f"cs:guard:exact:{phone}:*")]
+        keys_prefix = [k async for k in redis.scan_iter(f"cs:guard:prefix:{phone}:*")]
         all_keys = keys_exact + keys_prefix
 
         if all_keys:
@@ -153,7 +153,7 @@ async def clear_guard_prefix_only(phone: str) -> int:
         if redis is None:
             return 0
 
-        keys = await redis.keys(f"cs:guard:prefix:{phone}:*")
+        keys = [k async for k in redis.scan_iter(f"cs:guard:prefix:{phone}:*")]
         if keys:
             await redis.delete(*keys)
             logger.info("message_guard: cleared %d prefix-keys para %s", len(keys), phone[-4:])
@@ -163,3 +163,32 @@ async def clear_guard_prefix_only(phone: str) -> int:
     except Exception as e:
         logger.warning("message_guard: falha ao limpar prefix guard para %s: %s", phone[-4:], e)
         return 0
+
+
+async def check_activation(phone: str) -> bool:
+    """Retorna True se este numero ja recebeu mensagem de ativacao nas ultimas 48h."""
+    try:
+        from services.session_store import get_redis
+        redis = await get_redis()
+        if redis is None:
+            return False
+        return bool(await redis.exists(f"cs:guard:activation:{phone}"))
+    except Exception as e:
+        logger.warning("message_guard check_activation(%s): %s - liberando", phone[-4:], e)
+        return False
+
+
+async def register_activation(phone: str) -> None:
+    """Registra ativacao para este numero. TTL 48h."""
+    try:
+        from services.session_store import get_redis
+        redis = await get_redis()
+        if redis is None:
+            return
+        await redis.setex(
+            f"cs:guard:activation:{phone}",
+            48 * 3600,
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+    except Exception as e:
+        logger.warning("message_guard register_activation(%s): %s", phone[-4:], e)

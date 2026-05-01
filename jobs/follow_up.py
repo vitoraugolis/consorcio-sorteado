@@ -448,38 +448,48 @@ async def run_follow_up():
         else:
             logger.info("%d cards para follow-up", len(pendentes))
             total_ok = 0
-            for card in pendentes:
-                num_atual = _count_followups(card)
-                followup_msg = await _generate_followup_message(ai, card, hora_atual)
-                success = await _send_followup(card, followup_msg)
-                if success:
-                    total_ok += 1
+
+            # Processar em paralelo com semáforo (máx 4 simultâneos — respeita rate limit IA + Whapi)
+            import asyncio as _aio
+            sem = _aio.Semaphore(4)
+
+            async def _process_one_fu(card: dict) -> None:
+                nonlocal total_ok
+                async with sem:
+                    from services.session_store import acquire_mutex, release_mutex
+                    _card_id_fu = card.get("id", "")
+                    _mutex_key_fu = f"job:followup:{_card_id_fu}"
+                    if not await acquire_mutex(_mutex_key_fu, ttl=180):
+                        logger.info("Follow-up: card %s ja em processamento - pulando", _card_id_fu[:8])
+                        return
                     try:
-                        proposta_atual = str(card.get("Proposta Realizada") or "").strip()
-                        proposta_base  = str(card.get("Follow Up Proposta Base") or "").strip()
-                        houve_reset    = bool(proposta_atual and proposta_base and proposta_atual != proposta_base)
-
-                        update = {"Ultima atividade": str(int(time.time()))}
-
-                        # Ancora a proposta base para detectar mudanças no próximo ciclo
-                        if proposta_atual:
-                            update["Follow Up Proposta Base"] = proposta_atual
-
-                        # Grava / zera Num Follow Ups
-                        if houve_reset:
-                            # Nova proposta: contador começa em 1 (acabamos de enviar o #1)
-                            update["Num Follow Ups"] = "1"
-                        elif card.get("Num Follow Ups") is not None:
-                            update["Num Follow Ups"] = str(num_atual + 1)
-
-                        await faro.update_card(card["id"], update)
-                    except FaroError:
-                        pass
-                    logger.info(
-                        "Follow-up #%d OK: card=%s | intervalo_próximo=%s",
-                        num_atual + 1, card["id"][:8],
-                        f"{_get_interval(num_atual + 1) // 60}min" if num_atual + 1 < MAX_FOLLOW_UPS else "escalar"
-                    )
+                        num_atual = _count_followups(card)
+                        followup_msg = await _generate_followup_message(ai, card, hora_atual)
+                        success = await _send_followup(card, followup_msg)
+                        if success:
+                            total_ok += 1
+                            try:
+                                proposta_atual = str(card.get("Proposta Realizada") or "").strip()
+                                proposta_base  = str(card.get("Follow Up Proposta Base") or "").strip()
+                                houve_reset    = bool(proposta_atual and proposta_base and proposta_atual != proposta_base)
+                                update = {"Ultima atividade": str(int(time.time()))}
+                                if proposta_atual:
+                                    update["Follow Up Proposta Base"] = proposta_atual
+                                if houve_reset:
+                                    update["Num Follow Ups"] = "1"
+                                elif card.get("Num Follow Ups") is not None:
+                                    update["Num Follow Ups"] = str(num_atual + 1)
+                                await faro.update_card(card["id"], update)
+                            except FaroError:
+                                pass
+                            logger.info(
+                                "Follow-up #%d OK: card=%s | proximo=%s",
+                                num_atual + 1, card["id"][:8],
+                                f"{_get_interval(num_atual + 1) // 60}min" if num_atual + 1 < MAX_FOLLOW_UPS else "escalar"
+                            )
+                    finally:
+                        await release_mutex(_mutex_key_fu)
+            await _aio.gather(*[_process_one_fu(c) for c in pendentes], return_exceptions=True)
             logger.info("=== Follow-up concluído: %d/%d ===", total_ok, len(pendentes))
 
         await _followup_assinatura_parados(faro)
