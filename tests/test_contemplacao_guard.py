@@ -449,10 +449,9 @@ class TestPrecificacaoGuardaLance:
         mock_faro.update_card = AsyncMock()
         mock_faro.move_card = AsyncMock()
 
-        # O bloqueio de lance faz import local: "from services.slack import slack_error as _slack_err"
-        # Portanto o patch correto é no módulo de origem, não no namespace do precificacao.
+        # slack_error importado no topo de precificacao.py → patch no namespace do módulo
         with patch("jobs.precificacao._send_proposal", AsyncMock()), \
-             patch("services.slack.slack_error",
+             patch("jobs.precificacao.slack_error",
                    AsyncMock(side_effect=lambda *a, **kw: slack_calls.append(True))):
             await _process_card_locked(mock_faro, card["id"])
 

@@ -598,8 +598,7 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             })
         except FaroError as e:
             logger.error("Precificação: erro no rollback de lance para card %s: %s", card_id[:8], e)
-        from services.slack import slack_error as _slack_err
-        await _slack_err(
+        await slack_error(
             f"🚨 BLOQUEIO SEGURANÇA — Proposta de lance interceptada na precificação\n"
             f"Lead: {nome} | Card: `{card_id[:8]}` | Tipo: `{tipo_cont}`\n"
             f"Movido para Não Qualificado automaticamente.",
