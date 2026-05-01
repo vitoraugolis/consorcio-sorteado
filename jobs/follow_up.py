@@ -62,8 +62,11 @@ def _count_followups(card: dict) -> int:
     proposta_atual = str(card.get("Proposta Realizada") or "").strip()
     proposta_base  = str(card.get("Follow Up Proposta Base") or "").strip()
 
+    # Ignora base inválida (vazio, "0" ou "0.0" — campo recém-criado sem valor real)
+    _base_invalida = not proposta_base or proposta_base in ("0", "0.0", "0,0")
+
     # Nova proposta desde o último ciclo → zera a sequência
-    if proposta_atual and proposta_base and proposta_atual != proposta_base:
+    if proposta_atual and not _base_invalida and proposta_atual != proposta_base:
         logger.info(
             "Follow-up: card %s — nova proposta detectada (%.0s → %.0s), resetando contador.",
             str(card.get("id", ""))[:8], proposta_base, proposta_atual,
