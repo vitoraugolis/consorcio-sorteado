@@ -31,15 +31,16 @@ from services.safety_car import audit_response
 
 logger = logging.getLogger(__name__)
 
-MAX_FOLLOW_UPS = 4          # 4 mensagens automáticas; na 5ª → escala para humano
-ESCALATION_AT  = 5          # num_fups == ESCALATION_AT → handoff
+MAX_FOLLOW_UPS = 5          # 5 mensagens automáticas; na 6ª → escala para humano
+ESCALATION_AT  = 6          # num_fups == ESCALATION_AT → handoff
 
 # Intervalos mínimos entre cada tentativa (em segundos)
 _INTERVALS = {
-    1: 30  * 60,    # #1 → 30 min após proposta
-    2: 90  * 60,    # #2 → 1h30 após #1
-    3: 3   * 3600,  # #3 → 3h após #2
-    4: 4   * 3600,  # #4 → 4h após #3
+    1: 45  * 60,    # #1 → 45 min após proposta
+    2: 3   * 3600,  # #2 → 3h após #1
+    3: 8   * 3600,  # #3 → 8h após #2  (próximo período do dia)
+    4: 24  * 3600,  # #4 → 1 dia após #3
+    5: 48  * 3600,  # #5 → 2 dias após #4 — última mensagem automática
 }
 
 
@@ -120,35 +121,76 @@ Apenas o texto, sem aspas, sem formatação markdown.
 
 _FOLLOWUP_CONFIG = {
     1: {
-        "tom": "caloroso e curioso — reforça o valor da proposta",
-        "foco": "Perguntar naturalmente se o lead teve chance de ver a proposta. Reforçar que a oferta é personalizada e está disponível.",
+        "tom": "leve e curioso — checagem natural, sem pressão",
+        "foco": "Verificar se o lead viu a proposta. Tom de continuidade da conversa. Reforçar que a oferta é personalizada e que está disponível para tirar dúvidas.",
         "fallbacks": [
-            "Oi, {nome}! 😊 Passando para saber se você teve chance de ver a proposta que enviei. Qualquer dúvida, estou aqui!",
-            "{nome}, tudo bem? Vi que você recebeu nossa proposta — alguma dúvida antes de darmos o próximo passo? 😊",
+            "{nome}, vi que você recebeu nossa proposta. 😊 Teve chance de dar uma olhada? Qualquer dúvida, estou aqui!",
+            "Oi, {nome}! Passando para saber se a proposta chegou certo. Alguma pergunta antes de darmos o próximo passo?",
         ],
     },
     2: {
-        "tom": "entusiasmado com prova social — cria senso de oportunidade",
-        "foco": "Compartilhar que o mercado está aquecido e que outras cotas {adm} estão sendo negociadas rapidamente. Criar senso de oportunidade sem pressão excessiva.",
+        "tom": "entusiasmado com FOMO — oportunidade de mercado, escassez",
+        "foco": (
+            "Criar urgência real: cotas {adm} contempladas estão valorizadas AGORA, "
+            "o mercado de compra está aquecido e essa janela pode fechar. "
+            "Quem vende hoje recebe mais do que quem espera. Sem pressão falsa — urgência genuína."
+        ),
         "fallbacks": [
-            "Oi, {nome}! Só para você saber: essa semana já fechamos 3 cotas {adm} similares. O mercado está muito favorável agora! 🔥",
-            "{nome}, lembrei de você hoje! Fechamos uma cota {adm} ontem por um valor ótimo — a sua tem perfil muito parecido. 😊",
+            "Oi, {nome}! 🔥 Essa semana a procura por cotas {adm} explodiu por aqui. "
+            "O valor que consigo te oferecer hoje pode não ser o mesmo daqui a alguns dias. Ainda tem interesse?",
+            "{nome}, só um aviso rápido: temos muita demanda por cotas {adm} contempladas agora. "
+            "Quem fecha primeiro garante o melhor valor. A sua proposta ainda está no ar — vamos aproveitar? 📈",
         ],
     },
     3: {
-        "tom": "empático e seguro — quebra objeções",
-        "foco": "Endereçar possíveis objeções: processo seguro, pagamento antes de qualquer transferência, empresa com CNPJ (07.931.205/0001-30). Transmitir segurança.",
+        "tom": "educativo e comparativo — posiciona venda da cota vs outras modalidades",
+        "foco": (
+            "Comparar venda da cota com financiamento bancário: "
+            "financiar imóvel custa de 10% a 14% ao ano em juros — isso dobra o preço final. "
+            "Vender a cota é receber o dinheiro hoje, limpo, na conta, sem dívida e sem burocracia. "
+            "Posicionar como decisão financeiramente inteligente, não uma perda."
+        ),
         "fallbacks": [
-            "{nome}, entendo que vender uma cota gera dúvidas. 😊 Só lembrando: o pagamento é à vista na sua conta, ANTES de qualquer transferência. 100% seguro.",
-            "Oi, {nome}! Se a preocupação for segurança — somos CNPJ 07.931.205/0001-30, Rua Irmã Carolina 45, SP. Pagamos antes de qualquer transferência. 🤝",
+            "{nome}, um pensamento rápido: financiar hoje custa entre 10% e 14% ao ano. "
+            "Vender sua cota te dá o dinheiro à vista, agora, sem juros e sem dívida. "
+            "Financeiramente, faz muito mais sentido. 💡 O que você acha?",
+            "Enquanto um financiamento bancário cobra juros que podem dobrar o valor pago, "
+            "a venda da sua cota {adm} te coloca dinheiro na conta hoje — zero burocracia, zero dívida. "
+            "Isso tem valor, {nome}. 😊",
         ],
     },
     4: {
-        "tom": "urgente mas respeitoso — última mensagem automática",
-        "foco": "Informar que essa é a última mensagem automática antes de encerrar o contato por esse canal. Deixar a porta aberta. Tom de despedida gentil mas com leve senso de escassez.",
+        "tom": "exclusividade e confiança — empresa sólida, processo seguro",
+        "foco": (
+            "Reforçar exclusividade e segurança: "
+            "não somos uma plataforma genérica — somos especialistas em cotas {adm} há mais de 18 anos. "
+            "Pagamento ANTES da transferência — zero risco para o lead. "
+            "CNPJ público, endereço físico. Transmitir que poucas empresas oferecem essa garantia."
+        ),
         "fallbacks": [
-            "{nome}, vou ser sincera: essa é minha última mensagem por aqui. Se quiser conversar ainda, é só responder — estarei esperando! 😊",
-            "Oi, {nome}. Não quero ser insistente, então essa é minha última tentativa. A proposta segue válida. Qualquer coisa, é só me chamar! 🤝",
+            "{nome}, só para reforçar: somos especializados em cotas {adm} há mais de 18 anos. "
+            "O pagamento vai direto na sua conta ANTES de qualquer transferência. "
+            "Você não corre nenhum risco. 🔒 Posso dar andamento?",
+            "Diferente de plataformas genéricas, aqui você fala com especialistas que conhecem "
+            "cada detalhe de cotas {adm}. E o mais importante: pagamos antes. "
+            "Sem risco nenhum pra você, {nome}. 🤝",
+        ],
+    },
+    5: {
+        "tom": "despedida respeitosa com última janela — FOMO leve, porta aberta",
+        "foco": (
+            "Última mensagem automática. Informar que o contato automático encerra aqui. "
+            "Deixar a porta aberta com leveza. "
+            "Leve senso de exclusividade: a proposta não fica disponível indefinidamente. "
+            "Tom humano, sem pressão — respeitar a decisão do lead."
+        ),
+        "fallbacks": [
+            "{nome}, vou ser direta: essa é minha última mensagem por este canal. 😊 "
+            "A proposta para sua cota {adm} ainda está na mesa, mas não por muito tempo. "
+            "Se mudar de ideia, é só responder — estarei esperando!",
+            "Oi, {nome}. Não quero ser insistente, então encerro por aqui. "
+            "Nossa proposta para a cota {adm} segue válida por mais alguns dias. "
+            "Qualquer coisa, é só me chamar. Foi um prazer! 🤝",
         ],
     },
 }

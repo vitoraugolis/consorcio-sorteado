@@ -646,9 +646,11 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
             # cai nos blocos de CONTRA_PROPOSTA abaixo
 
     if intent == Intent.ACEITAR:
+        # response_message vazio: _iniciar_coleta_dados_contrato envia a única mensagem
+        # ao lead após o aceite — evita duplicação (IA + coleta de dados).
         return NegotiationResult(
             intent=intent,
-            response_message=ai_response,
+            response_message="",   # silencia a IA; coleta de dados fala sozinha
             next_stage=Stage.ACEITO,
             notify_team=True,
             notify_message=(
@@ -656,7 +658,7 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
                 f"*Cliente:* {nome}\n"
                 f"*Administradora:* {adm}\n"
                 f"*Telefone:* {get_phone(card) or 'não informado'}\n\n"
-                f"O sistema vai gerar o contrato automaticamente. ✅"
+                f"O sistema vai iniciar a coleta de dados para contrato. ✅"
             ),
         )
 
@@ -1131,38 +1133,66 @@ def _count_followups_from_history(history: list) -> int:
 async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) -> None:
     """
     Disparado imediatamente após o lead aceitar a proposta.
-    Envia mensagem pedindo os dados necessários para gerar o contrato ZapSign,
-    e move o card para ASSINATURA para que agente_contrato assuma.
-    """
-    nome       = get_name(card).split()[0] if get_name(card) else "você"
-    card_id    = card.get("id", "")
-    proposta   = card.get("Proposta Realizada") or "o valor combinado"
-    adm        = get_adm(card)
+    Esta é a ÚNICA mensagem enviada ao lead no aceite — a IA fica em silêncio
+    (response_message vazio no NegotiationResult ACEITAR).
+    Move o card para ASSINATURA para que agente_contrato assuma a coleta.
 
-    msg = (
-        f"Ótimo, {nome}! 🎉 Vou repassar as informações ao nosso time agora.\n\n"
-        f"Para agilizar o contrato da sua cota *{adm}* por *R$ {proposta}*, "
-        f"preciso de alguns dados:\n\n"
-        f"1️⃣ Nome completo\n"
-        f"2️⃣ CPF\n"
-        f"3️⃣ Data de nascimento\n"
-        f"4️⃣ Estado civil\n"
-        f"5️⃣ Profissão\n"
-        f"6️⃣ Endereço completo (rua, número, bairro, cidade, CEP)\n\n"
-        f"Pode me enviar? Assim a gente finaliza tudo rapidinho! 🚀"
-    )
+    Dois conjuntos de dados conforme titularidade:
+      PF  → CPF (padrão)
+      PJ  → CNPJ (quando campo "Tipo Pessoa" = "PJ" / "CNPJ")
+    """
+    nome     = get_name(card).split()[0] if get_name(card) else "você"
+    card_id  = card.get("id", "")
+    proposta = card.get("Proposta Realizada") or "o valor combinado"
+    adm      = get_adm(card)
+
+    tipo_pessoa = str(card.get("Tipo Pessoa") or "").strip().upper()
+    is_pj = tipo_pessoa in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA")
+
+    if is_pj:
+        msg = (
+            f"Ótimo, {nome}! 🎉 Vou iniciar o contrato da cota *{adm}* pelo valor de *R$ {proposta}*.\n\n"
+            f"Como a cota está em nome de pessoa jurídica, precisarei dos seguintes dados:\n\n"
+            f"🏢 *Nome da empresa:*\n"
+            f"📄 *CNPJ:*\n"
+            f"👤 *Nome completo do sócio:*\n"
+            f"🪪 *CPF do sócio:*\n"
+            f"🪪 *RG do sócio:*\n"
+            f"🏠 *Endereço completo:*\n"
+            f"📮 *CEP:*\n"
+            f"💼 *Profissão:*\n"
+            f"💍 *Estado civil:*\n"
+            f"📧 *E-mail:*\n"
+            f"💳 *Dados para pagamento — Conta/Agência/PIX em nome do CNPJ:*\n\n"
+            f"Pode me enviar tudo de uma vez ou em partes, como preferir! 😊"
+        )
+    else:
+        msg = (
+            f"Ótimo, {nome}! 🎉 Vou iniciar o contrato da cota *{adm}* pelo valor de *R$ {proposta}*.\n\n"
+            f"Para agilizar, preciso dos seguintes dados:\n\n"
+            f"👤 *Nome completo:*\n"
+            f"🪪 *CPF:*\n"
+            f"🪪 *RG:*\n"
+            f"🏠 *Endereço completo:*\n"
+            f"📮 *CEP:*\n"
+            f"💼 *Profissão:*\n"
+            f"💍 *Estado civil:*\n"
+            f"📧 *E-mail:*\n"
+            f"💳 *Dados para pagamento — Conta/Agência/PIX em nome do CPF:*\n\n"
+            f"Pode me enviar tudo de uma vez ou em partes, como preferir! 😊"
+        )
 
     try:
         await _send_response(card, phone, msg)
         new_history = history_append(history, "assistant", msg)
         async with FaroClient() as faro:
             await save_history_smart(phone, new_history, faro_client=faro, card_id=card_id)
-            # Move para ASSINATURA para agente_contrato assumir a coleta
             await faro.move_card(card_id, Stage.ASSINATURA)
             await faro.update_card(card_id, {
                 "Ultima atividade": datetime.now(timezone.utc).isoformat(),
             })
-        logger.info("Negociador: coleta de dados iniciada para card %s → ASSINATURA", card_id[:8])
+        logger.info("Negociador: coleta de dados iniciada para card %s → ASSINATURA (tipo=%s)",
+                    card_id[:8], "PJ" if is_pj else "PF")
     except Exception as e:
         logger.error("Negociador: erro ao iniciar coleta dados card %s: %s", card_id[:8], e)
 
@@ -1221,12 +1251,15 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
     from services.safety_car import audit_response
     from services.faro import history_to_text
     historico_txt = history_to_text(history[:-1], max_turns=6)
-    audit = await audit_response(result.response_message, card_fresh, historico_txt, agente="negociador")
-    mensagem_auditada = audit.mensagem_final
 
-    await _send_response(card, phone, mensagem_auditada)
-
-    history = history_append(history, "assistant", mensagem_auditada)
+    # ACEITAR: response_message vazio — coleta de dados envia a única mensagem ao lead
+    if result.response_message:
+        audit = await audit_response(result.response_message, card_fresh, historico_txt, agente="negociador")
+        mensagem_auditada = audit.mensagem_final
+        await _send_response(card, phone, mensagem_auditada)
+        history = history_append(history, "assistant", mensagem_auditada)
+    else:
+        mensagem_auditada = ""
     agora   = datetime.now(timezone.utc).isoformat()
 
     async with FaroClient() as faro:

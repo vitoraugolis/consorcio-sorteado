@@ -33,36 +33,55 @@ logger = logging.getLogger(__name__)
 # Campos obrigatórios e labels
 # ---------------------------------------------------------------------------
 
-_REQUIRED_FIELDS_LISTA = ["CPF", "RG", "Endereco", "Email"]
-_REQUIRED_FIELDS_BAZAR = ["Endereco", "Email", "EstadoCivil", "Ocupacao", "Nacionalidade"]
+_REQUIRED_FIELDS_LISTA = ["NomeCompleto", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "DadosPagamento"]
+_REQUIRED_FIELDS_BAZAR = ["NomeCompleto", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "DadosPagamento"]
+
+# Campos para cota em nome de pessoa jurídica
+_REQUIRED_FIELDS_PJ = ["NomeEmpresa", "CNPJ", "NomeSocio", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "DadosPagamentoPJ"]
 
 _REQUIRED_FIELDS = _REQUIRED_FIELDS_LISTA  # compat legado (listas)
 
 _FIELD_LABELS = {
-    "CPF":          "CPF",
-    "RG":           "RG ou CNH",
-    "Endereco":     "Endereço completo (rua, número, bairro, cidade, CEP)",
-    "Email":        "E-mail para receber o contrato",
-    "EstadoCivil":  "Estado civil (solteiro, casado, etc.)",
-    "Ocupacao":     "Profissão / ocupação",
-    "Nacionalidade":"Nacionalidade",
+    "NomeCompleto":    "Nome completo",
+    "CPF":             "CPF",
+    "RG":              "RG ou CNH",
+    "Endereco":        "Endereço completo (rua, número, bairro, cidade)",
+    "CEP":             "CEP",
+    "Email":           "E-mail para receber o contrato",
+    "EstadoCivil":     "Estado civil (solteiro, casado, etc.)",
+    "Ocupacao":        "Profissão / ocupação",
+    "DadosPagamento":  "Dados para pagamento — Conta/Agência/PIX em nome do CPF",
+    # PJ
+    "NomeEmpresa":     "Nome da empresa",
+    "CNPJ":            "CNPJ",
+    "NomeSocio":       "Nome completo do sócio",
+    "DadosPagamentoPJ":"Dados para pagamento — Conta/Agência/PIX em nome do CNPJ",
 }
 
 # Mapeamento para campos do FARO
 _FARO_FIELD_MAP = {
-    "CPF":          "CPF",
-    "RG":           "RG",
-    "Endereco":     "Endereço",
-    "Email":        "Email",
-    "EstadoCivil":  "Estado Civil",
-    "Ocupacao":     "Ocupação",
-    "Nacionalidade":"Nacionalidade",
+    "NomeCompleto":    "Nome do contato",
+    "CPF":             "CPF",
+    "RG":              "RG",
+    "Endereco":        "Endereço",
+    "CEP":             "CEP",
+    "Email":           "Email",
+    "EstadoCivil":     "Estado Civil",
+    "Ocupacao":        "Ocupação",
+    "DadosPagamento":  "Dados Pagamento",
+    "NomeEmpresa":     "Nome Empresa",
+    "CNPJ":            "CNPJ",
+    "NomeSocio":       "Nome Sócio",
+    "DadosPagamentoPJ":"Dados Pagamento PJ",
 }
 
 
 def _required_fields_for_card(card: dict) -> list[str]:
-    """Retorna lista de campos obrigatórios conforme origem do lead."""
-    return _REQUIRED_FIELDS_LISTA if is_lista(card) else _REQUIRED_FIELDS_BAZAR
+    """Retorna lista de campos obrigatórios conforme titularidade da cota."""
+    tipo_pessoa = str(card.get("Tipo Pessoa") or "").strip().upper()
+    if tipo_pessoa in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA"):
+        return _REQUIRED_FIELDS_PJ
+    return _REQUIRED_FIELDS_LISTA  # PF padrão (Listas e Bazar)
 
 # ---------------------------------------------------------------------------
 # Extração de dados com IA
@@ -74,19 +93,25 @@ Retorne EXCLUSIVAMENTE JSON válido, sem markdown, sem explicações.
 """.strip()
 
 _EXTRACT_PROMPT = """
-Extraia os dados pessoais presentes nesta mensagem. Use null para campos ausentes.
+Extraia os dados pessoais/empresariais presentes nesta mensagem. Use null para campos ausentes.
 
 MENSAGEM: "{texto}"
 
 JSON esperado:
 {{
+  "NomeCompleto": "nome completo da pessoa física ou null",
   "CPF": "xxx.xxx.xxx-xx ou null",
-  "RG": "número do RG ou número da CNH ou null",
-  "Endereco": "endereço completo com rua, número, bairro, cidade e CEP (se informados) ou null",
+  "RG": "número do RG ou CNH ou null",
+  "Endereco": "endereço completo com rua, número, bairro, cidade (sem CEP) ou null",
+  "CEP": "xxxxx-xxx ou null",
   "Email": "endereço de e-mail ou null",
   "EstadoCivil": "solteiro/casado/divorciado/viúvo ou null",
   "Ocupacao": "profissão ou ocupação ou null",
-  "Nacionalidade": "ex: Brasileira ou null"
+  "DadosPagamento": "dados bancários PF (banco, agência, conta, pix) ou null",
+  "NomeEmpresa": "razão social da empresa ou null",
+  "CNPJ": "xx.xxx.xxx/xxxx-xx ou null",
+  "NomeSocio": "nome completo do sócio ou null",
+  "DadosPagamentoPJ": "dados bancários PJ (banco, agência, conta, pix) ou null"
 }}
 """
 
@@ -110,11 +135,17 @@ async def _extract_fields_with_ai(texto: str) -> dict:
             }
         except (AIError, json.JSONDecodeError, KeyError) as e:
             logger.warning("agente_contrato: falha na extração IA: %s", e)
-            # Fallback: só CPF via regex
+            # Fallback: CPF, CNPJ e e-mail via regex
             result = {}
             cpf_m = re.search(r"\b(\d{3}[.\-]?\d{3}[.\-]?\d{3}[.\-]?\d{2})\b", texto)
             if cpf_m:
                 result["CPF"] = cpf_m.group(1)
+            cnpj_m = re.search(r"\b(\d{2}[.\-]?\d{3}[.\-]?\d{3}[/]?\d{4}[.\-]?\d{2})\b", texto)
+            if cnpj_m:
+                result["CNPJ"] = cnpj_m.group(1)
+            cep_m = re.search(r"\b(\d{5}-?\d{3})\b", texto)
+            if cep_m:
+                result["CEP"] = cep_m.group(1)
             email_m = re.search(r"[\w.\-+]+@[\w.\-]+\.\w{2,}", texto)
             if email_m:
                 result["Email"] = email_m.group(0)
