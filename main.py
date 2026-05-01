@@ -155,10 +155,10 @@ async def _fila_watchdog():
 
 
 def setup_scheduler():
-    # ⏸️ LISTA restrita — número com restrição WhatsApp, não disparar
-    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=60, jitter=600),
-    #                   id="ativacao_listas", name="Ativação de Listas",
-    #                   max_instances=1, misfire_grace_time=300)
+    # ✅ LISTA ativa — 1 lead a cada 30 min (número sem restrições)
+    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30),
+                      id="ativacao_listas", name="Ativação de Listas",
+                      max_instances=1, misfire_grace_time=300)
     # watch_novos_leads: ativo — injeta Bazar/LP novos na fila a cada 5 min
     scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
                       id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",

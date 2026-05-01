@@ -233,9 +233,9 @@ async def run_ativacao_listas():
         if TEST_MODE:
             logger.info("TEST_MODE ativo: %d card(s) após filtro de teste.", len(cards))
 
-        # Limita ao batch máximo por ciclo
-        batch = cards[:JOB_BATCH_LIMIT]
-        logger.info("%d cards encontrados, processando %d neste ciclo", len(cards), len(batch))
+        # Cadência de 1 lead por execução — job roda a cada 30 min
+        batch = cards[:1]
+        logger.info("%d cards pendentes na etapa Listas, processando 1 neste ciclo.", len(cards))
 
         total_ok = 0
         total_err = 0
