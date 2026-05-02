@@ -44,8 +44,13 @@ COMO SE COMPORTAR:
 
 OBJETIVO: Ajudar o lead a enviar o extrato atualizado da cota AQUI pelo WhatsApp.
 
-QUANDO O LEAD RECUSAR:
-Respeite. Convide para o grupo: {group_link}
+QUANDO O LEAD DISSER QUE JÁ VENDEU A COTA (RECUSA_COTA_VENDIDA):
+Use intent RECUSA_COTA_VENDIDA. Agradeça o retorno, deseje boa sorte e deixe a porta
+aberta: diga que continuamos à disposição caso tenha outra cota contemplada no futuro,
+agora ou depois. Tom cordial e breve. NÃO convide para grupo.
+
+QUANDO O LEAD NÃO TIVER INTERESSE EM VENDER (RECUSA_SEM_INTERESSE):
+Use intent RECUSA_SEM_INTERESSE. Respeite. Convide para o grupo: {group_link}
 
 QUANDO O LEAD DISSER QUE JÁ ENVIOU POR E-MAIL OU OUTRO CANAL:
 Use intent JA_ENVIOU_OUTRO_CANAL. Responda agradecendo e informando que
@@ -80,7 +85,13 @@ _FALLBACK_JA_ENVIOU = (
 
 def _fallback_response(intent: str, nome: str) -> str:
     primeiro = nome.split()[0] if nome else ""
-    if intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
+    if intent == "RECUSA_COTA_VENDIDA":
+        return (
+            f"Obrigada pelo retorno, {primeiro}! Fico feliz que tenha conseguido negociar. 😊 "
+            f"Continuamos à disposição caso tenha outra cota contemplada com interesse em negociar — "
+            f"agora ou no futuro. Qualquer coisa é só chamar! 🙏"
+        )
+    if intent == "RECUSA_SEM_INTERESSE":
         return f"Entendido, {primeiro}! Sem problemas. Se quiser no futuro: {_GROUP_LINK} 😊"
     if intent == "REDIRECIONAR":
         return f"Claro{', ' + primeiro if primeiro else ''}! Vou acionar o consultor responsável agora. 🙏"
