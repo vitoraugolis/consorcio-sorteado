@@ -482,8 +482,22 @@ async def bazar_loop_stop(key: str = ""):
 
 @app.post("/webhook/whapi")
 async def webhook_whapi(request: Request):
+    import os
     from config import WHAPI_LISTA_TOKENS, WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN
     valid_tokens = set(t for t in [WHAPI_BAZAR_TOKEN, WHAPI_LP_TOKEN] + WHAPI_LISTA_TOKENS if t)
+
+    # Mapeamento estático channel_id → token (evita lookup dinâmico e resolve webhooks sem token no header)
+    _channel_id_map: dict[str, str] = {}
+    for _i, _tok in enumerate(WHAPI_LISTA_TOKENS, 1):
+        _cid = os.getenv(f"WHAPI_CHANNEL_ID_LISTA_{_i}", "")
+        if _cid and _tok:
+            _channel_id_map[_cid] = _tok
+    for _label, _env in (("BAZAR", "WHAPI_CHANNEL_ID_BAZAR"), ("LP", "WHAPI_CHANNEL_ID_LP")):
+        _cid = os.getenv(_env, "")
+        _tok = WHAPI_BAZAR_TOKEN if _label == "BAZAR" else WHAPI_LP_TOKEN
+        if _cid and _tok:
+            _channel_id_map[_cid] = _tok
+
     if valid_tokens:
         received = (
             request.headers.get("X-Whapi-Token", "")
@@ -491,8 +505,38 @@ async def webhook_whapi(request: Request):
             or request.query_params.get("token", "")
         )
         if received not in valid_tokens:
-            logger.warning("Webhook Whapi: token invalido de %s", getattr(request.client, 'host', '?'))
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            # Token ausente/inválido — tenta resolver pelo channel_id do body (Whapi às vezes omite token)
+            try:
+                body_bytes = await request.body()
+                import json as _json
+                body = _json.loads(body_bytes)
+                channel_id = (
+                    body.get("channel_id") or body.get("channelId")
+                    or (body.get("event") or {}).get("channel_id") or ""
+                )
+            except Exception:
+                body = {}
+                channel_id = ""
+
+            if channel_id and channel_id in _channel_id_map:
+                # channel_id reconhecido — aceitar e processar normalmente
+                logger.debug(
+                    "Webhook Whapi: sem token mas channel_id=%s reconhecido (canal=%s) — aceito",
+                    channel_id,
+                    next((k for k, v in {"BAZAR": WHAPI_BAZAR_TOKEN, "LP": WHAPI_LP_TOKEN}.items()
+                          if v == _channel_id_map[channel_id]), "lista"),
+                )
+                result = await handle_whapi_webhook(body)
+                return JSONResponse(result)
+            else:
+                logger.warning(
+                    "Webhook Whapi: rejeitado de %s (received=%r, channel_id=%r)",
+                    getattr(request.client, 'host', '?'),
+                    received[:20] if received else "",
+                    channel_id or "?",
+                )
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         payload = await request.json()
     except Exception:
