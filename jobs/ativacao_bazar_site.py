@@ -46,6 +46,7 @@ ADM_BAZAR_TOKENS: list[list[str]] = [
     ["sicoob"],
     ["embracon"],
     ["ademicon", "ademicom", "admicon"],  # variantes de grafia
+    ["yamaha"],                         # Yamaha Consórcio — adicionado 03/05/2026
 ]
 
 # Tokens exclusivos do LP (somam-se ao Bazar)
