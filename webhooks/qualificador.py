@@ -466,7 +466,7 @@ async def handle_qualification(card: dict, msg) -> None:
             await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
         return
 
-    # ── Caso 2: Mídia → analisa extrato ──────────────────────────────────────
+    # ── Caso 2: Mídia → buffer 30s + analisa extrato(s) ──────────────────────
     if msg.media_type in ("image", "document", "video"):
         media_url = _extract_media_url(msg.raw, msg.media_type)
 
@@ -481,263 +481,164 @@ async def handle_qualification(card: dict, msg) -> None:
             await _handle_extrato_incorreto(card, card_id, phone, nome, history, journey, erros)
             return
 
-        # Analisa via IA
-        try:
-            analise = await _analyze_extrato(media_url)
-        except Exception as e:
-            logger.error("Qualificador: erro técnico na análise: %s", e)
-            bot_msg = MSG_ERRO_ANALISE.format(nome=nome)
-            await _send_message(card, phone, bot_msg, history=history)
-            history = history_append(history, "user", "[Enviou extrato — erro técnico na análise]")
-            history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-            await slack_error(
-                "Falha na análise de extrato (IA Visão)",
-                exception=e,
-                context={
-                    "Cliente": nome, "Telefone": phone,
-                    "Administradora": adm, "Card ID": card_id[:12],
-                    "Ação": "Analise manualmente o extrato enviado pelo lead.",
-                },
+        # ── Buffer de 30s: aguarda possíveis imagens adicionais do mesmo lead ──
+        from services.session_store import push_media_buffer, pop_media_buffer, media_buffer_ttl
+        entry = {"url": media_url, "media_type": msg.media_type, "raw": msg.raw or {}}
+        buf_size = await push_media_buffer(phone, entry)
+        logger.info(
+            "Qualificador: card %s — mídia #%d enfileirada (url=%s…)",
+            card_id[:8], buf_size, media_url[:60],
+        )
+
+        if buf_size == 1:
+            # Primeira imagem deste lote: aguarda 30s antes de processar
+            logger.info("Qualificador: card %s — aguardando 30s por possíveis imagens adicionais.", card_id[:8])
+            await asyncio.sleep(30)
+
+            # Após a espera, drena tudo que chegou
+            lote = await pop_media_buffer(phone)
+            if not lote:
+                # Buffer expirou por TTL sem nenhuma entrada — usa a url original
+                lote = [entry]
+        else:
+            # Imagem adicional chegou durante a janela; a task original vai processar tudo
+            logger.info(
+                "Qualificador: card %s — imagem adicional (#%d) adicionada ao buffer; task original processará.",
+                card_id[:8], buf_size,
             )
             return
 
-        # ── EXTRATO_INCORRETO ─────────────────────────────────────────────
-        if analise.resultado == ExtratoResultado.EXTRATO_INCORRETO:
-            logger.info("Qualificador: extrato incorreto para card %s — %s", card_id[:8], analise.motivo)
-            erros = int(journey.get("extrato_incorreto_count", 0)) + 1
+        logger.info(
+            "Qualificador: card %s — processando lote de %d imagem(ns).",
+            card_id[:8], len(lote),
+        )
+
+        # Analisa cada imagem em paralelo
+        async def _safe_analyze(e: dict) -> tuple[dict, ExtratoAnalise | None]:
+            try:
+                return e, await _analyze_extrato(e["url"])
+            except Exception as exc:
+                logger.error("Qualificador: erro na análise de %s: %s", e["url"][:60], exc)
+                return e, None
+
+        resultados = await asyncio.gather(*[_safe_analyze(e) for e in lote])
+
+        # Agrupa por cota (adm + crédito similar = mesma cota, multi-página)
+        grupos: list[list[tuple[dict, ExtratoAnalise]]] = []
+        for entry_r, analise_r in resultados:
+            if analise_r is None or analise_r.resultado == ExtratoResultado.EXTRATO_INCORRETO:
+                continue  # trata incorretos separado abaixo
+            colocado = False
+            for grupo in grupos:
+                ref_entry, ref_analise = grupo[0]
+                mesma_adm = (
+                    (analise_r.administradora or "").lower() ==
+                    (ref_analise.administradora or "").lower()
+                    and (analise_r.administradora or "") != ""
+                )
+                credito_similar = (
+                    ref_analise.valor_credito > 0
+                    and abs(analise_r.valor_credito - ref_analise.valor_credito)
+                    / ref_analise.valor_credito < 0.05  # 5% de tolerância
+                ) if ref_analise.valor_credito > 0 else analise_r.valor_credito == 0
+                mesma_cota_grupo = (
+                    analise_r.grupo and ref_analise.grupo
+                    and analise_r.grupo == ref_analise.grupo
+                    and analise_r.cota and ref_analise.cota
+                    and analise_r.cota == ref_analise.cota
+                )
+                if mesma_cota_grupo or (mesma_adm and credito_similar):
+                    grupo.append((entry_r, analise_r))
+                    colocado = True
+                    break
+            if not colocado:
+                grupos.append([(entry_r, analise_r)])
+
+        # Incorretos / sem URL — conta erros
+        incorretos = [
+            (e, a) for e, a in resultados
+            if a is None or a.resultado == ExtratoResultado.EXTRATO_INCORRETO
+        ]
+
+        total_cotas = len(grupos)
+        logger.info(
+            "Qualificador: card %s — lote=%d imagens | %d cota(s) distinta(s) | %d incorreta(s)",
+            card_id[:8], len(lote), total_cotas, len(incorretos),
+        )
+
+        # Se nenhuma cota válida, trata como extrato incorreto
+        if total_cotas == 0:
+            erros = int(journey.get("extrato_incorreto_count", 0)) + len(lote)
             journey["extrato_incorreto_count"] = erros
-            history = history_append(history, "user", "[Enviou documento — não é extrato ou ilegível]")
+            history = history_append(history, "user", "[Enviou documento(s) — não é extrato ou ilegível]")
             await _handle_extrato_incorreto(card, card_id, phone, nome, history, journey, erros)
             return
 
-        # ── NAO_QUALIFICADO ───────────────────────────────────────────────
-        if analise.resultado == ExtratoResultado.NAO_QUALIFICADO:
-            logger.info(
-                "Qualificador: cota NÃO qualificada — card %s | pago=%.0f | credito=%.0f | %s",
-                card_id[:8], analise.valor_pago, analise.valor_credito, analise.motivo,
+        # Processa cada cota distinta
+        for idx, grupo in enumerate(grupos):
+            # Mescla dados de múltiplas páginas da mesma cota (pega a análise mais completa)
+            analise = max(
+                [a for _, a in grupo],
+                key=lambda a: sum([
+                    bool(a.administradora), bool(a.valor_credito), bool(a.valor_pago),
+                    bool(a.parcelas_pagas), bool(a.tipo_contemplacao), bool(a.grupo), bool(a.cota),
+                ]),
             )
-            bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=adm)
-            await _send_message(card, phone, bot_msg, history=history)
-            history = history_append(
-                history, "user",
-                f"[Extrato — cota {analise.administradora or adm}, "
-                f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}]",
-            )
-            history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                try:
-                    await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-                    await faro.update_card(card_id, {
-                        "Motivo dispensa": analise.motivo,
-                        "Valor do crédito": str(analise.valor_credito) if analise.valor_credito else "",
-                        "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
-                    })
-                except FaroError as e:
-                    logger.error("Qualificador: erro ao mover card para NAO_QUALIFICADO: %s", e)
-                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-            return
+            analise_url = grupo[0][0]["url"]  # URL da imagem mais completa (primeira do grupo)
 
-        # ── QUALIFICADO ───────────────────────────────────────────────────
-        if analise.resultado == ExtratoResultado.QUALIFICADO:
-            logger.info(
-                "Qualificador: cota QUALIFICADA — card %s | pago=%.0f | credito=%.0f | adm=%s",
-                card_id[:8], analise.valor_pago, analise.valor_credito, analise.administradora,
-            )
-
-            # ── GUARDA DE CONTEMPLAÇÃO ────────────────────────────────────────
-            # Compramos EXCLUSIVAMENTE cotas contempladas por SORTEIO.
-            # Se o extrato indicar LANCE (ou variante), desqualifica imediatamente
-            # e move para Não Qualificado — nunca avança para PRECIFICACAO.
-            _tipo_cont_extrato = (analise.tipo_contemplacao or "").strip().lower()
-            if _tipo_cont_extrato in ("lance", "contemplada-lance"):
-                logger.warning(
-                    "Qualificador: card %s — extrato indica LANCE → bloqueando antes da precificação.",
-                    card_id[:8],
-                )
-                bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
-                await _send_message(card, phone, bot_msg, history=history)
-                history = history_append(
-                    history, "user",
-                    f"[Extrato — contemplação LANCE, adm={analise.administradora or adm}]",
-                )
-                history = history_append(history, "assistant", bot_msg)
-                async with FaroClient() as faro:
-                    try:
-                        await faro.update_card(card_id, {
-                            "Tipo contemplação": analise.tipo_contemplacao or "Lance",
-                            "Motivo dispensa": "Cota contemplada por lance — fora do escopo de compra",
-                        })
-                        await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-                    except FaroError as e:
-                        logger.error(
-                            "Qualificador: erro ao mover card %s (lance) para NAO_QUALIFICADO: %s",
-                            card_id[:8], e,
-                        )
-                    await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-                await slack_warning(
-                    f"⚠️ Cota de LANCE bloqueada antes da proposta\n"
-                    f"Lead: {nome} | Adm: {analise.administradora or adm} | Card: `{card_id[:8]}`\n"
-                    f"Extrato indicou contemplação por lance — movido para Não Qualificado.",
-                    context={"Card": card_id[:12], "Telefone": phone, "Adm": adm},
-                )
-                return
-            # ─────────────────────────────────────────────────────────────────
-
-            # Leads em ESPERA (fluxo LP retroativa): verificar se adm está na nossa lista.
-            # Se não estiver, manter em ESPERA para o time humano trabalhar — sem precificação.
-            _stage_atual = card.get("stage_id") or ""
-            _veio_de_espera = (_stage_atual == Stage.ESPERA)
-            if _veio_de_espera:
-                from jobs.ativacao_bazar_site import _qualifica_lp, ADM_LP_TOKENS, _adm_matches, _LP_EXACT_SIGLAS
-                adm_extrato = analise.administradora or adm
-                _adm_ok, _adm_motivo = _qualifica_lp({
-                    "Adm": adm_extrato,
-                    "Tipo contemplação": analise.tipo_contemplacao or card.get("Tipo contemplação") or "",
-                })
-                if not _adm_ok:
-                    logger.info(
-                        "Qualificador: lead ESPERA — adm '%s' fora da lista LP (%s) → mantém em ESPERA para time humano",
-                        adm_extrato, _adm_motivo,
-                    )
-                    # Confirma recebimento mas não precifica automaticamente
-                    bot_msg = MSG_QUALIFICADO_LP.format(nome=nome, adm=adm_extrato)
-                    await _send_message(card, phone, bot_msg, history=history)
-                    history = history_append(history, "assistant", bot_msg)
-                    # Grava dados do extrato no FARO mas MANTÉM em ESPERA
-                    async with FaroClient() as faro:
-                        try:
-                            _update: dict = {}
-                            if analise.valor_pago:
-                                _update["Valor pago até o momento"] = str(analise.valor_pago)
-                            if analise.valor_credito:
-                                _update["Crédito"] = str(analise.valor_credito)
-                            if analise.administradora:
-                                _update["Adm"] = analise.administradora
-                            if analise.tipo_contemplacao:
-                                _update["Tipo contemplação"] = analise.tipo_contemplacao
-                            if media_url:
-                                _update["Link do Extrato"] = media_url
-                            if _update:
-                                await faro.update_card(card_id, _update)
-                            # permanece em ESPERA — não move para PRECIFICACAO
-                        except FaroError as e:
-                            logger.error("Qualificador: erro ao gravar dados ESPERA card %s: %s", card_id[:8], e)
-                        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-                    return
-
-            # Mensagem de confirmação: leads em ESPERA (fluxo LP retroativa) recebem
-            # mensagem neutra sem prometer resultado — só confirma recebimento
-            _stage_atual = card.get("stage_id") or ""
-            _veio_de_espera = (_stage_atual == Stage.ESPERA)
-            if _veio_de_espera:
-                bot_msg = MSG_QUALIFICADO_LP.format(nome=nome, adm=analise.administradora or adm)
+            is_first = idx == 0
+            if is_first:
+                target_card_id = card_id
+                target_card    = card
             else:
-                bot_msg = MSG_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
-            await _send_message(card, phone, bot_msg, history=history)
-            history = history_append(
-                history, "user",
-                f"[Extrato — cota {analise.administradora or adm}, "
-                f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}, "
-                f"{analise.parcelas_pagas}/{analise.total_parcelas} parcelas]",
-            )
-            history = history_append(history, "assistant", bot_msg)
-
-            update_fields: dict = {
-                "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
-                "Parcelas pagas": str(analise.parcelas_pagas) if analise.parcelas_pagas else "",
-                "Quantidade total meses": str(analise.total_parcelas) if analise.total_parcelas else "",
-            }
-            # Gravar % pago diretamente — precificação lê este campo para calcular proposta correta
-            # SEM ele gravado aqui, precificação calcula 0% e envia proposta mínima (bug Gabriell)
-            if analise.valor_pago and analise.valor_credito:
-                _pct = round(analise.valor_pago / analise.valor_credito * 100, 2)
-                update_fields["Porcentagem paga até o momento"] = str(_pct)
-            if analise.valor_credito:
-                update_fields["Crédito"] = str(analise.valor_credito)
-            if analise.administradora:
-                update_fields["Adm"] = analise.administradora
-            if analise.tipo_contemplacao:
-                update_fields["Tipo contemplação"] = analise.tipo_contemplacao
-            if analise.tipo_bem:
-                update_fields["Tipo de bem"] = analise.tipo_bem
-            if analise.grupo:
-                update_fields["Grupo"] = analise.grupo
-            if analise.cota:
-                update_fields["Cota"] = analise.cota
-
-            # Salva URL do extrato original
-            if media_url:
-                update_fields["Link do Extrato"] = media_url
-
-            # Enriquecimento extra com dados do ExtratoEstruturado (novos campos)
-            estruturado: ExtratoEstruturado | None = getattr(analise, "_estruturado", None)
-            if estruturado:
-                dp = estruturado.dados_plano
-                dc = estruturado.dados_cadastrais
-                if dp.contrato:
-                    update_fields["Contrato"] = dp.contrato
-                if dp.data_adesao:
-                    update_fields["Data de adesão"] = dp.data_adesao
-                if dp.prazo_grupo_meses:
-                    update_fields["Prazo do grupo"] = str(dp.prazo_grupo_meses)
-                if dp.meses_a_pagar:
-                    update_fields["Quantidade meses a pagar"] = str(dp.meses_a_pagar)
-                if dp.taxa_administracao:
-                    update_fields["Taxa administração"] = str(dp.taxa_administracao)
-                if dp.valor_parcela_atual:
-                    update_fields["Valor parcela"] = str(dp.valor_parcela_atual)
-                if dp.sit_cobranca:
-                    update_fields["Situação cobrança"] = dp.sit_cobranca
-                if dp.bem:
-                    update_fields["Bem"] = dp.bem
-                if dc.cpf:
-                    update_fields["CPF"] = dc.cpf
-                # Tipo Pessoa extraído do extrato: "PF" ou "PJ"
-                # Bazar/LP: único momento em que sabemos se a cota é CPF ou CNPJ
-                if dc.tipo_pessoa:
-                    _tp = dc.tipo_pessoa.strip().upper()
-                    if _tp in ("PF", "CPF", "PESSOA FÍSICA", "PESSOA FISICA"):
-                        update_fields["Tipo Pessoa"] = "PF"
-                    elif _tp in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA"):
-                        update_fields["Tipo Pessoa"] = "PJ"
-                if dc.nome and not card.get("Nome do contato"):
-                    update_fields["Nome do contato"] = dc.nome
-                logger.info(
-                    "Qualificador: enriquecendo FARO com %d campos extras (confidence=%.2f)",
-                    len(update_fields), estruturado.confidence_score,
-                )
-
-            journey.update({
-                "origem": get_fonte(card) or "desconhecida",
-                "adm": analise.administradora or adm,
-                "credito": analise.valor_credito,
-                "pago_pct": round(analise.valor_pago / analise.valor_credito * 100, 1)
-                if analise.valor_credito else 0,
-                "qualificado_em": __import__("datetime").date.today().isoformat(),
-            })
-            if analise.tipo_contemplacao:
-                journey["tipo_contemplacao"] = analise.tipo_contemplacao
-            if analise.tipo_bem:
-                journey["tipo_bem"] = analise.tipo_bem
-
-            # Tudo num único FaroClient — fix do bug de cliente fechado
-            async with FaroClient() as faro:
+                # Cota adicional → cria novo card no FARO copiando dados do lead
                 try:
-                    await faro.update_card(card_id, update_fields)
-                    await faro.move_card(card_id, Stage.PRECIFICACAO)
-                except FaroError as e:
-                    logger.error("Qualificador: erro CRÍTICO ao mover para PRECIFICACAO: %s", e)
-                    await slack_error(
-                        "Falha crítica: lead qualificado não moveu para PRECIFICACAO",
-                        exception=e,
-                        context={"Card": card_id[:12], "Cliente": nome, "Telefone": phone},
+                    async with FaroClient() as faro_new:
+                        novo_card = await faro_new.create_card(
+                            title=nome,
+                            stage_id=Stage.PRIMEIRA_ATIVACAO,
+                            fields={
+                                "Telefone":        phone,
+                                "Nome do contato": nome,
+                                "Fonte":           get_fonte(card) or "",
+                                "Adm":             analise.administradora or adm,
+                            },
+                        )
+                    target_card_id = novo_card["id"]
+                    target_card    = novo_card
+                    logger.info(
+                        "Qualificador: cota adicional #%d → novo card %s criado para %s",
+                        idx + 1, target_card_id[:8], nome,
                     )
-                    return
-                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-                await save_journey(faro, card_id, journey)
-            return
+                    await slack_warning(
+                        f"📋 Multi-cota detectado\n"
+                        f"Lead: *{nome}* | Telefone: `{phone[-6:]}`\n"
+                        f"Cota #{idx + 1}: {analise.administradora or '?'} "
+                        f"| Crédito: R${analise.valor_credito:,.0f}\n"
+                        f"Novo card criado: `{target_card_id[:8]}`",
+                        context={"Lead": nome, "Phone": phone, "Adm": analise.administradora},
+                    )
+                except Exception as e_new:
+                    logger.error(
+                        "Qualificador: falha ao criar card para cota adicional #%d: %s", idx + 1, e_new
+                    )
+                    continue
+
+            # Processa esta cota no card alvo
+            await _process_analise(
+                analise=analise,
+                media_url=analise_url,
+                card=target_card,
+                card_id=target_card_id,
+                phone=phone,
+                nome=nome,
+                adm=adm,
+                history=history,
+                journey=journey if is_first else load_journey(target_card),
+                is_extra_cota=not is_first,
+                total_cotas=total_cotas,
+            )
+        return
 
     # ── Caso 3: Texto sem extrato ─────────────────────────────────────────────
     logger.info("Qualificador: lead %s enviou texto sem extrato. Solicitando.", card_id[:8])
@@ -754,6 +655,255 @@ async def handle_qualification(card: dict, msg) -> None:
                 logger.info("Qualificador: card %s → EM_CONTATO (aguardando extrato)", card_id[:8])
             except FaroError as e:
                 logger.warning("Qualificador: erro ao mover %s para EM_CONTATO: %s", card_id[:8], e)
+
+
+# ---------------------------------------------------------------------------
+# Processamento de uma cota qualificada (card original ou card extra)
+# ---------------------------------------------------------------------------
+
+async def _process_analise(
+    analise: ExtratoAnalise,
+    media_url: str,
+    card: dict,
+    card_id: str,
+    phone: str,
+    nome: str,
+    adm: str,
+    history: list,
+    journey: dict,
+    is_extra_cota: bool = False,
+    total_cotas: int = 1,
+) -> None:
+    """
+    Processa o resultado de análise de extrato para um card específico.
+    Chamado pelo handle_qualification para cada cota distinta detectada no lote.
+    """
+    # ── NAO_QUALIFICADO ───────────────────────────────────────────────────────
+    if analise.resultado == ExtratoResultado.NAO_QUALIFICADO:
+        logger.info(
+            "Qualificador: cota NÃO qualificada — card %s | pago=%.0f | credito=%.0f | %s",
+            card_id[:8], analise.valor_pago, analise.valor_credito, analise.motivo,
+        )
+        bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=adm)
+        if not is_extra_cota:
+            await _send_message(card, phone, bot_msg, history=history)
+        history = history_append(
+            history, "user",
+            f"[Extrato — cota {analise.administradora or adm}, "
+            f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}]",
+        )
+        if not is_extra_cota:
+            history = history_append(history, "assistant", bot_msg)
+        async with FaroClient() as faro:
+            try:
+                await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
+                await faro.update_card(card_id, {
+                    "Motivo dispensa": analise.motivo,
+                    "Valor do crédito": str(analise.valor_credito) if analise.valor_credito else "",
+                    "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
+                })
+            except FaroError as e:
+                logger.error("Qualificador: erro ao mover card %s para NAO_QUALIFICADO: %s", card_id[:8], e)
+            if not is_extra_cota:
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+        return
+
+    # ── QUALIFICADO ───────────────────────────────────────────────────────────
+    if analise.resultado == ExtratoResultado.QUALIFICADO:
+        logger.info(
+            "Qualificador: cota QUALIFICADA — card %s | pago=%.0f | credito=%.0f | adm=%s",
+            card_id[:8], analise.valor_pago, analise.valor_credito, analise.administradora,
+        )
+
+        # Bloqueio de contemplação por LANCE
+        _tipo_cont_extrato = (analise.tipo_contemplacao or "").strip().lower()
+        if _tipo_cont_extrato in ("lance", "contemplada-lance"):
+            logger.warning(
+                "Qualificador: card %s — extrato indica LANCE → bloqueando antes da precificação.",
+                card_id[:8],
+            )
+            bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
+            if not is_extra_cota:
+                await _send_message(card, phone, bot_msg, history=history)
+                history = history_append(
+                    history, "user",
+                    f"[Extrato — contemplação LANCE, adm={analise.administradora or adm}]",
+                )
+                history = history_append(history, "assistant", bot_msg)
+            async with FaroClient() as faro:
+                try:
+                    await faro.update_card(card_id, {
+                        "Tipo contemplação": analise.tipo_contemplacao or "Lance",
+                        "Motivo dispensa": "Cota contemplada por lance — fora do escopo de compra",
+                    })
+                    await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
+                except FaroError as e:
+                    logger.error(
+                        "Qualificador: erro ao mover card %s (lance) para NAO_QUALIFICADO: %s",
+                        card_id[:8], e,
+                    )
+                if not is_extra_cota:
+                    await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+            await slack_warning(
+                f"⚠️ Cota de LANCE bloqueada antes da proposta\n"
+                f"Lead: {nome} | Adm: {analise.administradora or adm} | Card: `{card_id[:8]}`\n"
+                f"Extrato indicou contemplação por lance — movido para Não Qualificado.",
+                context={"Card": card_id[:12], "Telefone": phone, "Adm": adm},
+            )
+            return
+
+        # Leads em ESPERA (fluxo LP retroativa)
+        _stage_atual = card.get("stage_id") or ""
+        _veio_de_espera = (_stage_atual == Stage.ESPERA)
+        if _veio_de_espera:
+            from jobs.ativacao_bazar_site import _qualifica_lp
+            adm_extrato = analise.administradora or adm
+            _adm_ok, _adm_motivo = _qualifica_lp({
+                "Adm": adm_extrato,
+                "Tipo contemplação": analise.tipo_contemplacao or card.get("Tipo contemplação") or "",
+            })
+            if not _adm_ok:
+                logger.info(
+                    "Qualificador: lead ESPERA — adm '%s' fora da lista LP (%s) → mantém em ESPERA",
+                    adm_extrato, _adm_motivo,
+                )
+                bot_msg = MSG_QUALIFICADO_LP.format(nome=nome, adm=adm_extrato)
+                if not is_extra_cota:
+                    await _send_message(card, phone, bot_msg, history=history)
+                    history = history_append(history, "assistant", bot_msg)
+                async with FaroClient() as faro:
+                    try:
+                        _update: dict = {}
+                        if analise.valor_pago:
+                            _update["Valor pago até o momento"] = str(analise.valor_pago)
+                        if analise.valor_credito:
+                            _update["Crédito"] = str(analise.valor_credito)
+                        if analise.administradora:
+                            _update["Adm"] = analise.administradora
+                        if analise.tipo_contemplacao:
+                            _update["Tipo contemplação"] = analise.tipo_contemplacao
+                        if media_url:
+                            _update["Link do Extrato"] = media_url
+                        if _update:
+                            await faro.update_card(card_id, _update)
+                    except FaroError as e:
+                        logger.error("Qualificador: erro ao gravar dados ESPERA card %s: %s", card_id[:8], e)
+                    if not is_extra_cota:
+                        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                return
+
+        # Mensagem de confirmação
+        if _veio_de_espera:
+            bot_msg = MSG_QUALIFICADO_LP.format(nome=nome, adm=analise.administradora or adm)
+        elif is_extra_cota:
+            # Cota adicional: mensagem específica, não duplica a confirmação
+            bot_msg = (
+                f"Perfeito, {nome}! Também recebi o extrato da sua cota *{analise.administradora or adm}* "
+                f"(crédito R${analise.valor_credito:,.0f}). Vou analisar e retorno em breve! 📋"
+            )
+        else:
+            bot_msg = MSG_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
+
+        await _send_message(card if not is_extra_cota else card, phone, bot_msg, history=history)
+
+        if not is_extra_cota:
+            history = history_append(
+                history, "user",
+                f"[Extrato — cota {analise.administradora or adm}, "
+                f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}, "
+                f"{analise.parcelas_pagas}/{analise.total_parcelas} parcelas]",
+            )
+            history = history_append(history, "assistant", bot_msg)
+
+        update_fields: dict = {
+            "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
+            "Parcelas pagas": str(analise.parcelas_pagas) if analise.parcelas_pagas else "",
+            "Quantidade total meses": str(analise.total_parcelas) if analise.total_parcelas else "",
+        }
+        if analise.valor_pago and analise.valor_credito:
+            _pct = round(analise.valor_pago / analise.valor_credito * 100, 2)
+            update_fields["Porcentagem paga até o momento"] = str(_pct)
+        if analise.valor_credito:
+            update_fields["Crédito"] = str(analise.valor_credito)
+        if analise.administradora:
+            update_fields["Adm"] = analise.administradora
+        if analise.tipo_contemplacao:
+            update_fields["Tipo contemplação"] = analise.tipo_contemplacao
+        if analise.tipo_bem:
+            update_fields["Tipo de bem"] = analise.tipo_bem
+        if analise.grupo:
+            update_fields["Grupo"] = analise.grupo
+        if analise.cota:
+            update_fields["Cota"] = analise.cota
+        if media_url:
+            update_fields["Link do Extrato"] = media_url
+
+        # Enriquecimento extra com ExtratoEstruturado
+        estruturado: ExtratoEstruturado | None = getattr(analise, "_estruturado", None)
+        if estruturado:
+            dp = estruturado.dados_plano
+            dc = estruturado.dados_cadastrais
+            if dp.contrato:
+                update_fields["Contrato"] = dp.contrato
+            if dp.data_adesao:
+                update_fields["Data de adesão"] = dp.data_adesao
+            if dp.prazo_grupo_meses:
+                update_fields["Prazo do grupo"] = str(dp.prazo_grupo_meses)
+            if dp.meses_a_pagar:
+                update_fields["Quantidade meses a pagar"] = str(dp.meses_a_pagar)
+            if dp.taxa_administracao:
+                update_fields["Taxa administração"] = str(dp.taxa_administracao)
+            if dp.valor_parcela_atual:
+                update_fields["Valor parcela"] = str(dp.valor_parcela_atual)
+            if dp.sit_cobranca:
+                update_fields["Situação cobrança"] = dp.sit_cobranca
+            if dp.bem:
+                update_fields["Bem"] = dp.bem
+            if dc.cpf:
+                update_fields["CPF"] = dc.cpf
+            if dc.tipo_pessoa:
+                _tp = dc.tipo_pessoa.strip().upper()
+                if _tp in ("PF", "CPF", "PESSOA FÍSICA", "PESSOA FISICA"):
+                    update_fields["Tipo Pessoa"] = "PF"
+                elif _tp in ("PJ", "CNPJ", "PESSOA JURÍDICA", "PESSOA JURIDICA"):
+                    update_fields["Tipo Pessoa"] = "PJ"
+            if dc.nome and not card.get("Nome do contato"):
+                update_fields["Nome do contato"] = dc.nome
+            logger.info(
+                "Qualificador: enriquecendo FARO com %d campos extras (confidence=%.2f)",
+                len(update_fields), estruturado.confidence_score,
+            )
+
+        journey.update({
+            "origem": get_fonte(card) or "desconhecida",
+            "adm": analise.administradora or adm,
+            "credito": analise.valor_credito,
+            "pago_pct": round(analise.valor_pago / analise.valor_credito * 100, 1)
+            if analise.valor_credito else 0,
+            "qualificado_em": __import__("datetime").date.today().isoformat(),
+        })
+        if analise.tipo_contemplacao:
+            journey["tipo_contemplacao"] = analise.tipo_contemplacao
+        if analise.tipo_bem:
+            journey["tipo_bem"] = analise.tipo_bem
+
+        async with FaroClient() as faro:
+            try:
+                await faro.update_card(card_id, update_fields)
+                await faro.move_card(card_id, Stage.PRECIFICACAO)
+            except FaroError as e:
+                logger.error("Qualificador: erro CRÍTICO ao mover card %s para PRECIFICACAO: %s", card_id[:8], e)
+                await slack_error(
+                    "Falha crítica: lead qualificado não moveu para PRECIFICACAO",
+                    exception=e,
+                    context={"Card": card_id[:12], "Cliente": nome, "Telefone": phone},
+                )
+                return
+            if not is_extra_cota:
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                await save_journey(faro, card_id, journey)
+            else:
+                await save_journey(faro, card_id, journey)
 
 
 # ---------------------------------------------------------------------------

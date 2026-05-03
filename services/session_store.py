@@ -204,6 +204,68 @@ async def save_history_smart(
             logger.warning("FARO save_history backup(%s): %s", card_id[:8], e)
 
 
+# ─── Buffer de mídia (multi-extrato) ─────────────────────────────────────────
+
+_MEDIA_BUFFER_TTL = 35   # segundos — janela de espera por novas imagens
+_MEDIA_BUFFER_KEY = "cs:media_buf:{phone}"
+
+
+async def push_media_buffer(phone: str, entry: dict) -> int:
+    """
+    Adiciona uma entrada de mídia ao buffer do telefone.
+    entry = {"url": str, "media_type": str, "raw": dict}
+    Retorna o tamanho atual do buffer.
+    """
+    try:
+        r = await get_redis()
+        key = _MEDIA_BUFFER_KEY.format(phone=phone)
+        await r.rpush(key, json.dumps(entry, ensure_ascii=False))
+        await r.expire(key, _MEDIA_BUFFER_TTL)
+        length = await r.llen(key)
+        return int(length)
+    except Exception as e:
+        logger.warning("Redis push_media_buffer(%s): %s", phone[-6:], e)
+        return 1
+
+
+async def peek_media_buffer(phone: str) -> list[dict]:
+    """Lê o buffer sem remover (para checar se ainda cresce)."""
+    try:
+        r = await get_redis()
+        key = _MEDIA_BUFFER_KEY.format(phone=phone)
+        items = await r.lrange(key, 0, -1)
+        return [json.loads(i) for i in items]
+    except Exception as e:
+        logger.warning("Redis peek_media_buffer(%s): %s", phone[-6:], e)
+        return []
+
+
+async def pop_media_buffer(phone: str) -> list[dict]:
+    """Drena e retorna todo o buffer de mídia."""
+    try:
+        r = await get_redis()
+        key = _MEDIA_BUFFER_KEY.format(phone=phone)
+        pipe = r.pipeline()
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        results = await pipe.execute()
+        raw = results[0] if results else []
+        return [json.loads(i) for i in raw]
+    except Exception as e:
+        logger.warning("Redis pop_media_buffer(%s): %s", phone[-6:], e)
+        return []
+
+
+async def media_buffer_ttl(phone: str) -> int:
+    """Retorna TTL restante do buffer (segundos). -2 se não existe."""
+    try:
+        r = await get_redis()
+        key = _MEDIA_BUFFER_KEY.format(phone=phone)
+        return int(await r.ttl(key))
+    except Exception:
+        return -2
+
+
 # ─── Utilitários gerais ───────────────────────────────────────────────────────
 
 async def health_check() -> bool:
