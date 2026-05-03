@@ -172,8 +172,8 @@ async def _fila_watchdog():
 
 
 def setup_scheduler():
-    # ✅ LISTA ativa — 1 lead a cada 30 min (número sem restrições)
-    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30),
+    # ✅ LISTA ativa — 1 lead a cada 30-35 min (jitter anti-ban, janela 8h-20h BRT)
+    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30, jitter=300),
                       id="ativacao_listas", name="Ativação de Listas",
                       max_instances=1, misfire_grace_time=300)
     # watch_novos_leads: ativo — injeta Bazar/LP novos na fila a cada 5 min
