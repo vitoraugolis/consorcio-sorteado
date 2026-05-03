@@ -203,12 +203,12 @@ class ZapSignClient:
                 lead["phone_number"]  = phone[2:]
         signers.append(lead)
 
-        # 2. Signatários internos (da empresa)
+        # 2. Signatários internos (da empresa) — recebem link via e-mail automático ZapSign
         for internal in (INTERNAL_SIGNERS or []):
             signers.append({
                 "name":                   internal["name"],
                 "email":                  internal["email"],
-                "send_automatic_email":   False,
+                "send_automatic_email":   True,   # ZapSign envia o link por e-mail
                 "send_automatic_whatsapp": False,
             })
 
