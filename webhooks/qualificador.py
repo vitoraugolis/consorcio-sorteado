@@ -716,40 +716,77 @@ async def _process_analise(
         )
 
         # Bloqueio de contemplação por LANCE
+        # Fluxo LP: lead vai para LP_LANCE com sondagem de interesse
+        # Demais fluxos: NAO_QUALIFICADO (sem compra de lance)
         _tipo_cont_extrato = (analise.tipo_contemplacao or "").strip().lower()
         if _tipo_cont_extrato in ("lance", "contemplada-lance"):
             logger.warning(
-                "Qualificador: card %s — extrato indica LANCE → bloqueando antes da precificação.",
+                "Qualificador: card %s — extrato indica LANCE.",
                 card_id[:8],
             )
-            bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
-            if not is_extra_cota:
+            _fonte_card = (get_fonte(card) or "").lower()
+            _is_lp_fonte = "lp" in _fonte_card or "site" in _fonte_card or "landing" in _fonte_card
+
+            if _is_lp_fonte:
+                # Fluxo LP: move para LP_LANCE e envia mensagem de sondagem
+                from webhooks.agente_lp_lance import MSG_LP_LANCE
+                bot_msg = MSG_LP_LANCE.format(nome=nome, adm=analise.administradora or adm)
                 await _send_message(card, phone, bot_msg, history=history)
                 history = history_append(
                     history, "user",
                     f"[Extrato — contemplação LANCE, adm={analise.administradora or adm}]",
                 )
                 history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                try:
-                    await faro.update_card(card_id, {
-                        "Tipo contemplação": analise.tipo_contemplacao or "Lance",
-                        "Motivo dispensa": "Cota contemplada por lance — fora do escopo de compra",
-                    })
-                    await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-                except FaroError as e:
-                    logger.error(
-                        "Qualificador: erro ao mover card %s (lance) para NAO_QUALIFICADO: %s",
-                        card_id[:8], e,
-                    )
-                if not is_extra_cota:
+                async with FaroClient() as faro:
+                    try:
+                        await faro.update_card(card_id, {
+                            "Tipo contemplação": analise.tipo_contemplacao or "Lance",
+                            "Adm": analise.administradora or adm,
+                        })
+                        await faro.move_card(card_id, Stage.LP_LANCE)
+                    except FaroError as e:
+                        logger.error(
+                            "Qualificador: erro ao mover card %s (lance LP) para LP_LANCE: %s",
+                            card_id[:8], e,
+                        )
                     await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-            await slack_warning(
-                f"⚠️ Cota de LANCE bloqueada antes da proposta\n"
-                f"Lead: {nome} | Adm: {analise.administradora or adm} | Card: `{card_id[:8]}`\n"
-                f"Extrato indicou contemplação por lance — movido para Não Qualificado.",
-                context={"Card": card_id[:12], "Telefone": phone, "Adm": adm},
-            )
+                await slack_warning(
+                    f"🟡 *Cota de LANCE detectada — lead movido para LP_LANCE*\n"
+                    f"Lead: *{nome}* | Adm: {analise.administradora or adm} | Card: `{card_id[:8]}`\n"
+                    f"Fonte: {_fonte_card} | Crédito: R${analise.valor_credito:,.0f}\n"
+                    f"Mensagem de sondagem enviada — aguardando resposta do lead.",
+                    context={"Card": card_id[:12], "Telefone": phone, "Adm": adm},
+                )
+            else:
+                # Demais fluxos (Bazar, Listas): NAO_QUALIFICADO sem contato adicional
+                bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
+                if not is_extra_cota:
+                    await _send_message(card, phone, bot_msg, history=history)
+                    history = history_append(
+                        history, "user",
+                        f"[Extrato — contemplação LANCE, adm={analise.administradora or adm}]",
+                    )
+                    history = history_append(history, "assistant", bot_msg)
+                async with FaroClient() as faro:
+                    try:
+                        await faro.update_card(card_id, {
+                            "Tipo contemplação": analise.tipo_contemplacao or "Lance",
+                            "Motivo dispensa": "Cota contemplada por lance — fora do escopo de compra",
+                        })
+                        await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
+                    except FaroError as e:
+                        logger.error(
+                            "Qualificador: erro ao mover card %s (lance) para NAO_QUALIFICADO: %s",
+                            card_id[:8], e,
+                        )
+                    if not is_extra_cota:
+                        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                await slack_warning(
+                    f"⚠️ Cota de LANCE descartada\n"
+                    f"Lead: {nome} | Adm: {analise.administradora or adm} | Card: `{card_id[:8]}`\n"
+                    f"Extrato indicou contemplação por lance — movido para Não Qualificado.",
+                    context={"Card": card_id[:12], "Telefone": phone, "Adm": adm},
+                )
             return
 
         # Leads em ESPERA (fluxo LP retroativa)
