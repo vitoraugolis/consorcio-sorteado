@@ -161,6 +161,23 @@ MSG_EXTRATO_INCORRETO_SEM_IMAGEM = (
     "aplicativo do banco. Pode me mandar que analiso na hora! 📄"
 )
 
+MSG_EXTRATO_SEM_CONTEMPLACAO = (
+    "Boa noite, {nome}! 😊\n\n"
+    "Obrigada por enviar! Com esse demonstrativo não consigo ver no detalhe "
+    "as informações sobre a contemplação da cota.\n\n"
+    "Você poderia me enviar o *extrato completo*? "
+    "Veja abaixo um exemplo do que preciso 👇"
+)
+
+MSG_EXTRATO_SEM_CONTEMPLACAO_SEM_IMAGEM = (
+    "Boa noite, {nome}! 😊\n\n"
+    "Obrigada por enviar! Com esse demonstrativo não consigo ver no detalhe "
+    "as informações sobre a contemplação da cota.\n\n"
+    "Você poderia me enviar o *extrato completo*? Ele fica disponível no app "
+    "ou site da administradora e mostra todos os detalhes da sua cota, "
+    "incluindo a seção de Contemplação. 📄"
+)
+
 MSG_EXTRATO_INCORRETO_ESCALADO = (
     "Olá, {nome}! 😊\n\n"
     "Recebi alguns documentos, mas ainda não consegui identificar o extrato "
@@ -648,8 +665,18 @@ async def handle_qualification(card: dict, msg) -> None:
         if total_cotas == 0:
             erros = int(journey.get("extrato_incorreto_count", 0)) + len(lote)
             journey["extrato_incorreto_count"] = erros
+            # Detecta se todos os incorretos são "nao-contemplada" (demonstrativo sem contemplação)
+            motivos_incorretos = [
+                (a.tipo_contemplacao or "") for _, a in incorretos if a is not None
+            ]
+            motivo_predominante = "nao-contemplada" if motivos_incorretos and all(
+                "nao-contemplada" in m for m in motivos_incorretos
+            ) else ""
             history = history_append(history, "user", "[Enviou documento(s) — não é extrato ou ilegível]")
-            await _handle_extrato_incorreto(card, card_id, phone, nome, history, journey, erros)
+            await _handle_extrato_incorreto(
+                card, card_id, phone, nome, history, journey, erros,
+                motivo=motivo_predominante,
+            )
             return
 
         # Processa cada cota distinta
@@ -1033,12 +1060,16 @@ async def _handle_extrato_incorreto(
     history: list,
     journey: dict,
     erros: int,
+    motivo: str = "",
 ) -> None:
     """
     Gerencia resposta a extratos incorretos.
     - Até MAX_EXTRATO_INCORRETO tentativas: orienta + envia imagem de exemplo
     - Acima do limite: escala para humano e move para ON_HOLD
+    motivo: quando "nao-contemplada", usa mensagem específica de "demonstrativo sem contemplação"
     """
+    _sem_contemplacao = "nao-contemplada" in (motivo or "").lower()
+
     if erros >= MAX_EXTRATO_INCORRETO:
         # Escalada para humano
         logger.warning(
@@ -1065,7 +1096,16 @@ async def _handle_extrato_incorreto(
     else:
         # Verifica disponibilidade da imagem antes de escolher o texto
         tem_imagem = os.path.exists(_EXTRATO_EXEMPLO_PATH)
-        if tem_imagem:
+        if _sem_contemplacao:
+            # Caso específico: demonstrativo sem seção de contemplação
+            if tem_imagem:
+                bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
+                await _send_message(card, phone, bot_msg, history=history)
+                await _send_extrato_exemplo(card, phone)
+            else:
+                bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO_SEM_IMAGEM.format(nome=nome)
+                await _send_message(card, phone, bot_msg, history=history)
+        elif tem_imagem:
             # Texto com gancho "veja abaixo 👇" + imagem em seguida
             bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
             await _send_message(card, phone, bot_msg, history=history)
