@@ -315,6 +315,84 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
 
     dp = estruturado.dados_plano
     rf = estruturado.resumo_financeiro
+    co = estruturado.contemplacao
+
+    # ── Detecta tipo de contemplação ──────────────────────────────────────────
+    # Fonte 1: campo direto contemplacao.tipo (Gemini preenche quando achou seção)
+    # Fonte 2: sit_cobranca — campo normalizado que indica a situação atual da cota
+    # Fonte 3: inferência por palavras-chave no sit_cobranca
+    tipo_contemplacao: Optional[str] = None
+
+    raw_tipo = (co.tipo or "").strip().lower()
+    raw_sit  = (dp.sit_cobranca or "").strip().lower()
+
+    _LANCE_TOKENS  = ("lance", "lances", "por lance", "contemplad lance", "contemplada-lance",
+                      "contemplado lance", "valor lance")
+    _SORTEIO_TOKENS = ("sorteio", "assembleia", "contemplad sorteio", "contemplada-sorteio",
+                       "contemplado sorteio", "por sorteio")
+    _NAO_CONT_TOKENS = ("não contemplad", "nao contemplad", "ativa", "vigente",
+                        "em dia", "regular", "normal", "nenhum")
+
+    def _has_token(text: str, tokens: tuple) -> bool:
+        return any(t in text for t in tokens)
+
+    if _has_token(raw_tipo, _LANCE_TOKENS) or _has_token(raw_sit, _LANCE_TOKENS):
+        tipo_contemplacao = "lance"
+    elif _has_token(raw_tipo, _SORTEIO_TOKENS) or _has_token(raw_sit, _SORTEIO_TOKENS):
+        tipo_contemplacao = "contemplada-sorteio"
+    elif _has_token(raw_sit, _NAO_CONT_TOKENS):
+        # Cota ainda não contemplada — marca explicitamente para não inferir errado
+        tipo_contemplacao = "nao-contemplada"
+    elif co.data_contemplacao:
+        # Tem data de contemplação mas sem tipo → assume sorteio (mais comum)
+        tipo_contemplacao = "contemplada-sorteio"
+        logger.info("Qualificador: tipo_contemplacao inferido como sorteio pela data_contemplacao")
+    # else: mantém None — sem informação suficiente
+
+    logger.info(
+        "Qualificador: tipo_contemplacao=%r (raw_tipo=%r, raw_sit=%r)",
+        tipo_contemplacao, co.tipo, dp.sit_cobranca,
+    )
+
+    # ── Bloqueio precoce: LANCE retorna analise direta (sem calcular qualificação) ──
+    if tipo_contemplacao == "lance":
+        logger.warning(
+            "Qualificador: _analyze_extrato detectou LANCE em adm=%s — retorna ExtratoAnalise(LANCE)",
+            dp.administradora,
+        )
+        analise = ExtratoAnalise(
+            resultado=ExtratoResultado.QUALIFICADO,  # qualificado em valor mas tipo=lance → tratado no _process_analise
+            administradora=dp.administradora,
+            valor_credito=dp.valor_credito or 0.0,
+            valor_pago=0.0,
+            motivo="Contemplação por lance",
+            tipo_contemplacao="lance",
+            grupo=dp.grupo,
+            cota=dp.cota,
+        )
+        analise._estruturado = estruturado  # type: ignore[attr-defined]
+        return analise
+
+    # ── Bloqueio: cota não contemplada → EXTRATO_INCORRETO para LP, NAO_QUALIFICADO para demais ──
+    if tipo_contemplacao == "nao-contemplada":
+        logger.info(
+            "Qualificador: cota não contemplada (adm=%s) — EXTRATO_INCORRETO para sinalizar reenvio correto",
+            dp.administradora,
+        )
+        analise = ExtratoAnalise(
+            resultado=ExtratoResultado.EXTRATO_INCORRETO,
+            administradora=dp.administradora,
+            motivo=(
+                f"Extrato indica que a cota {dp.administradora or ''} ainda não foi contemplada "
+                f"(situação: '{dp.sit_cobranca or 'sem informação'}'). "
+                f"Precisamos do extrato de uma cota já contemplada."
+            ),
+            tipo_contemplacao="nao-contemplada",
+            grupo=dp.grupo,
+            cota=dp.cota,
+        )
+        analise._estruturado = estruturado  # type: ignore[attr-defined]
+        return analise
 
     # Extrai valor pago do resumo_financeiro.valores_pagos.total_pago
     valor_pago: float = 0.0
@@ -379,16 +457,16 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
         parcelas_pagas=meses_pagos,
         total_parcelas=total_parcelas,
         motivo=motivo,
-        tipo_contemplacao=estruturado.contemplacao.tipo,
+        tipo_contemplacao=tipo_contemplacao,
         tipo_bem=tipo_bem,
         grupo=dp.grupo,
         cota=dp.cota,
     )
 
     logger.info(
-        "Qualificador: resultado=%s adm=%s credito=%.0f pago=%.0f confidence=%.2f | %s",
+        "Qualificador: resultado=%s adm=%s credito=%.0f pago=%.0f confidence=%.2f tipo_cont=%s | %s",
         resultado.value, administradora, valor_credito, valor_pago,
-        estruturado.confidence_score, motivo[:80],
+        estruturado.confidence_score, tipo_contemplacao, motivo[:80],
     )
 
     # Guarda o ExtratoEstruturado completo no analise para uso no update_fields abaixo

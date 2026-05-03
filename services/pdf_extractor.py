@@ -338,6 +338,22 @@ BANCO DO BRASIL:
 EMBRACON:
 - "Produto" no documento → normalizar para tipo padrão (produto) e usar como bem
 
+REGRAS CRÍTICAS — CONTEMPLAÇÃO:
+O campo contemplacao.tipo é FUNDAMENTAL. Siga estas regras com prioridade máxima:
+
+1. Se o documento contiver qualquer menção a "lance", "valor do lance", "lance pago", "contemplado por lance",
+   "crédito de lance", "LANCE" em qualquer parte do extrato → contemplacao.tipo = "Lance"
+2. Se o documento mencionar "sorteio", "contemplado por sorteio", "assembleia de sorteio" → contemplacao.tipo = "Sorteio"
+3. Se o campo "Sit. Cobrança" / "Situação" / "sit_cobranca" do documento contiver "Lance" ou derivados → contemplacao.tipo = "Lance"
+4. Se a cota AINDA NÃO FOI CONTEMPLADA (status: "Não Contemplada", "Ativa", "Vigente", "Em Aberto") →
+   dados_plano.sit_cobranca = "Não contemplada" e contemplacao.tipo = null
+5. Se o documento mostrar tanto parcelas pagas quanto seção "Contemplação" preenchida → preencher todos os campos da seção
+
+PARA EXTRATOS EMBRACON especificamente:
+- Procurar campos como "Tipo de Contemplação", "Contemplação", "Forma de Contemplação"
+- O campo "Situação" da cota indica se foi contemplada ou não
+- Seção "Dados da Contemplação" quando presente = cota contemplada
+
 Se um campo não for encontrado, use null.
 Retorne APENAS o JSON válido, sem markdown ou texto adicional.
 
