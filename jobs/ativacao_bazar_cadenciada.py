@@ -1,10 +1,10 @@
 """
-jobs/ativacao_bazar_cadenciada.py — Ativação Bazar cadenciada: 1 lead a cada 15-20 min
+jobs/ativacao_bazar_cadenciada.py — Ativação Bazar cadenciada: 1 lead a cada 30-35 min
 
 Loop contínuo que:
-  1. Busca próximo lead qualificado na stage BAZAR
-  2. Dispara a mensagem
-  3. Dorme intervalo aleatório 15-20 min
+  1. Busca todos os leads qualificados na stage BAZAR (ordem: mais recente → mais antigo)
+  2. Dispara a mensagem para o próximo
+  3. Dorme intervalo aleatório 30-35 min
   4. Repete
 
 Se não há leads, dorme 5 min e tenta novamente.
@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 _state: dict = {
     "running": False,
     "task": None,
-    "interval_min": 15,
-    "interval_max": 20,
+    "interval_min": 30,
+    "interval_max": 35,
     "sent_today": 0,
     "last_sent_at": None,
     "last_card": None,
@@ -58,11 +58,23 @@ async def _run_loop() -> None:
 
         try:
             async with FaroClient() as faro:
-                cards = await faro.watch_recent(stage_id=Stage.BAZAR, hours=168, limit=50)
+                all_cards = await faro.get_cards_all_pages(stage_id=Stage.BAZAR)
 
-            cards = filter_test_cards(cards or [])
-            # Filtra apenas qualificados
-            qualificados = [c for c in cards if _qualifica_bazar(c)[0]]
+            all_cards = filter_test_cards(all_cards or [])
+
+            # Ordena do mais recente para o mais antigo
+            def _dt(c):
+                try:
+                    from datetime import timezone
+                    return datetime.fromisoformat(c.get("created_at", "").replace("Z", "+00:00"))
+                except Exception:
+                    return datetime.min.replace(tzinfo=timezone.utc)
+
+            qualificados = sorted(
+                [c for c in all_cards if _qualifica_bazar(c)[0]],
+                key=_dt,
+                reverse=True,
+            )
 
             if not qualificados:
                 logger.info("Bazar loop: nenhum lead qualificado — aguardando 5 min")
@@ -102,7 +114,7 @@ async def _run_loop() -> None:
     logger.info("Bazar loop: encerrado")
 
 
-def start(interval_min: int = 15, interval_max: int = 20) -> dict:
+def start(interval_min: int = 30, interval_max: int = 35) -> dict:
     if _state["running"]:
         return {"status": "already_running", **get_status()}
 
