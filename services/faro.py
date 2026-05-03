@@ -42,9 +42,19 @@ async def _with_retry(coro_fn, label: str):
 
 
 def is_pj(card: dict) -> bool:
-    """Retorna True se o card pertence a Pessoa Juridica. Single source of truth."""
+    """Retorna True se o card pertence a Pessoa Juridica. Single source of truth.
+
+    Prioridade:
+      1. Campo 'Tipo Pessoa' preenchido explicitamente ('PJ'/'CNPJ')
+      2. Fallback: CPF com 14 dígitos numéricos (formato CNPJ)
+    """
     tipo = str(card.get("Tipo Pessoa") or "").strip().upper()
-    return tipo in ("PJ", "CNPJ", "PESSOA JURIDICA")
+    if tipo in ("PJ", "CNPJ", "PESSOA JURIDICA"):
+        return True
+    # Fallback: detecta CNPJ pelo número de dígitos (14 = CNPJ, 11 = CPF)
+    cpf_raw = str(card.get("CPF") or "")
+    digits = "".join(c for c in cpf_raw if c.isdigit())
+    return len(digits) == 14
 
 
 class FaroError(Exception):
