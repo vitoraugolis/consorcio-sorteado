@@ -453,7 +453,7 @@ async def lp_retro_stop(key: str = ""):
 
 
 @app.post("/jobs/bazar-loop/start")
-async def bazar_loop_start(key: str = "", interval_min: int = 15, interval_max: int = 20):
+async def bazar_loop_start(key: str = "", interval_min: int = 30, interval_max: int = 35):
     if key != SECRET_KEY:
         raise HTTPException(status_code=401, detail="Chave inválida")
     from jobs.ativacao_bazar_cadenciada import start
