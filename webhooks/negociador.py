@@ -1312,8 +1312,8 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
         result.next_stage[:8] if result.next_stage else "mantém",
     )
 
-    # ── Safety Car: audita resposta antes de enviar ──────────────────────────
-    from services.safety_car import audit_response
+    # ── Safety Car: audita + aguarda aprovação antes de enviar ───────────────
+    from services.safety_car import audit_response, ApprovalKind, request_approval, wait_for_approval
     from services.faro import history_to_text
     historico_txt = history_to_text(history[:-1], max_turns=6)
 
@@ -1321,8 +1321,22 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
     if result.response_message:
         audit = await audit_response(result.response_message, card_fresh, historico_txt, agente="negociador")
         mensagem_auditada = audit.mensagem_final
-        await _send_response(card, phone, mensagem_auditada)
-        history = history_append(history, "assistant", mensagem_auditada)
+
+        # Safety Car Gate: posta no Slack e aguarda aprovação de Vitor
+        await request_approval(
+            card_fresh,
+            ApprovalKind.NEGOCIACAO,
+            mensagem_lead=mensagem,
+            resposta_bot=mensagem_auditada,
+            intent=result.intent.value,
+        )
+        aprovado = await wait_for_approval(card_id, ApprovalKind.NEGOCIACAO)
+        if aprovado:
+            await _send_response(card, phone, mensagem_auditada)
+            history = history_append(history, "assistant", mensagem_auditada)
+        else:
+            logger.warning("Negociador: aprovação não recebida para card %s — resposta NÃO enviada.", card_id[:8])
+            mensagem_auditada = ""
     else:
         mensagem_auditada = ""
     agora   = datetime.now(timezone.utc).isoformat()

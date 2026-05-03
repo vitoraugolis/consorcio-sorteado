@@ -589,11 +589,10 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
             return False
     
-        # ── Envio da proposta — totalmente automático ────────────────────────────
-        # Todos os fluxos têm proposta calculada automaticamente:
-        #   Bazar/LP → a partir dos dados do extrato analisado pelo Gemini
-        #   Listas   → a partir do crédito já inserido no card no FARO
-        # Não há etapa de aprovação manual.
+        # ── Envio da proposta — SAFETY CAR ──────────────────────────────────────
+        # Todos os fluxos requerem aprovação manual de Vitor antes do envio.
+        # O sistema calcula e apresenta a proposta no Slack; o envio só ocorre
+        # após resposta: "<card_id[:8]> precificação ok"
         #
         # SEGURANÇA: Só compramos cotas contempladas por SORTEIO.
         # Bloqueio de lance abaixo — segunda camada de defesa (camada 1 está no qualificador).
@@ -622,17 +621,24 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
                 context={"card_id": card_id, "nome": nome, "tipo_contemplacao": tipo_cont},
             )
             return False
-    
-        # Auto-aprovação:
-        #   Bazar/LP — extrato analisado pelo Gemini (link_extrato preenchido)
-        #   Listas   — proposta calculada diretamente do crédito já no card (sem extrato)
-        # Ambos os fluxos têm proposta calculada automaticamente → envio direto, sem aprovação manual.
-        auto_aprovado = fonte_bazar_lp or is_lista(card)
-    
-        if auto_aprovado:
-            fonte_log = "Bazar/LP (extrato Gemini)" if fonte_bazar_lp else "Listas (crédito do card)"
-            logger.info("Precificação: card %s auto-aprovado — %s", card_id[:8], fonte_log)
-    
+
+        # ── Safety Car: pede aprovação e aguarda ────────────────────────────────
+        from services.safety_car import ApprovalKind, request_approval, wait_for_approval
+        sequencia = card.get("Classes de Proposta") or ""
+        await request_approval(
+            card,
+            ApprovalKind.PRECIFICACAO,
+            proposta=proposta,
+            sequencia=sequencia,
+        )
+        aprovado = await wait_for_approval(card_id, ApprovalKind.PRECIFICACAO)
+        if not aprovado:
+            logger.warning(
+                "Precificação: aprovação não recebida para card %s — proposta NÃO enviada.",
+                card_id[:8],
+            )
+            return False
+
         agora = datetime.now(timezone.utc).isoformat()
     
         # Move para EM_NEGOCIACAO ANTES de enviar (stage-as-mutex)

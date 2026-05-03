@@ -703,3 +703,75 @@ async def _faro_trigger_aceito(card_id: str) -> None:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
+
+
+# ---------------------------------------------------------------------------
+# Webhook Slack — aprovação manual Safety Car
+# ---------------------------------------------------------------------------
+
+@app.post("/webhook/slack-approval")
+async def slack_approval_webhook(request: Request):
+    """
+    Recebe mensagens do Slack (via Outgoing Webhook ou Slash Command).
+    Formato esperado: "<card_id[:8]> precificação ok" ou "<card_id[:8]> negociação ok"
+    """
+    try:
+        body = await request.body()
+        # Suporta JSON e form-encoded (Slack usa form-encoded em webhooks)
+        try:
+            data = await request.json()
+        except Exception:
+            from urllib.parse import parse_qs
+            parsed = parse_qs(body.decode("utf-8", errors="replace"))
+            data = {k: v[0] for k, v in parsed.items()}
+
+        # Texto pode vir em "text" (Slack Outgoing Webhook) ou "payload"
+        text = (
+            data.get("text") or
+            data.get("message") or
+            data.get("payload") or ""
+        ).strip().lower()
+
+        if not text:
+            return {"ok": False, "reason": "empty text"}
+
+        from services.safety_car import ApprovalKind, approve
+
+        # Detecta padrão: "<8chars> precificação ok" ou "<8chars> negociação ok"
+        import re
+        m = re.match(
+            r"^([a-f0-9]{6,8})\s+(precifica[cç][aã]o|negocia[cç][aã]o)\s+ok\b",
+            text,
+            re.IGNORECASE | re.UNICODE,
+        )
+        if not m:
+            return {"ok": False, "reason": "pattern not matched", "received": text[:80]}
+
+        card_prefix = m.group(1).lower()
+        tipo_raw    = m.group(2).lower()
+
+        # Normaliza para o enum
+        if "precif" in tipo_raw:
+            kind = ApprovalKind.PRECIFICACAO
+        else:
+            kind = ApprovalKind.NEGOCIACAO
+
+        ok = await approve(card_prefix, kind)
+        if ok:
+            logger.info("slack_approval: aprovado %s para prefixo %s", kind.value, card_prefix)
+            return {"ok": True, "kind": kind.value, "card_prefix": card_prefix}
+        else:
+            logger.warning("slack_approval: pendência não encontrada para %s (%s)", card_prefix, kind.value)
+            return {"ok": False, "reason": "pending not found", "card_prefix": card_prefix, "kind": kind.value}
+
+    except Exception as e:
+        logger.error("slack_approval: erro: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/jobs/safety-car/pending")
+async def safety_car_pending(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    from services.safety_car import list_pending
+    return {"pending": await list_pending()}

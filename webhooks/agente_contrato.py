@@ -329,6 +329,12 @@ async def handle_dados_pessoais(card: dict, texto: str) -> None:
 
     if completo:
         logger.info("agente_contrato: card %s — dados completos, aguardando extrato.", card_id[:8])
+        # Avisa Vitor via Slack com os dados coletados (informativo, sem aprovação)
+        try:
+            from services.safety_car import notify_dados_contrato
+            await notify_dados_contrato(card, collected)
+        except Exception as _sc_err:
+            logger.warning("agente_contrato: falha ao notificar dados contrato Slack: %s", _sc_err)
 
 
 async def handle_extrato_recebido(card: dict, msg) -> None:

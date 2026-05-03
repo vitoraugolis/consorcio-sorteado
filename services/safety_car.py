@@ -386,3 +386,234 @@ async def _send_pipeline_report(
 
     except Exception as e:
         logger.error("SafetyCar: falha ao enviar relatório Slack: %s", e)
+
+
+# =============================================================================
+# APROVAÇÃO MANUAL (Safety Car Gate)
+# =============================================================================
+# Fluxo:
+#   1. Sistema calcula proposta / gera resposta de negociação
+#   2. request_approval() posta no Slack e grava pendência no Redis
+#   3. Vitor responde: "<card_id[:8]> precificação ok" ou "<card_id[:8]> negociação ok"
+#   4. Webhook /webhook/slack-approval chama approve() → acorda a task
+# =============================================================================
+
+import json
+from enum import Enum
+
+_PENDING_TTL   = 7200   # 2h TTL da pendência no Redis
+_APPROVAL_TIMEOUT = 5400  # 90min timeout máximo de espera
+
+
+class ApprovalKind(str, Enum):
+    PRECIFICACAO = "precificação"
+    NEGOCIACAO   = "negociação"
+
+
+def _pending_key(card_id: str, kind: ApprovalKind) -> str:
+    return f"cs:safety:{kind.value}:{card_id}"
+
+
+def _event_key(card_id: str, kind: ApprovalKind) -> str:
+    return f"cs:safety:event:{kind.value}:{card_id}"
+
+
+def _fmt_currency(val) -> str:
+    try:
+        raw = str(val).strip().replace("R$", "").replace(" ", "")
+        raw = raw.replace(".", "").replace(",", ".")
+        v = float(raw) if raw else 0.0
+        return f"R$ {v:,.0f}".replace(",", ".")
+    except Exception:
+        return str(val) if val else "—"
+
+
+def _build_precificacao_slack(card: dict, proposta: str, sequencia: str) -> str:
+    nome    = card.get("Nome do contato") or card.get("title", "?")
+    adm     = card.get("Adm", "?")
+    fonte   = card.get("Fonte", "?")
+    credito = _fmt_currency(card.get("Crédito"))
+    pago    = card.get("Porcentagem paga até o momento") or card.get("Valor pago até o momento") or "?"
+    meses   = card.get("Quantidade meses a pagar") or card.get("Quantidade meses restantes") or "?"
+    tipo    = card.get("Tipo contemplação") or "?"
+    card_id = card.get("id", "")
+
+    prop_fmt = _fmt_currency(proposta)
+    seq_parts = [_fmt_currency(v.strip()) for v in (sequencia or "").split(",") if v.strip()]
+    seq_fmt = " → ".join(seq_parts) if seq_parts else "—"
+
+    return (
+        f"🏁 *SAFETY CAR — Precificação aguardando aprovação*\n"
+        f"Card: `{card_id[:8]}` | Lead: *{nome}* | Fonte: {fonte}\n"
+        f"Adm: {adm} | Tipo: {tipo} | Crédito: {credito}\n"
+        f"% pago: {pago} | Meses a pagar: {meses}\n\n"
+        f"💰 *Proposta inicial:* {prop_fmt}\n"
+        f"📈 *Sequência de escalada:* {seq_fmt}\n\n"
+        f"Para aprovar, responda neste canal:\n"
+        f"`{card_id[:8]} precificação ok`"
+    )
+
+
+def _build_negociacao_slack(card: dict, mensagem_lead: str, resposta_bot: str, intent: str) -> str:
+    nome     = card.get("Nome do contato") or card.get("title", "?")
+    adm      = card.get("Adm", "?")
+    fonte    = card.get("Fonte", "?")
+    proposta = _fmt_currency(card.get("Proposta Realizada"))
+    card_id  = card.get("id", "")
+    msg_lead = mensagem_lead[:400] + "…" if len(mensagem_lead) > 400 else mensagem_lead
+    msg_bot  = resposta_bot[:600] + "…" if len(resposta_bot) > 600 else resposta_bot
+
+    return (
+        f"🏁 *SAFETY CAR — Resposta de negociação aguardando aprovação*\n"
+        f"Card: `{card_id[:8]}` | Lead: *{nome}* | Fonte: {fonte}\n"
+        f"Adm: {adm} | Proposta atual: {proposta} | Intent: `{intent}`\n\n"
+        f"💬 *Lead disse:*\n_{msg_lead}_\n\n"
+        f"🤖 *Resposta do bot:*\n{msg_bot}\n\n"
+        f"Para aprovar, responda neste canal:\n"
+        f"`{card_id[:8]} negociação ok`"
+    )
+
+
+def _build_dados_contrato_slack(card: dict, dados: dict) -> str:
+    nome    = card.get("Nome do contato") or card.get("title", "?")
+    adm     = card.get("Adm", "?")
+    card_id = card.get("id", "")
+    linhas  = [f"• *{k}:* {v}" for k, v in dados.items() if v]
+    campos  = "\n".join(linhas) if linhas else "_(sem campos preenchidos)_"
+    return (
+        f"📋 *DADOS PARA CONTRATO recebidos*\n"
+        f"Card: `{card_id[:8]}` | Lead: *{nome}* | Adm: {adm}\n\n"
+        f"{campos}\n\n"
+        f"_(Nenhuma ação necessária — apenas informativo)_"
+    )
+
+
+async def request_approval(
+    card: dict,
+    kind: "ApprovalKind",
+    *,
+    proposta: str = "",
+    sequencia: str = "",
+    mensagem_lead: str = "",
+    resposta_bot: str = "",
+    intent: str = "",
+) -> bool:
+    """Posta pedido de aprovação no Slack e grava pendência no Redis."""
+    from services.slack import slack_alert
+    from services.session_store import get_redis
+
+    card_id = card.get("id", "")
+
+    if kind == ApprovalKind.PRECIFICACAO:
+        msg = _build_precificacao_slack(card, proposta, sequencia)
+    else:
+        msg = _build_negociacao_slack(card, mensagem_lead, resposta_bot, intent)
+
+    try:
+        r = await get_redis()
+        payload = {
+            "card_id":      card_id,
+            "kind":         kind.value,
+            "proposta":     proposta,
+            "sequencia":    sequencia,
+            "resposta_bot": resposta_bot,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await r.set(_pending_key(card_id, kind), json.dumps(payload), ex=_PENDING_TTL)
+    except Exception as e:
+        logger.error("safety_car: erro ao gravar pendência Redis para %s: %s", card_id[:8], e)
+
+    ok = await slack_alert(msg, level="info")
+    if ok:
+        logger.info("safety_car: aprovação %s solicitada para card %s", kind.value, card_id[:8])
+    else:
+        logger.error("safety_car: falha ao postar no Slack para card %s", card_id[:8])
+    return ok
+
+
+async def notify_dados_contrato(card: dict, dados: dict) -> None:
+    """Aviso informativo quando lead envia dados para contrato (sem aprovação)."""
+    from services.slack import slack_alert
+    msg = _build_dados_contrato_slack(card, dados)
+    await slack_alert(msg, level="info")
+    logger.info("safety_car: dados de contrato notificados para card %s", card.get("id","")[:8])
+
+
+async def wait_for_approval(
+    card_id: str,
+    kind: "ApprovalKind",
+    timeout: int = _APPROVAL_TIMEOUT,
+) -> bool:
+    """Polling Redis até aprovação ou timeout. Retorna True se aprovado."""
+    from services.session_store import get_redis
+    deadline = asyncio.get_event_loop().time() + timeout
+    event_key = _event_key(card_id, kind)
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            r = await get_redis()
+            val = await r.get(event_key)
+            if val:
+                await r.delete(event_key)
+                logger.info("safety_car: aprovação recebida para card %s (%s)", card_id[:8], kind.value)
+                return True
+        except Exception as e:
+            logger.warning("safety_car: erro ao checar aprovação Redis: %s", e)
+        await asyncio.sleep(10)
+    logger.warning("safety_car: timeout aguardando aprovação de %s para card %s", kind.value, card_id[:8])
+    return False
+
+
+async def approve(card_id_prefix: str, kind: "ApprovalKind") -> bool:
+    """
+    Chamado pelo webhook /webhook/slack-approval.
+    Busca pendência por prefixo de card_id e sinaliza aprovação no Redis.
+    """
+    from services.session_store import get_redis
+    try:
+        r = await get_redis()
+        pattern = f"cs:safety:{kind.value}:*"
+        keys = await r.keys(pattern)
+        target_card_id = None
+        target_key = None
+        for key in keys:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            card_id_full = key_str.split(":")[-1]
+            if card_id_full.startswith(card_id_prefix):
+                target_key = key_str
+                target_card_id = card_id_full
+                break
+
+        if not target_card_id:
+            logger.warning("safety_car: prefixo '%s' (%s) sem pendência no Redis", card_id_prefix, kind.value)
+            return False
+
+        await r.set(_event_key(target_card_id, kind), "approved", ex=300)
+        await r.delete(target_key)
+        logger.info("safety_car: aprovado card %s (%s)", target_card_id[:8], kind.value)
+        return True
+    except Exception as e:
+        logger.error("safety_car: erro ao processar aprovação: %s", e)
+        return False
+
+
+async def list_pending() -> list[dict]:
+    """Lista todas as aprovações pendentes."""
+    from services.session_store import get_redis
+    try:
+        r = await get_redis()
+        keys = await r.keys("cs:safety:*")
+        result = []
+        for key in keys:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            if ":event:" in key_str:
+                continue
+            raw = await r.get(key)
+            if raw:
+                try:
+                    result.append(json.loads(raw))
+                except Exception:
+                    pass
+        return result
+    except Exception as e:
+        logger.error("safety_car: erro ao listar pendências: %s", e)
+        return []
