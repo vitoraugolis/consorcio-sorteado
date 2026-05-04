@@ -537,6 +537,30 @@ async def resolve_phone(card: dict, canal: "Canal" = "lp") -> str | None:
         card_id[:8], phone_principal[-4:] if phone_principal else "N/A",
         phone_alt[-4:] if phone_alt else "N/A",
     )
+
+    # Procedimento padrão: mover para PROBLEMA_CONTATO e registrar motivo de perda
+    if card_id:
+        try:
+            from services.faro import FaroClient
+            from config import Stage
+            async with FaroClient() as faro:
+                await faro.update_card(card_id, {
+                    "Motivo de perda": (
+                        "Número sem WhatsApp — sem resposta em ambas as variantes "
+                        "(com e sem nono dígito)"
+                    ),
+                })
+                await faro.move_card(card_id, Stage.PROBLEMA_CONTATO)
+            _logger.info(
+                "resolve_phone: card %s movido para PROBLEMA_CONTATO (sem WA)",
+                card_id[:8],
+            )
+        except Exception as _e:
+            _logger.error(
+                "resolve_phone: erro ao mover card %s para PROBLEMA_CONTATO: %s",
+                card_id[:8], _e,
+            )
+
     return None
 
 

@@ -206,16 +206,13 @@ async def _activate_card(card: dict, message_template: str,
         return False
 
     # Verifica se o número tem WhatsApp — testa principal, fallback para alternativo, corrige FARO
+    # Se não encontrar nenhum número válido, resolve_phone já move para PROBLEMA_CONTATO
     try:
         from services.whapi import resolve_phone
         canal_card = "lp" if "lp" in str(card.get("Fonte") or "").lower() else "bazar"
         phone = await resolve_phone(card, canal=canal_card)
         if not phone:
-            logger.info("Card %s sem WhatsApp em nenhum número — movendo para Problema de Contato", card_id[:8])
-            try:
-                await faro.move_card(card_id, Stage.PROBLEMA_CONTATO)
-            except FaroError as e:
-                logger.error("Erro ao mover card %s para Problema de Contato: %s", card_id[:8], e)
+            logger.info("Card %s sem WhatsApp em nenhum número — movido para Problema de Contato", card_id[:8])
             return False
     except Exception as e:
         logger.warning("Card %s falha ao verificar WhatsApp — prosseguindo mesmo assim: %s", card_id[:8], e)
@@ -229,13 +226,11 @@ async def _activate_card(card: dict, message_template: str,
             if not TEST_MODE:
                 await asyncio.sleep(random.randint(5, 50))
             async with get_whapi_for_card(card) as w:
-                # Resolve número com fallback de nono dígito antes de disparar
-                from services.whapi import resolve_phone as _resolve_phone
-                phone_resolved = await _resolve_phone(card, canal="lp") or phone
-                result_lance = await w.send_text(phone_resolved, MSG_LP_LANCE.format(nome=nome, adm=adm),
+                # phone já foi resolvido via resolve_phone() acima — usar diretamente
+                result_lance = await w.send_text(phone, MSG_LP_LANCE.format(nome=nome, adm=adm),
                                   _log_nome=nome, _log_card_id=card_id)
             if result_lance.get("blocked"):
-                logger.warning("LP Lance: card=%s bloqueado (sem WA em %s) — não movendo", card_id[:8], phone[-4:])
+                logger.warning("LP Lance: card=%s bloqueado no envio — não movendo", card_id[:8])
                 return False
             await faro.move_card(card_id, Stage.LP_LANCE)
             await faro.update_card(card_id, {
