@@ -204,7 +204,7 @@ def setup_scheduler():
                       id="sla_monitor", name="Monitor de SLA — Finalização Comercial",
                       max_instances=1, misfire_grace_time=300)
     # Relatório diário de funil — 08h BRT (11h UTC)
-    scheduler.add_job(run_relatorio_funil, CronTrigger(hour=11, minute=0, timezone="UTC"),
+    scheduler.add_job(run_relatorio_funil, CronTrigger(hour=3, minute=0, timezone="UTC"),
                       id="relatorio_funil", name="Relatório Diário de Funil",
                       max_instances=1, misfire_grace_time=600)
     # Safety Car pausado — reativar após testes
