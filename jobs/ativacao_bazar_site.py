@@ -229,8 +229,14 @@ async def _activate_card(card: dict, message_template: str,
             if not TEST_MODE:
                 await asyncio.sleep(random.randint(5, 50))
             async with get_whapi_for_card(card) as w:
-                await w.send_text(phone, MSG_LP_LANCE.format(nome=nome, adm=adm),
+                # Resolve número com fallback de nono dígito antes de disparar
+                from services.whapi import resolve_phone as _resolve_phone
+                phone_resolved = await _resolve_phone(card, canal="lp") or phone
+                result_lance = await w.send_text(phone_resolved, MSG_LP_LANCE.format(nome=nome, adm=adm),
                                   _log_nome=nome, _log_card_id=card_id)
+            if result_lance.get("blocked"):
+                logger.warning("LP Lance: card=%s bloqueado (sem WA em %s) — não movendo", card_id[:8], phone[-4:])
+                return False
             await faro.move_card(card_id, Stage.LP_LANCE)
             await faro.update_card(card_id, {
                 "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
