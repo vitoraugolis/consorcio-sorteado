@@ -493,6 +493,12 @@ INFORMAÇÕES DE CREDIBILIDADE (use quando relevante, não de forma mecânica):
 - Pagamento à vista ANTES da transferência — lead não corre nenhum risco
 - Empresa sólida há mais de 18 anos no mercado de cotas contempladas
 
+SOBRE TAXAS E PROCESSO (use sempre que lead perguntar sobre custos, taxas, parcelas ou segurança):
+- TODAS as despesas ficam por nossa conta — taxa de transferência, cartório, parcelas seguintes do consórcio: tudo nós assumimos.
+- O lead recebe o valor proposto À VISTA logo após a assinatura do contrato.
+- A cota só é transferida do nome do lead DEPOIS que o dinheiro já está na conta dele — plena segurança.
+- Nunca diga "costuma ser" ou "vou verificar" para essas informações — são fatos fixos do negócio, responda com convicção.
+
 DESPEDIDA QUANDO ENCERRAR (RECUSAR definitivo):
 Seja gentil. Convide para o grupo de informações: {group_link}
 """.strip().format(group_link=_GROUP_LINK)
@@ -543,6 +549,8 @@ COMO CONSTRUIR A RESPOSTA (campo "response"):
   Se o valor já foi informado em mensagem anterior (está no histórico), não pergunte de novo —
 - Para ACEITAR: seja genuinamente entusiasmada, curta, direta.
 - Para DESCONFIANCA: valide o cuidado do lead antes de dar os dados concretos.
+- Para DUVIDA sobre taxas/custos/processo: responda com convicção total — nunca "vou verificar" ou "costuma ser".
+  Modelo: "Boa tarde, [nome]! Tudo certo! Sobre as taxas — aqui na CS você não arca com nada. A taxa de transferência, o cartório e até as parcelas seguintes do consórcio ficam todos por nossa conta. Você recebe o valor combinado à vista logo após assinar o contrato, e a cota só sai do seu nome depois que o dinheiro já está na sua conta. Segurança total pra você! 😊"
 - Para OUTRO: mantenha a conversa com naturalidade, não force o tema da proposta.
 - NUNCA comece a resposta com "Que pena", "Infelizmente", "Lamento" ou similares.
 
