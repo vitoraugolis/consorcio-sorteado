@@ -451,37 +451,66 @@ def _get_or_create_ws(sp, nome: str):
 
 
 def _build_skeleton(ws, sp) -> None:
-    """Escreve estrutura fixa de linhas (col A=chave, col B=label). Só se vazio."""
+    """
+    Escreve estrutura fixa de linhas na planilha. Layout:
+      - Linha 1: cabeçalho — B1="Etapa", C1+ = datas (uma por dia)
+      - Linhas 2+: col A=chave (quasi-oculto), col B=label legível
+    Só executa se a planilha estiver vazia.
+    """
     existing = ws.get_all_values()
     if any(cell.strip() for row in existing for cell in row):
         return
 
     todos = _funil_listas() + _funil_bazar() + _funil_lp()
+
+    # Linha 1: header fixo para col A e B
+    ws.update("A1", [["#"]], value_input_option="RAW")
+    ws.update("B1", [["Etapa"]], value_input_option="RAW")
+
+    # Linhas 2+: labels
     rows_a = [[chave]  for chave, _, _, _ in todos]
     rows_b = [[label]  for _, label, _, _ in todos]
-    ws.update("A1", rows_a, value_input_option="RAW")
-    ws.update("B1", rows_b, value_input_option="RAW")
+    ws.update("A2", rows_a, value_input_option="RAW")
+    ws.update("B2", rows_b, value_input_option="RAW")
 
     n = len(todos)
     fmt = [
+        # Col A quasi-invisível (linhas 1+)
         {"repeatCell": {"range": {"sheetId": ws.id,
-            "startRowIndex": 0, "endRowIndex": n,
+            "startRowIndex": 0, "endRowIndex": n + 1,
             "startColumnIndex": 0, "endColumnIndex": 1},
             "cell": {"userEnteredFormat": {"textFormat": {
                 "foregroundColor": _rgb(220, 220, 220), "fontSize": 7}}},
             "fields": "userEnteredFormat.textFormat"}},
+        # Header linha 1 col B
+        {"repeatCell": {"range": {"sheetId": ws.id,
+            "startRowIndex": 0, "endRowIndex": 1,
+            "startColumnIndex": 1, "endColumnIndex": 2},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": C_DATA_BG,
+                "textFormat": {"foregroundColor": C_DATA_FG, "bold": True, "fontSize": 10},
+                "verticalAlignment": "MIDDLE"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}},
+        # Congela 2 colunas e 1 linha
         {"updateSheetProperties": {"properties": {"sheetId": ws.id,
-            "gridProperties": {"frozenColumnCount": 2}},
-            "fields": "gridProperties.frozenColumnCount"}},
+            "gridProperties": {"frozenColumnCount": 2, "frozenRowCount": 1}},
+            "fields": "gridProperties(frozenColumnCount,frozenRowCount)"}},
+        # Larguras
         {"updateDimensionProperties": {"range": {"sheetId": ws.id,
             "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
             "properties": {"pixelSize": 28}, "fields": "pixelSize"}},
         {"updateDimensionProperties": {"range": {"sheetId": ws.id,
             "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
             "properties": {"pixelSize": 310}, "fields": "pixelSize"}},
+        # Altura linha 1
+        {"updateDimensionProperties": {"range": {"sheetId": ws.id,
+            "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 26}, "fields": "pixelSize"}},
     ]
 
+    # Formata cada linha de label (linhas 2+ = índices 1+)
     for i, (chave, label, tipo, fluxo) in enumerate(todos):
+        row_i = i + 1  # 0-based: linha 2 da sheet = índice 1
         ct = {"listas": C_LISTAS_BG, "bazar": C_BAZAR_BG, "lp": C_LP_BG}[fluxo]
         cg = {"listas": C_GRP_LISTAS, "bazar": C_GRP_BAZAR, "lp": C_GRP_LP}[fluxo]
         if tipo == "titulo_fluxo": bg, fg, bold, size, h = ct, C_FG_WHITE, True, 11, 30
@@ -493,7 +522,7 @@ def _build_skeleton(ws, sp) -> None:
             fg, bold, size, h = C_PRETO_FG, False, 9, 22
 
         fmt.append({"repeatCell": {
-            "range": {"sheetId": ws.id, "startRowIndex": i, "endRowIndex": i+1,
+            "range": {"sheetId": ws.id, "startRowIndex": row_i, "endRowIndex": row_i+1,
                       "startColumnIndex": 1, "endColumnIndex": 2},
             "cell": {"userEnteredFormat": {"backgroundColor": bg,
                 "textFormat": {"foregroundColor": fg, "bold": bold, "fontSize": size},
@@ -501,7 +530,7 @@ def _build_skeleton(ws, sp) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
         fmt.append({"updateDimensionProperties": {
             "range": {"sheetId": ws.id, "dimension": "ROWS",
-                      "startIndex": i, "endIndex": i+1},
+                      "startIndex": row_i, "endIndex": row_i+1},
             "properties": {"pixelSize": h}, "fields": "pixelSize"}})
 
     sp.batch_update({"requests": fmt})
@@ -509,11 +538,15 @@ def _build_skeleton(ws, sp) -> None:
 
 
 def _find_or_add_col(ws, sp, data_br: str) -> int:
-    """Retorna índice 0-based da coluna para data_br; cria se não existe."""
+    """
+    Procura a data na linha 1 (header row). Colunas de dados começam no índice 2 (col C).
+    Retorna índice 0-based da coluna de dados.
+    """
     row1 = ws.row_values(1)
     for i, val in enumerate(row1):
         if val.strip() == data_br:
             return i
+    # Adiciona nova coluna à direita, nunca antes da col C (índice 2)
     next_i = max(2, len(row1))
     cl = _col_letter(next_i + 1)
     ws.update(f"{cl}1", [[data_br]], value_input_option="RAW")
@@ -537,7 +570,11 @@ def _find_or_add_col(ws, sp, data_br: str) -> int:
 
 def _write_col(ws, sp, col_idx: int, data_br: str,
                ml: dict, mb: dict, mp: dict) -> None:
-    """Escreve valores e formatação na coluna col_idx (0-based)."""
+    """
+    Escreve valores na coluna col_idx (0-based).
+    Linha 1 (índice 0) = data (já escrita por _find_or_add_col).
+    Linhas 2+ (índice 1+) = valores, alinhados com os labels de col B.
+    """
     todos = _funil_listas() + _funil_bazar() + _funil_lp()
     all_m = {**ml, **mb, **mp}
     cl = _col_letter(col_idx + 1)
@@ -550,12 +587,16 @@ def _write_col(ws, sp, col_idx: int, data_br: str,
             v = all_m.get(chave)
             valores.append(v if v is not None else "")
 
-    ws.update(f"{cl}2:{cl}{1+len(valores)}", [[v] for v in valores],
-              value_input_option="RAW")
+    # Linha 2 da sheet = índice de linha 1 (0-based)
+    # Os labels estão em B2..B90, então valores vão em C2..C90
+    start_sheet_row = 2
+    end_sheet_row   = start_sheet_row + len(valores) - 1
+    ws.update(f"{cl}{start_sheet_row}:{cl}{end_sheet_row}",
+              [[v] for v in valores], value_input_option="RAW")
 
     fmt = []
     for i, (chave, _, tipo, fluxo) in enumerate(todos):
-        row_i = 1 + i  # 0-based (linha 2 da sheet = index 1)
+        row_i = 1 + i  # 0-based: linha 2 da sheet = índice 1
         ct = {"listas": C_LISTAS_BG, "bazar": C_BAZAR_BG, "lp": C_LP_BG}[fluxo]
         cg = {"listas": C_GRP_LISTAS, "bazar": C_GRP_BAZAR, "lp": C_GRP_LP}[fluxo]
         if tipo == "titulo_fluxo": bg, fg, bold = ct, C_FG_WHITE, True
