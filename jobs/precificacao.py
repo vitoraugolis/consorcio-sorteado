@@ -656,6 +656,16 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             except FaroError:
                 pass
             try:
+                adm   = get_adm(card)
+                cred  = card.get("Crédito", "?")
+                pago  = card.get("Porcentagem paga até o momento", "?")
+                await faro.append_description(
+                    card_id,
+                    f"🟢 Proposta enviada — R$ {proposta} | {adm} | Crédito: R$ {cred} | {pago}% pago"
+                )
+            except Exception as e:
+                logger.warning("Precificação: erro ao gravar marco descrição %s: %s", card_id[:8], e)
+            try:
                 history = load_history(card)
                 history = history_append(history, "assistant", _build_proposal_message(card))
                 await save_history(faro, card_id, history)

@@ -394,6 +394,26 @@ class FaroClient:
             "fields": fields,
         })
 
+    async def append_description(self, card_id: str, texto: str) -> dict:
+        """
+        Acrescenta um novo marco à Descrição do card (campo nativo do FARO).
+        Preserva o conteúdo anterior — nunca sobrescreve.
+        """
+        from datetime import datetime
+        from config import TZ_BRASILIA
+        agora = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y %H:%M")
+        entrada = f"[{agora}] {texto}"
+
+        card = await self.get_card(card_id)
+        atual = (card.get("description") or "").strip()
+        nova = f"{atual}\n\n{entrada}".strip() if atual else entrada
+
+        logger.info("Descrição card %s: adicionando marco", card_id[:8])
+        return await self._patch("/api-cards-update", {
+            "card_id": card_id,
+            "description": nova,
+        })
+
     async def create_card(self, title: str, stage_id: str = None, fields: dict = None, description: str = None) -> dict:
         body: dict[str, Any] = {"pipeline_id": PIPELINE_ID, "title": title}
         if stage_id:

@@ -1379,6 +1379,31 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                 await faro.move_card(card_id, result.next_stage)
                 logger.info("Negociador: card %s → %s", card_id[:8], result.next_stage[:8])
 
+                # Marco 2 — enviado para agente comercial
+                if result.next_stage == Stage.FINALIZACAO_COMERCIAL:
+                    try:
+                        proposta_str = card_fresh.get("Proposta Realizada") or "?"
+                        adm_str      = card_fresh.get("Adm") or "?"
+                        intent_str   = result.intent.value
+                        await faro.append_description(
+                            card_id,
+                            f"🔵 Enviado para agente comercial — Proposta: R$ {proposta_str} | {adm_str} | Motivo: {intent_str}"
+                        )
+                    except Exception as _de:
+                        logger.warning("Negociador: erro ao gravar marco comercial %s: %s", card_id[:8], _de)
+
+                # Marco 3 — lead aceitou a proposta
+                if result.next_stage == Stage.ACEITO:
+                    try:
+                        proposta_str = card_fresh.get("Proposta Realizada") or "?"
+                        adm_str      = card_fresh.get("Adm") or "?"
+                        await faro.append_description(
+                            card_id,
+                            f"✅ Proposta aceita — R$ {proposta_str} | {adm_str}"
+                        )
+                    except Exception as _de:
+                        logger.warning("Negociador: erro ao gravar marco aceite %s: %s", card_id[:8], _de)
+
                 # Ao aceitar: coleta dados para contrato e registra snapshot na jornada
                 if result.next_stage == Stage.ACEITO:
                     try:
