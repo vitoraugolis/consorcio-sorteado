@@ -918,8 +918,19 @@ async def _process_analise(
                         _update: dict = {}
                         if analise.valor_pago:
                             _update["Valor pago até o momento"] = str(analise.valor_pago)
-                        if analise.valor_credito:
-                            _update["Crédito"] = str(analise.valor_credito)
+                        # Prefere crédito corrigido quando disponível (cota contemplada)
+                        _estruturado_espera: ExtratoEstruturado | None = getattr(analise, "_estruturado", None)
+                        _credito_espera = analise.valor_credito
+                        if _estruturado_espera and _estruturado_espera.contemplacao.credito_corrigido:
+                            _cc = _estruturado_espera.contemplacao.credito_corrigido
+                            if _cc > 0:
+                                _credito_espera = _cc
+                                logger.info(
+                                    "Qualificador ESPERA: usando crédito corrigido=%.0f para card %s",
+                                    _cc, card_id[:8],
+                                )
+                        if _credito_espera:
+                            _update["Crédito"] = str(_credito_espera)
                         if analise.administradora:
                             _update["Adm"] = analise.administradora
                         if analise.tipo_contemplacao:
@@ -1011,6 +1022,18 @@ async def _process_analise(
                     update_fields["Tipo Pessoa"] = "PJ"
             if dc.nome and not card.get("Nome do contato"):
                 update_fields["Nome do contato"] = dc.nome
+
+            # Crédito corrigido: para Bazar/LP (cotas contempladas), o valor corrigido
+            # é o que importa para a negociação. Sobrescreve o crédito original do plano.
+            co = estruturado.contemplacao
+            if co.credito_corrigido and co.credito_corrigido > 0:
+                update_fields["Crédito"] = str(co.credito_corrigido)
+                analise.valor_credito = co.credito_corrigido
+                logger.info(
+                    "Qualificador: usando crédito corrigido=%.0f (original=%.0f) para card %s",
+                    co.credito_corrigido, dp.valor_credito or 0, card_id[:8],
+                )
+
             logger.info(
                 "Qualificador: enriquecendo FARO com %d campos extras (confidence=%.2f)",
                 len(update_fields), estruturado.confidence_score,
