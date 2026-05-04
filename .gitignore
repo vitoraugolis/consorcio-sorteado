@@ -46,3 +46,4 @@ logs/
 make_blueprints.json
 make_export.json
 images/
+secrets/

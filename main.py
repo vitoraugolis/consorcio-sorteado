@@ -10,6 +10,7 @@ from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,7 @@ from jobs.follow_up import run_follow_up_safe
 from jobs.contrato import run_contrato_safe
 from jobs.precificacao import run_precificacao_safe
 from jobs.sla_monitor import run_sla_monitor_safe
+from jobs.relatorio_funil import run_relatorio_funil
 from webhooks.router import handle_whapi_webhook
 from services.safety_car import run_pipeline_monitor
 
@@ -201,6 +203,10 @@ def setup_scheduler():
     scheduler.add_job(run_sla_monitor_safe, IntervalTrigger(hours=4),
                       id="sla_monitor", name="Monitor de SLA — Finalização Comercial",
                       max_instances=1, misfire_grace_time=300)
+    # Relatório diário de funil — 08h BRT (11h UTC)
+    scheduler.add_job(run_relatorio_funil, CronTrigger(hour=11, minute=0, timezone="UTC"),
+                      id="relatorio_funil", name="Relatório Diário de Funil",
+                      max_instances=1, misfire_grace_time=600)
     # Safety Car pausado — reativar após testes
     # scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
     #                   id="safety_car", name="Safety Car — Monitor de Pipeline",
@@ -775,3 +781,12 @@ async def safety_car_pending(key: str = ""):
         raise HTTPException(status_code=401, detail="Chave inválida")
     from services.safety_car import list_pending
     return {"pending": await list_pending()}
+
+
+@app.post("/jobs/relatorio-funil/run")
+async def trigger_relatorio_funil(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    import asyncio
+    asyncio.create_task(run_relatorio_funil())
+    return {"status": "started", "message": "Relatório de funil disparado em background"}
