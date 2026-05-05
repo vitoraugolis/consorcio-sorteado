@@ -19,6 +19,10 @@ from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 
 logger = logging.getLogger(__name__)
 
+# Reativação válida somente para leads ativados a partir desta data (inclusive)
+# Leads anteriores não serão reativados para evitar sobrecarga dos números
+REATIVACAO_CUTOFF_DATE = "04/05/2026"  # DD/MM/AAAA — formato do campo FARO
+
 _GRUPO_LINK = "https://chat.whatsapp.com/KwcE6QJHa33Bq0eHH9L9qD?mode=gi_t"
 
 # Mensagens para leads de Listas/LP (botões)
@@ -117,6 +121,26 @@ def _is_bazar_source(card: dict) -> bool:
     return "bazar" in fonte
 
 
+def _passou_cutoff(card: dict) -> bool:
+    """
+    Retorna True se o lead foi ativado a partir de REATIVACAO_CUTOFF_DATE.
+    Leads anteriores ao cutoff são ignorados pelo reativador.
+    """
+    data_str = (card.get("Data de primeira ativação") or "").strip()
+    if not data_str:
+        return False  # sem data = lead antigo sem controle → ignora
+    try:
+        # Formato FARO: DD/MM/AAAA
+        from datetime import date
+        d, m, y = data_str.split("/")
+        data_card = date(int(y), int(m), int(d))
+        dc, mc, yc = REATIVACAO_CUTOFF_DATE.split("/")
+        cutoff = date(int(yc), int(mc), int(dc))
+        return data_card >= cutoff
+    except Exception:
+        return False
+
+
 async def _send_lista(card: dict, stage_id: str) -> None:
     """Envia mensagem com botões via Whapi canal lista."""
     phone = get_phone(card)
@@ -205,8 +229,18 @@ async def run_reativador():
             cards = filter_test_cards(cards)
             if not cards:
                 continue
-            logger.info("Stage %s: %d cards para reativar", stage_id[:8], len(cards))
-            for card in cards:
+            # Filtra apenas leads ativados a partir do cutoff (04/05/2026)
+            cards_validos = [c for c in cards if _passou_cutoff(c)]
+            ignorados = len(cards) - len(cards_validos)
+            if ignorados:
+                logger.info(
+                    "Reativador: stage %s — %d lead(s) ignorado(s) por cutoff de data",
+                    stage_id[:8], ignorados,
+                )
+            if not cards_validos:
+                continue
+            logger.info("Stage %s: %d cards para reativar", stage_id[:8], len(cards_validos))
+            for card in cards_validos:
                 success = await _process_card(card, stage_id)
                 total_processed += 1
                 if success:
