@@ -163,11 +163,13 @@ MSG_EXTRATO_INCORRETO_SEM_IMAGEM = (
 
 MSG_EXTRATO_SEM_CONTEMPLACAO = (
     "Olá, {nome}! 😊\n\n"
-    "Recebi o seu extrato e consegui analisar direitinho — mas vi que essa cota ainda "
+    "Recebi o seu extrato e consegui analisar — mas vi que essa cota ainda "
     "*não está contemplada*.\n\n"
     "Aqui na Consórcio Sorteado trabalhamos somente com cotas já contempladas. 🏦\n\n"
-    "Você tem alguma outra cota de consórcio que já esteja contemplada? "
-    "Se sim, pode me enviar o extrato dela que analiso na hora! 📄"
+    "Caso você tenha alguma outra cota que já esteja contemplada, pode me enviar "
+    "o extrato dela que analiso na hora! 📄\n\n"
+    "Se não tiver, fica à vontade para nos chamar no futuro caso haja uma nova "
+    "contemplação — será um prazer te atender! 🙏"
 )
 
 MSG_EXTRATO_SEM_CONTEMPLACAO_SEM_IMAGEM = (
@@ -1112,43 +1114,27 @@ async def _handle_extrato_incorreto(
     _sem_contemplacao = "nao-contemplada" in (motivo or "").lower()
 
     # ── Fluxo A: cota não contemplada ────────────────────────────────────────
+    # Independente do número de tentativas: uma única mensagem que informa a
+    # situação, deixa a porta aberta para outra cota e encerra cordialmente.
+    # Move para PERDIDO — não há atendimento humano que resolva um critério de negócio.
     if _sem_contemplacao:
-        if erros >= MAX_EXTRATO_INCORRETO:
-            # Lead insistiu com cotas não contempladas — encerra com cordialidade
-            logger.info(
-                "Qualificador: card %s — %d tentativas com cota não contemplada — encerrando.",
-                card_id[:8], erros,
-            )
-            bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO_ENCERRAMENTO.format(nome=nome)
-            await _send_message(card, phone, bot_msg, history=history)
-            history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                try:
-                    await faro.move_card(card_id, Stage.PERDIDO)
-                    await faro.update_card(card_id, {
-                        "Motivo de perda": f"Cota não contemplada após {erros} tentativas — sem cota elegível",
-                    })
-                except FaroError as e:
-                    logger.error("Qualificador: erro ao mover card %s para PERDIDO: %s", card_id[:8], e)
-                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-                await save_journey(faro, card_id, journey)
-        else:
-            # Pergunta se tem outra cota contemplada (sem imagem de exemplo — não é erro de documento)
-            bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
-            await _send_message(card, phone, bot_msg, history=history)
-            history = history_append(history, "assistant", bot_msg)
-            async with FaroClient() as faro:
-                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-                await save_journey(faro, card_id, journey)
-                if card.get("stage_id") != Stage.EM_CONTATO:
-                    try:
-                        await faro.move_card(card_id, Stage.EM_CONTATO)
-                        logger.info(
-                            "Qualificador: card %s → EM_CONTATO (cota não contemplada, tentativa %d)",
-                            card_id[:8], erros,
-                        )
-                    except FaroError as e:
-                        logger.warning("Qualificador: erro ao mover %s para EM_CONTATO: %s", card_id[:8], e)
+        logger.info(
+            "Qualificador: card %s — cota não contemplada — encerrando com mensagem única.",
+            card_id[:8],
+        )
+        bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
+        await _send_message(card, phone, bot_msg, history=history)
+        history = history_append(history, "assistant", bot_msg)
+        async with FaroClient() as faro:
+            try:
+                await faro.move_card(card_id, Stage.PERDIDO)
+                await faro.update_card(card_id, {
+                    "Motivo de perda": "Cota não contemplada — sem cota elegível no momento",
+                })
+            except FaroError as e:
+                logger.error("Qualificador: erro ao mover card %s para PERDIDO: %s", card_id[:8], e)
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+            await save_journey(faro, card_id, journey)
 
     # ── Fluxo B: extrato incorreto / ilegível ────────────────────────────────
     elif erros >= MAX_EXTRATO_INCORRETO:
