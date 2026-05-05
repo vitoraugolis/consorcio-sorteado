@@ -57,7 +57,7 @@ async def _generate_assinatura_welcome(card: dict) -> str:
         f"Lead: {nome} | Administradora: {adm}\n"
         f"Jornada:\n{journey_ctx}\nHistórico:\n{history_ctx}\n\n"
         f"Mensagem de parabéns que: 1) celebre a decisão, 2) peça os 4 dados para o contrato "
-        f"(CPF, RG/CNH, Endereço completo, E-mail), 3) mencione que após os dados pediremos "
+        f"(CPF, RG, Endereço completo, E-mail), 3) mencione que após os dados pediremos "
         f"o extrato detalhado da cota {adm}."
     )
     try:
@@ -143,7 +143,7 @@ async def _process_card_locked(card: dict) -> None:
             msg_dados = (
                 f"Parabéns, {primeiro_nome}! 🎉 Estamos quase lá!\n\n"
                 f"Para preparar seu contrato, precisamos de:\n\n"
-                f"1️⃣ *CPF*\n2️⃣ *RG ou CNH*\n"
+                f"1️⃣ *CPF*\n2️⃣ *RG*\n"
                 f"3️⃣ *Endereço completo* (rua, número, bairro, cidade, CEP)\n"
                 f"4️⃣ *E-mail* para receber o contrato\n\n"
                 f"Após os dados, envie o *extrato detalhado* da sua cota {adm}. 📄"

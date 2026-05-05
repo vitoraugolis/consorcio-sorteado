@@ -44,7 +44,7 @@ _REQUIRED_FIELDS = _REQUIRED_FIELDS_LISTA  # compat legado (listas)
 _FIELD_LABELS = {
     "NomeCompleto":    "Nome completo",
     "CPF":             "CPF",
-    "RG":              "RG ou CNH",
+    "RG":              "RG",
     "Endereco":        "Endereço completo (rua, número, bairro, cidade)",
     "CEP":             "CEP",
     "Email":           "E-mail para receber o contrato",
@@ -102,7 +102,7 @@ JSON esperado:
 {{
   "NomeCompleto": "nome completo da pessoa física ou null",
   "CPF": "xxx.xxx.xxx-xx ou null",
-  "RG": "número do RG ou CNH ou null",
+  "RG": "número do RG ou null",
   "Endereco": "endereço completo com rua, número, bairro, cidade (sem CEP) ou null",
   "CEP": "xxxxx-xxx ou null",
   "Email": "endereço de e-mail ou null",
