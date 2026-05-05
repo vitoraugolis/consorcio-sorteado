@@ -1085,6 +1085,74 @@ async def _process_analise(
 
 
 # ---------------------------------------------------------------------------
+# Gerador de mensagem contextual para cota não contemplada (IA + fallback)
+# ---------------------------------------------------------------------------
+
+async def _gerar_msg_nao_contemplada(nome: str, card: dict, history: list) -> str:
+    """
+    Gera via IA uma mensagem personalizada para o caso em que a cota
+    analisada não está contemplada.
+
+    A mensagem deve:
+    - Informar que leu o extrato e a cota não está contemplada
+    - Explicar que a CS só compra cotas contempladas
+    - Perguntar se o lead tem outra cota contemplada
+    - Se não tiver, encerrar cordialmente deixando a porta aberta
+
+    Tom: empático, direto, natural — como a Manuela escreveria no WhatsApp.
+    Fallback: MSG_EXTRATO_SEM_CONTEMPLACAO se a IA falhar.
+    """
+    from services.faro import history_to_text, build_card_context
+
+    adm     = card.get("Adm") or "sua administradora"
+    credito = card.get("Crédito") or ""
+    credito_str = f"R$ {credito}" if credito else "valor a consultar"
+
+    historico_txt = history_to_text(history[:-1] if history else [], max_turns=6)
+
+    system = (
+        "Você é Manuela, consultora da Consórcio Sorteado — empresa que COMPRA cotas "
+        "contempladas de consórcio diretamente dos proprietários.\n\n"
+        "SITUAÇÃO: O lead enviou o extrato da cota e o sistema identificou que ela "
+        "NÃO está contemplada. Você precisa comunicar isso com clareza e empatia.\n\n"
+        "A mensagem deve:\n"
+        "1. Confirmar que recebeu e analisou o extrato\n"
+        "2. Informar que a cota ainda não está contemplada\n"
+        "3. Explicar brevemente que a CS trabalha somente com cotas já contempladas\n"
+        "4. Perguntar se o lead tem alguma outra cota que já esteja contemplada\n"
+        "5. Se não tiver, deixar a porta aberta para contato futuro quando houver contemplação\n\n"
+        "REGRAS:\n"
+        "- Tom empático e natural, como no WhatsApp — sem formalidade excessiva\n"
+        "- Máximo 5 linhas curtas. Sem parágrafos longos.\n"
+        "- Nunca revele ser IA\n"
+        "- Retorne APENAS o texto da mensagem, sem JSON, sem aspas externas"
+    )
+
+    prompt = (
+        f"Lead: {nome}\n"
+        f"Administradora: {adm} | Crédito: {credito_str}\n"
+        f"Histórico recente:\n{historico_txt or '(sem histórico)'}\n\n"
+        f"Escreva a mensagem informando que a cota não está contemplada."
+    )
+
+    try:
+        async with AIClient() as ai:
+            resposta = await ai.complete(
+                prompt=prompt,
+                system=system,
+                max_tokens=200,
+            )
+        msg = resposta.strip()
+        if msg:
+            logger.info("Qualificador: mensagem nao-contemplada gerada pela IA para card %s", card.get("id", "")[:8])
+            return msg
+    except (AIError, Exception) as e:
+        logger.warning("Qualificador: IA falhou para msg nao-contemplada (%s) — usando fallback", e)
+
+    return MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
+
+
+# ---------------------------------------------------------------------------
 # Handler de extrato incorreto com contador + escalada
 # ---------------------------------------------------------------------------
 
@@ -1122,7 +1190,7 @@ async def _handle_extrato_incorreto(
             "Qualificador: card %s — cota não contemplada — encerrando com mensagem única.",
             card_id[:8],
         )
-        bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
+        bot_msg = await _gerar_msg_nao_contemplada(nome, card, history)
         await _send_message(card, phone, bot_msg, history=history)
         history = history_append(history, "assistant", bot_msg)
         async with FaroClient() as faro:
