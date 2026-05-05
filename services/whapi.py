@@ -122,6 +122,29 @@ def _is_lead_recipient(to: str) -> bool:
     return True
 
 
+def _register_bot_message(result: dict) -> None:
+    """
+    Fire-and-forget: grava o message_id retornado pelo Whapi no Redis
+    para que handle_outgoing_manual possa distinguir mensagens do bot
+    de mensagens digitadas manualmente pelo time comercial.
+
+    Não bloqueia nem propaga exceções — o envio já ocorreu.
+    """
+    import asyncio
+    msg_id = (result or {}).get("id") or (result or {}).get("message_id") or ""
+    if not msg_id:
+        return
+    try:
+        from services.session_store import mark_bot_message
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(mark_bot_message(msg_id))
+        else:
+            loop.run_until_complete(mark_bot_message(msg_id))
+    except Exception as _e:
+        logger.debug("_register_bot_message: não foi possível marcar %s: %s", msg_id[:12], _e)
+
+
 # ---------------------------------------------------------------------------
 # Cliente
 # ---------------------------------------------------------------------------
@@ -281,6 +304,8 @@ class WhapiClient:
 
         logger.info("Whapi[%s] send_text → %s", self._canal, phone)
         result = await self._post("/messages/text", {"to": phone, "body": message})
+        # Registra message_id no Redis para distinguir mensagens do bot de mensagens manuais
+        _register_bot_message(result)
         # Log no #log-cs — ignora grupos (@g.us) e números internos da equipe
         if _is_lead_recipient(to):
             try:
@@ -388,6 +413,7 @@ class WhapiClient:
             "media": image_url,
             "caption": caption,
         })
+        _register_bot_message(result)
         if _is_lead_recipient(to):
             try:
                 from services.slack import log_cs
@@ -418,6 +444,7 @@ class WhapiClient:
             "filename": filename,
             "caption": caption,
         })
+        _register_bot_message(result)
         if _is_lead_recipient(to):
             try:
                 from services.slack import log_cs

@@ -17,9 +17,10 @@ from typing import Optional
 
 import httpx
 
-from config import Stage
-from services.faro import FaroClient, FaroError, is_lista, get_name, get_canal
+from config import Stage, TERMINAL_STAGES
+from services.faro import FaroClient, FaroError, is_lista, get_name, get_canal, history_append
 from services.transcriber import transcribe_audio
+from services.session_store import load_history_smart, save_history_smart
 from webhooks.negociador import handle_message
 from webhooks.qualificador import handle_qualification, QUALIFICATION_STAGES
 from webhooks.agente_contrato import handle_dados_pessoais, handle_extrato_recebido
@@ -199,8 +200,194 @@ def _canal_hint_from_token(whapi_token: Optional[str]) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Stages que NÃO devem ser sobrescritos pelo handoff automático.
+# Nesses casos apenas registramos o turno no histórico, sem mover o card.
+# ---------------------------------------------------------------------------
+_HANDOFF_SKIP_STAGES: frozenset = frozenset({
+    Stage.FINALIZACAO_COMERCIAL,  # já está com comercial — só registra turno
+    Stage.SUCESSO,                # negócio fechado
+    Stage.ACEITO,                 # aceite confirmado — aguardando coleta de dados
+    Stage.ASSINATURA,             # em processo de assinatura — não interromper
+}) | TERMINAL_STAGES             # PERDIDO, NAO_QUALIFICADO, FLUXO_CADENCIA, etc.
+
+
+def _build_handoff_description(nome: str, history: list[dict], ultima_msg: str) -> str:
+    """
+    Constrói o bloco de texto a ser appendado na descrição do card no momento
+    em que o time comercial assume o atendimento manualmente.
+
+    Inclui:
+    - Timestamp do handoff
+    - Última mensagem enviada pelo comercial
+    - Últimas 20 trocas do histórico com o bot (legível para o consultor)
+    """
+    from datetime import datetime
+    from config import TZ_BRASILIA
+
+    agora = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y %H:%M")
+
+    linhas = [
+        f"🤝 Atendimento assumido pelo time comercial em {agora}",
+        f'Mensagem de abertura: "{ultima_msg[:200]}"',
+        "",
+        "📋 Histórico da conversa automatizada:",
+    ]
+
+    if not history:
+        linhas.append("  (sem histórico registrado no momento do handoff)")
+    else:
+        for turn in history[-20:]:
+            role_raw = turn.get("role", "")
+            content  = str(turn.get("content", ""))[:300]
+            # Turnos de atendimento humano já registrados anteriormente
+            if content.startswith("[COMERCIAL]:"):
+                role_label = "Comercial"
+                content    = content[len("[COMERCIAL]:"):].strip()
+            elif role_raw == "user":
+                role_label = "Lead"
+            else:
+                role_label = "Bot"
+            linhas.append(f"  {role_label}: {content}")
+
+    return "\n".join(linhas)
+
+
+async def handle_outgoing_manual(msg: IncomingMessage) -> None:
+    """
+    Intercepta mensagens enviadas manualmente pelo time comercial via números
+    conectados ao Whapi (from_me=True).
+
+    Fluxo:
+    1. Ignora mensagens sem conteúdo (status de leitura, reações, etc.)
+    2. Verifica se o message_id é do bot → se sim, descarta silenciosamente
+    3. Localiza o card do lead pelo telefone destino
+    4. Aplica flag de handoff (deduplicação atômica via Redis SET NX)
+    5. Se for o primeiro handoff:
+       a. Move o card para FINALIZACAO_COMERCIAL (exceto stages protegidos)
+       b. Appenda o histórico na descrição do card
+       c. Envia alerta no Slack
+    6. Sempre: registra o turno do comercial no histórico Redis
+    """
+    # ── Filtra mensagens sem conteúdo relevante ───────────────────────────────
+    if not msg.text and not msg.media_type:
+        return
+
+    # ── Verifica fingerprint: é mensagem do bot? ──────────────────────────────
+    from services.session_store import is_bot_message, set_handoff_flag, mark_bot_message
+    msg_id = msg.raw.get("id") or msg.raw.get("message_id") or ""
+    if msg_id and await is_bot_message(msg_id):
+        logger.debug(
+            "handle_outgoing_manual: msg_id=%s já registrado como bot — ignorando",
+            msg_id[:16],
+        )
+        return
+
+    # ── Localiza o card pelo telefone destino ─────────────────────────────────
+    card = await _find_card(msg.phone, canal_hint=_canal_hint_from_token(msg.whapi_token))
+    if not card:
+        logger.debug(
+            "handle_outgoing_manual: %s não encontrado no CRM — ignorando mensagem manual",
+            msg.phone,
+        )
+        return
+
+    card_id       = card.get("id", "")
+    current_stage = card.get("stage_id") or ""
+    phone         = msg.phone
+    nome          = get_name(card)
+    canal_hint    = _canal_hint_from_token(msg.whapi_token) or "desconhecido"
+    texto         = msg.text or f"[{msg.media_type or 'mídia'}]"
+
+    logger.info(
+        "handle_outgoing_manual: card=%s (%s) | stage=%s... | canal=%s | msg='%s'",
+        card_id[:8], nome, current_stage[:8], canal_hint, texto[:60],
+    )
+
+    # ── Stage protegido: apenas registra o turno, não move o card ────────────
+    stage_protegido = current_stage in _HANDOFF_SKIP_STAGES
+
+    # ── Flag de handoff — atômica (SET NX) ───────────────────────────────────
+    # Garante que múltiplas mensagens em sequência não movam o card N vezes.
+    # Mesmo em caso de race condition, apenas uma tarefa passará pelo NX.
+    primeiro_handoff = False
+    if not stage_protegido:
+        primeiro_handoff = await set_handoff_flag(phone)
+
+    async with FaroClient() as faro:
+        if not stage_protegido and primeiro_handoff:
+            # ── Move o card para FINALIZACAO_COMERCIAL ────────────────────────
+            try:
+                await faro.move_card(card_id, Stage.FINALIZACAO_COMERCIAL)
+                logger.info(
+                    "handle_outgoing_manual: card %s → FINALIZACAO_COMERCIAL (handoff manual)",
+                    card_id[:8],
+                )
+            except FaroError as e:
+                logger.error(
+                    "handle_outgoing_manual: erro ao mover card %s para FINALIZACAO_COMERCIAL: %s",
+                    card_id[:8], e,
+                )
+                # Não aborta — ainda registra o histórico e o Slack
+
+            # ── Appenda o histórico completo na descrição do card ─────────────
+            try:
+                history_snapshot = await load_history_smart(phone, card)
+                descricao = _build_handoff_description(nome, history_snapshot, texto)
+                await faro.append_description(card_id, descricao)
+                logger.info(
+                    "handle_outgoing_manual: descrição appendada no card %s (%d turns no snapshot)",
+                    card_id[:8], len(history_snapshot),
+                )
+            except FaroError as e:
+                logger.warning(
+                    "handle_outgoing_manual: erro ao gravar descrição card %s: %s",
+                    card_id[:8], e,
+                )
+
+            # ── Alerta no Slack ───────────────────────────────────────────────
+            try:
+                from services.slack import slack_warning
+                asyncio.create_task(slack_warning(
+                    f"👤 *Atendimento humano detectado*\n"
+                    f"Lead: *{nome}* | Número: `...{phone[-6:]}`\n"
+                    f"Card movido para *FINALIZAÇÃO COM AGENTE COMERCIAL*\n"
+                    f"Canal: `{canal_hint}` | Stage anterior: `{current_stage[:8]}`\n"
+                    f"Mensagem de abertura: _{texto[:120]}_",
+                    context={"Card": card_id[:12], "Lead": nome, "Phone": phone},
+                ))
+            except Exception as _slack_err:
+                logger.debug("handle_outgoing_manual: slack_warning falhou: %s", _slack_err)
+
+        elif stage_protegido:
+            logger.debug(
+                "handle_outgoing_manual: card %s em stage protegido (%s) — "
+                "apenas registrando turno no histórico",
+                card_id[:8], current_stage[:8],
+            )
+
+        # ── Sempre: registra o turno do comercial no histórico Redis ──────────
+        # Isso garante que o contexto humano fica visível ao bot caso precise retomar.
+        try:
+            history = await load_history_smart(phone, card)
+            history = history_append(history, "assistant", f"[COMERCIAL]: {texto}")
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+        except Exception as e:
+            logger.warning(
+                "handle_outgoing_manual: erro ao salvar turno no histórico card %s: %s",
+                card_id[:8], e,
+            )
+
+
 async def route_message(msg: IncomingMessage) -> None:
-    if msg.from_me or msg.is_group:
+    if msg.is_group:
+        return
+
+    # ── Mensagens enviadas manualmente pelo time comercial ────────────────────
+    # from_me=True pode ser: (a) bot enviou via API, ou (b) comercial digitou
+    # no WhatsApp. O handler distingue via fingerprint de message_id no Redis.
+    if msg.from_me:
+        asyncio.create_task(handle_outgoing_manual(msg))
         return
 
     # ── Transcrição de áudio — acontece antes de qualquer dispatch ────────────

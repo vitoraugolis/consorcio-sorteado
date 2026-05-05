@@ -266,6 +266,90 @@ async def media_buffer_ttl(phone: str) -> int:
         return -2
 
 
+# ─── Fingerprint de mensagens enviadas pelo bot ──────────────────────────────
+#
+# Problema: o Whapi entrega webhooks from_me=True tanto para mensagens enviadas
+# pelo bot quanto para mensagens digitadas manualmente pelo time comercial.
+# Solução: ao enviar uma mensagem, gravamos o message_id no Redis com TTL curto.
+# Ao receber um webhook from_me, verificamos se o id está nessa lista de bot.
+# Se estiver → descarta (é do bot). Se não estiver → é do comercial → handoff.
+
+_BOT_MSG_TTL = 300  # 5 min (mensagens recentes do bot)
+
+
+async def mark_bot_message(msg_id: str) -> None:
+    """
+    Registra que este message_id foi enviado pelo bot.
+    Deve ser chamado em whapi.py após cada envio bem-sucedido.
+    """
+    if not msg_id:
+        return
+    try:
+        r = await get_redis()
+        await r.set(f"cs:botmsg:{msg_id}", "1", ex=_BOT_MSG_TTL)
+    except Exception as e:
+        logger.warning("Redis mark_bot_message(%s): %s", msg_id[:12], e)
+
+
+async def is_bot_message(msg_id: str) -> bool:
+    """
+    Retorna True se o message_id foi enviado pelo bot.
+    Fail-safe: em caso de erro Redis retorna False (assume comercial — melhor
+    que ignorar um atendimento real, o pior caso é um handoff redundante protegido
+    pela flag set_handoff_flag).
+    """
+    if not msg_id:
+        return False
+    try:
+        r = await get_redis()
+        return bool(await r.exists(f"cs:botmsg:{msg_id}"))
+    except Exception as e:
+        logger.warning("Redis is_bot_message(%s): %s — assumindo NÃO é bot", msg_id[:12], e)
+        return False
+
+
+# ─── Flag de handoff (deduplicação de movimentação de card) ──────────────────
+#
+# Garante que múltiplas mensagens manuais em sequência não disparem o handoff
+# múltiplas vezes. TTL de 4h — ao fim do expediente ou nova conversa, a flag expira.
+# O time pode forçar o reprocessamento apagando a chave no Redis se necessário.
+
+_HANDOFF_FLAG_TTL = 60 * 60 * 4  # 4h
+
+
+async def set_handoff_flag(phone: str) -> bool:
+    """
+    Tenta marcar que o handoff já foi executado para este lead (atômica via SET NX).
+    Retorna True se era a PRIMEIRA vez (deve executar a movimentação).
+    Retorna False se já houve handoff recente (TTL ativo) — não fazer nada além
+    de registrar o turno no histórico.
+    """
+    try:
+        r = await get_redis()
+        result = await r.set(f"cs:handoff:{phone}", "1", nx=True, ex=_HANDOFF_FLAG_TTL)
+        return result is True
+    except Exception as e:
+        logger.warning(
+            "Redis set_handoff_flag(%s): %s — assumindo primeira vez (fail-open)",
+            phone[-6:], e,
+        )
+        # Fail-open: se Redis falhar, assume que é primeira vez.
+        # O pior caso é um update redundante no FARO (idempotente).
+        return True
+
+
+async def clear_handoff_flag(phone: str) -> None:
+    """
+    Remove a flag de handoff para este lead.
+    Use quando o lead voltar para o fluxo automatizado (ex: stage alterado para EM_NEGOCIACAO).
+    """
+    try:
+        r = await get_redis()
+        await r.delete(f"cs:handoff:{phone}")
+    except Exception as e:
+        logger.warning("Redis clear_handoff_flag(%s): %s", phone[-6:], e)
+
+
 # ─── Utilitários gerais ───────────────────────────────────────────────────────
 
 async def health_check() -> bool:
