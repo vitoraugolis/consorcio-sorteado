@@ -570,6 +570,8 @@ async def handle_qualification(card: dict, msg) -> None:
                 "Qualificador: mídia sem URL no payload (card %s). raw[:200]=%s",
                 card_id[:8], str(msg.raw)[:200],
             )
+            # Registra no histórico que o lead tentou enviar algo (sem URL disponível)
+            history = history_append(history, "user", f"[Enviou {msg.media_type or 'mídia'} — URL indisponível no payload]")
             # Conta como tentativa incorreta mesmo sem URL
             erros = int(journey.get("extrato_incorreto_count", 0)) + 1
             journey["extrato_incorreto_count"] = erros

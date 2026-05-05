@@ -73,6 +73,12 @@ def _build_handoff_notification(card: dict, mensagem: str, history: list | None 
     fonte    = get_fonte(card)
 
     history = history or load_history(card)
+    if not history:
+        logger.warning(
+            "Negociador _build_handoff_notification: histórico vazio para card %s — "
+            "considere passar history=<Redis> para evitar contexto perdido.",
+            card.get("id", "?")[:8],
+        )
     resumo_turns = []
     for turn in history[-6:]:
         role = "Lead" if turn.get("role") == "user" else "Manuela"
@@ -245,6 +251,12 @@ def _build_contraproposta_notification(card: dict, mensagem: str, history: list 
     lead_val_fmt = _fmt_currency(lead_val) if lead_val else mensagem[:80]
 
     history = history or load_history(card)
+    if not history:
+        logger.warning(
+            "Negociador _build_contraproposta_notification: histórico vazio para card %s — "
+            "considere passar history=<Redis> para evitar contexto perdido.",
+            card.get("id", "?")[:8],
+        )
     resumo_turns = []
     for turn in history[-6:]:
         role = "Lead" if turn.get("role") == "user" else "Manuela"
@@ -1087,11 +1099,13 @@ async def _classify_with_ai(
 # Suporte ao stage ASSINATURA
 # ---------------------------------------------------------------------------
 
-async def _handle_assinatura_message(card: dict, mensagem: str) -> str:
+async def _handle_assinatura_message(card: dict, mensagem: str, history: list | None = None) -> str:
     """
     Suporte para leads em ASSINATURA que enviam mensagem.
     Usa histórico e contexto para gerar resposta relevante.
+    Recebe history já carregado via Redis (load_history_smart) para evitar leitura stale do FARO.
     """
+    from services.faro import history_to_text as _history_to_text
     nome        = get_name(card)
     adm         = get_adm(card)
     texto_lower = mensagem.lower()
@@ -1119,7 +1133,8 @@ async def _handle_assinatura_message(card: dict, mensagem: str) -> str:
 
     # Gera resposta contextual com IA para dúvidas genéricas em ASSINATURA
     try:
-        history_ctx = history_to_text(load_history(card) or [], max_turns=4)
+        # Usa history passado pelo caller (Redis) para evitar leitura stale do campo FARO
+        history_ctx = _history_to_text(history or [], max_turns=4)
         from services.ai import AIClient, AIError
         system = (
             "Você é Manuela, consultora da Consórcio Sorteado. "
@@ -1275,20 +1290,25 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
         card_id[:8], current_stage_id[:8], mensagem[:60]
     )
 
-    # Stage ASSINATURA: suporte simples
-    if current_stage_id in SUPPORT_STAGES:
-        response = await _handle_assinatura_message(card, mensagem)
-        await _send_response(card, phone, response)
-        return
-
-    if current_stage_id not in ACTIVE_STAGES:
+    if current_stage_id not in ACTIVE_STAGES and current_stage_id not in SUPPORT_STAGES:
         logger.info("Negociador: stage %s fora do escopo.", current_stage_id[:8])
         return
 
-    # Carrega card fresco + histórico
+    # Carrega card fresco + histórico (necessário para SUPPORT_STAGES e ACTIVE_STAGES)
     async with FaroClient() as faro:
         card_fresh = await faro.get_card(card_id)
     history = await load_history_smart(phone, card_fresh)
+
+    # Stage ASSINATURA: suporte simples com histórico atualizado via Redis
+    if current_stage_id in SUPPORT_STAGES:
+        response = await _handle_assinatura_message(card_fresh, mensagem, history=history)
+        await _send_response(card_fresh, phone, response)
+        # Persiste a troca no histórico
+        new_history = history_append(history, "user", mensagem)
+        new_history = history_append(new_history, "assistant", response)
+        async with FaroClient() as faro_s:
+            await save_history_smart(phone, new_history, faro_client=faro_s, card_id=card_id)
+        return
     history = history_append(history, "user", mensagem)
 
     # ── Consciência cross-fluxo: verifica outros cards do mesmo lead ────────────
