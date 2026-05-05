@@ -57,13 +57,18 @@ QUANDO O LEAD DISSER QUE JA ENVIOU POR E-MAIL OU OUTRO CANAL:
 Use intent JA_ENVIOU_OUTRO_CANAL. Responda agradecendo e informando que
 o time vai verificar e que um consultor entrara em contato em breve.
 
+QUANDO O LEAD QUISER COMPRAR UMA COTA OU IMOVEL (QUER_COMPRAR):
+Use intent QUER_COMPRAR. O lead quer COMPRAR -- nao vender. Responda com naturalidade
+informando que vai redirecionar para um representante do departamento de venda de cotas.
+NAO tente converter para venda de cota. Apenas redirecione com cordialidade.
+
 QUANDO PERGUNTAREM SOBRE A EMPRESA:
 - CNPJ: 07.931.205/0001-30 | Rua Irma Carolina 45, Belenzinho-SP
 - Compra a vista, direto na conta do lead, ANTES de qualquer transferencia.
 
 FORMATO -- JSON puro, sem markdown, sem texto fora do JSON:
 {{
-  "intent": "AGUARDANDO_EXTRATO|JA_ENVIOU_OUTRO_CANAL|RECUSA_COTA_VENDIDA|RECUSA_SEM_INTERESSE|REDIRECIONAR|OUTRO",
+  "intent": "AGUARDANDO_EXTRATO|JA_ENVIOU_OUTRO_CANAL|RECUSA_COTA_VENDIDA|RECUSA_SEM_INTERESSE|REDIRECIONAR|QUER_COMPRAR|OUTRO",
   "response": "mensagem para enviar ao lead"
 }}
 """.strip()
@@ -150,7 +155,7 @@ async def _respond_lp(card: dict, texto: str) -> None:
         except FaroError:
             pass
 
-    await _handle_intent(intent, card_fresh)
+    await _handle_intent(intent, card_fresh, history=history, mensagem_original=texto)
 
     logger.info("Agente LP: card=%s | intent=%s | turns=%d",
                 card_id[:8], intent, len(history) // 2)

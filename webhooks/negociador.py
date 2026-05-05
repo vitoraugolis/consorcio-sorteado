@@ -446,6 +446,7 @@ class Intent(str, Enum):
     DESCONFIANCA    = "DESCONFIANCA"
     AGENDAR         = "AGENDAR"
     DADOS_PESSOAIS  = "DADOS_PESSOAIS"   # lead enviando dados para o contrato
+    QUER_COMPRAR    = "QUER_COMPRAR"     # lead quer COMPRAR cota/imóvel, não vender
     OUTRO           = "OUTRO"
 
 
@@ -547,6 +548,12 @@ INTENTS — escolha o que melhor descreve a INTENÇÃO real por trás da mensage
 - DADOS_PESSOAIS:   o lead está enviando dados para o contrato (nome, CPF, RG, endereço, e-mail,
                     dados bancários, CNPJ, nome da empresa). Detectar por padrões como
                     "nome:", "cpf:", "rg:", "endereço:", "cnpj:", "email:" ou lista de dados pessoais.
+- QUER_COMPRAR:     o lead quer COMPRAR uma cota contemplada ou imóvel — não vender.
+                    Ex: "o que vocês têm de imóvel?", "quero comprar uma carta", "tem cota à venda?",
+                    "vocês vendem consórcio?", "quero adquirir um imóvel contemplado".
+                    IMPORTANTE: o negócio da CS é COMPRAR cotas. Esse lead está fora do escopo
+                    mas deve ser redirecionado com cordialidade para o departamento de venda de cotas.
+                    Responda informando o redirecionamento — não tente converter para venda.
 - OUTRO:            saudação, agradecimento, "ok", mensagem sem conteúdo decisório
 
 COMO CONSTRUIR A RESPOSTA (campo "response"):
@@ -568,7 +575,7 @@ COMO CONSTRUIR A RESPOSTA (campo "response"):
 
 RETORNE EXCLUSIVAMENTE JSON VÁLIDO (sem markdown, sem texto fora do JSON):
 {{
-  "intent": "ACEITAR|RECUSAR|MELHORAR_VALOR|CONTRA_PROPOSTA|OFERECERAM_MAIS|NEGOCIAR|DUVIDA|DESCONFIANCA|AGENDAR|OUTRO",
+  "intent": "ACEITAR|RECUSAR|MELHORAR_VALOR|CONTRA_PROPOSTA|OFERECERAM_MAIS|NEGOCIAR|DUVIDA|DESCONFIANCA|AGENDAR|DADOS_PESSOAIS|QUER_COMPRAR|OUTRO",
   "reasoning": "1 frase explicando por que esse intent",
   "response": "mensagem para o lead"
 }}
@@ -631,6 +638,13 @@ _KEYWORD_MAP = {
     Intent.DUVIDA: [
         "como funciona", "o que é", "como é o processo", "prazo", "taxa",
         "quando recebo", "como recebo", "documentos", "o que precisa",
+    ],
+    Intent.QUER_COMPRAR: [
+        "quero comprar", "quero adquirir", "tem para comprar", "tem pra comprar",
+        "o que vocês têm", "o que voces tem", "tem imóvel", "tem imovel",
+        "tem apartamento", "tem carro", "tem veículo", "tem veiculo",
+        "cota à venda", "cota a venda", "carta disponível", "carta disponivel",
+        "vocês vendem", "voces vendem", "para me oferecer",
     ],
 }
 
@@ -729,6 +743,25 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
             notify_team=True,
             notify_message=notif_msg,
             notify_phones=notif_phones,
+        )
+
+    # ── QUER_COMPRAR ───────────────────────────────────────────────────────────
+    # Lead quer COMPRAR cota/imóvel — fora do escopo de venda da CS.
+    # Registra o interesse na descrição, move para FINALIZACAO_COMERCIAL e notifica equipe.
+    if intent == Intent.QUER_COMPRAR:
+        notif_msg, notif_phones = _build_handoff_notification(card, mensagem)
+        notif_msg = (
+            f"🏠 *Lead quer COMPRAR cota/imóvel*\n"
+            f"Redirecionado automaticamente para FINALIZAÇÃO COMERCIAL.\n\n"
+        ) + notif_msg
+        return NegotiationResult(
+            intent=intent,
+            response_message=ai_response,
+            next_stage=Stage.FINALIZACAO_COMERCIAL,
+            notify_team=True,
+            notify_message=notif_msg,
+            notify_phones=notif_phones,
+            extra_fields={"_quer_comprar_mensagem": mensagem},  # usado para append_description
         )
 
     # ── DUVIDA / DESCONFIANCA / OUTRO ─────────────────────────────────────────
@@ -980,6 +1013,11 @@ def _fallback_classify(mensagem: str, card: dict) -> NegotiationResult:
             f"O pagamento é feito ANTES da transferência — você não assume risco nenhum. 😊"
         ),
         Intent.AGENDAR:         f"Claro, {primeiro}! Vou acionar um consultor pra falar com você pessoalmente. 🙏",
+        Intent.QUER_COMPRAR:    (
+            f"Certo{', ' + primeiro if primeiro else ''}! Vou redirecionar seu contato para um "
+            f"representante comercial do departamento de venda de cotas, tudo bem? "
+            f"Ele poderá te mostrar as melhores oportunidades. 😊"
+        ),
         Intent.OUTRO:           _r.choice([
             f"Estou aqui, {primeiro}! Como posso te ajudar? 😊",
             f"Pode falar, {primeiro}! O que você precisar.",
@@ -1390,7 +1428,9 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                 "Situacao Negociacao":   result.intent.value,
             }
             if result.extra_fields:
-                update_fields.update(result.extra_fields)
+                # Filtra campos internos (prefixo _) — não devem ir para o FARO
+                faro_fields = {k: v for k, v in result.extra_fields.items() if not k.startswith("_")}
+                update_fields.update(faro_fields)
             # Registra motivo de perda automaticamente ao mover para PERDIDO
             if result.next_stage == Stage.PERDIDO and result.lost_reason:
                 update_fields["Motivo de perda"] = result.lost_reason
@@ -1403,13 +1443,24 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                 # Marco 2 — enviado para agente comercial
                 if result.next_stage == Stage.FINALIZACAO_COMERCIAL:
                     try:
-                        proposta_str = card_fresh.get("Proposta Realizada") or "?"
-                        adm_str      = card_fresh.get("Adm") or "?"
-                        intent_str   = result.intent.value
-                        await faro.append_description(
-                            card_id,
-                            f"🔵 Enviado para agente comercial — Proposta: R$ {proposta_str} | {adm_str} | Motivo: {intent_str}"
-                        )
+                        # QUER_COMPRAR: descrição rica com histórico e interesse de compra
+                        if result.intent == Intent.QUER_COMPRAR:
+                            _msg_compra = (result.extra_fields or {}).get("_quer_comprar_mensagem", mensagem)
+                            _historico_txt = history_to_text(history, max_turns=10)
+                            await faro.append_description(
+                                card_id,
+                                f"🏠 Lead com interesse em COMPRAR cota/imóvel (fora do escopo de venda)\n\n"
+                                f"Mensagem original: \"{_msg_compra[:300]}\"\n\n"
+                                f"📋 Histórico até o redirecionamento:\n{_historico_txt}"
+                            )
+                        else:
+                            proposta_str = card_fresh.get("Proposta Realizada") or "?"
+                            adm_str      = card_fresh.get("Adm") or "?"
+                            intent_str   = result.intent.value
+                            await faro.append_description(
+                                card_id,
+                                f"🔵 Enviado para agente comercial — Proposta: R$ {proposta_str} | {adm_str} | Motivo: {intent_str}"
+                            )
                     except Exception as _de:
                         logger.warning("Negociador: erro ao gravar marco comercial %s: %s", card_id[:8], _de)
 

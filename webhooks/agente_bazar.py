@@ -57,13 +57,19 @@ QUANDO O LEAD DISSER QUE JÁ ENVIOU POR E-MAIL OU OUTRO CANAL:
 Use intent JA_ENVIOU_OUTRO_CANAL. Responda agradecendo e informando que
 o time vai verificar e que um consultor entrará em contato em breve.
 
+QUANDO O LEAD QUISER COMPRAR UMA COTA OU IMÓVEL (QUER_COMPRAR):
+Use intent QUER_COMPRAR. O lead quer COMPRAR uma cota contemplada ou imóvel — não vender.
+Responda com naturalidade e leveza, informando que vai redirecionar para um representante
+do departamento de venda de cotas que poderá mostrar as melhores oportunidades.
+NÃO explique o negócio da CS. NÃO tente converter para venda de cota. Apenas redirecione.
+
 QUANDO PERGUNTAREM SOBRE A EMPRESA:
 - CNPJ: 07.931.205/0001-30 | Rua Irmã Carolina 45, Belenzinho-SP
 - Compra à vista, direto na conta do lead, ANTES de qualquer transferência.
 
 FORMATO — JSON puro, sem markdown, sem texto fora do JSON:
 {{
-  "intent": "AGUARDANDO_EXTRATO|JA_ENVIOU_OUTRO_CANAL|RECUSA_COTA_VENDIDA|RECUSA_SEM_INTERESSE|REDIRECIONAR|OUTRO",
+  "intent": "AGUARDANDO_EXTRATO|JA_ENVIOU_OUTRO_CANAL|RECUSA_COTA_VENDIDA|RECUSA_SEM_INTERESSE|REDIRECIONAR|QUER_COMPRAR|OUTRO",
   "response": "mensagem para enviar ao lead"
 }}
 """.strip()
@@ -100,10 +106,21 @@ def _fallback_response(intent: str, nome: str) -> str:
         return random.choice(_FALLBACKS_AGUARDANDO)
     if intent == "JA_ENVIOU_OUTRO_CANAL":
         return _FALLBACK_JA_ENVIOU.format(nome=primeiro or "")
+    if intent == "QUER_COMPRAR":
+        return (
+            f"Certo{', ' + primeiro if primeiro else ''}! Vou redirecionar seu contato para um "
+            f"representante comercial do departamento de venda de cotas, tudo bem? "
+            f"Ele poderá te mostrar as melhores oportunidades. 😊"
+        )
     return random.choice(_FALLBACKS_OUTRO)
 
 
-async def _handle_intent(intent: str, card: dict) -> None:
+async def _handle_intent(
+    intent: str,
+    card: dict,
+    history: list | None = None,
+    mensagem_original: str = "",
+) -> None:
     card_id = card.get("id", "")
     if intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
         motivo = (
@@ -142,7 +159,7 @@ async def _handle_intent(intent: str, card: dict) -> None:
             except FaroError as e:
                 logger.error("Erro ao mover %s para FINALIZACAO_COMERCIAL: %s", card_id[:8], e)
         from webhooks.negociador import _build_handoff_notification
-        notif_msg, notif_phones = _build_handoff_notification(card, "")
+        notif_msg, notif_phones = _build_handoff_notification(card, mensagem_original, history=history)
         if notif_phones:
             try:
                 async with get_whapi_for_card(card) as w:
@@ -150,6 +167,48 @@ async def _handle_intent(intent: str, card: dict) -> None:
                         await w.send_text(np, notif_msg)
             except WhapiError as e:
                 logger.warning("Erro ao notificar consultor: %s", e)
+
+    elif intent == "QUER_COMPRAR":
+        # Lead quer COMPRAR cota/imóvel — fora do escopo de venda da CS.
+        # Registra o interesse na descrição do card e move para FINALIZACAO_COMERCIAL.
+        from services.faro import history_to_text as _htt
+        historico_txt = _htt(history or [], max_turns=10)
+        descricao = (
+            f"🏠 Lead com interesse em COMPRAR cota/imóvel (fora do escopo de venda)\n\n"
+            f"Mensagem original: \"{mensagem_original[:300]}\"\n\n"
+            f"📋 Histórico até o redirecionamento:\n{historico_txt}"
+        )
+        async with FaroClient() as faro:
+            try:
+                await faro.append_description(card_id, descricao)
+                await faro.move_card(card_id, Stage.FINALIZACAO_COMERCIAL)
+            except FaroError as e:
+                logger.error("Erro ao processar QUER_COMPRAR card %s: %s", card_id[:8], e)
+        from webhooks.negociador import _build_handoff_notification
+        from services.slack import slack_warning
+        nome  = card.get("Nome do contato") or card.get("title") or "?"
+        phone = card.get("Telefone") or ""
+        notif_msg, notif_phones = _build_handoff_notification(card, mensagem_original, history=history)
+        # Prefixa a notificação com contexto de compra
+        notif_msg = (
+            f"🏠 *Lead quer COMPRAR cota/imóvel*\n"
+            f"Redirecionado automaticamente para FINALIZAÇÃO COMERCIAL.\n\n"
+        ) + notif_msg
+        if notif_phones:
+            try:
+                async with get_whapi_for_card(card) as w:
+                    for np in notif_phones:
+                        await w.send_text(np, notif_msg)
+            except WhapiError as e:
+                logger.warning("Erro ao notificar consultor (QUER_COMPRAR): %s", e)
+        import asyncio
+        asyncio.create_task(slack_warning(
+            f"🏠 *Lead quer comprar cota/imóvel*\n"
+            f"Lead: *{nome}* | Tel: `...{phone[-6:]}`\n"
+            f"Card: `{card_id[:8]}` → FINALIZAÇÃO COMERCIAL\n"
+            f"Mensagem: _{mensagem_original[:120]}_",
+            context={"Card": card_id[:12], "Lead": nome},
+        ))
 
 
 async def _respond(card: dict, texto: str) -> None:
@@ -228,7 +287,7 @@ async def _respond(card: dict, texto: str) -> None:
         except FaroError:
             pass
 
-    await _handle_intent(intent, card_fresh)
+    await _handle_intent(intent, card_fresh, history=history, mensagem_original=texto)
 
     logger.info("Agente Bazar: card=%s | intent=%s | turns=%d",
                 card_id[:8], intent, len(history) // 2)
