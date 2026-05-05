@@ -162,20 +162,29 @@ MSG_EXTRATO_INCORRETO_SEM_IMAGEM = (
 )
 
 MSG_EXTRATO_SEM_CONTEMPLACAO = (
-    "Boa noite, {nome}! 😊\n\n"
-    "Obrigada por enviar! Com esse demonstrativo não consigo ver no detalhe "
-    "as informações sobre a contemplação da cota.\n\n"
-    "Você poderia me enviar o *extrato completo*? "
-    "Veja abaixo um exemplo do que preciso 👇"
+    "Olá, {nome}! 😊\n\n"
+    "Recebi o seu extrato e consegui analisar direitinho — mas vi que essa cota ainda "
+    "*não está contemplada*.\n\n"
+    "Aqui na Consórcio Sorteado trabalhamos somente com cotas já contempladas. 🏦\n\n"
+    "Você tem alguma outra cota de consórcio que já esteja contemplada? "
+    "Se sim, pode me enviar o extrato dela que analiso na hora! 📄"
 )
 
 MSG_EXTRATO_SEM_CONTEMPLACAO_SEM_IMAGEM = (
-    "Boa noite, {nome}! 😊\n\n"
-    "Obrigada por enviar! Com esse demonstrativo não consigo ver no detalhe "
-    "as informações sobre a contemplação da cota.\n\n"
-    "Você poderia me enviar o *extrato completo*? Ele fica disponível no app "
-    "ou site da administradora e mostra todos os detalhes da sua cota, "
-    "incluindo a seção de Contemplação. 📄"
+    "Olá, {nome}! 😊\n\n"
+    "Recebi o seu extrato e consegui analisar direitinho — mas vi que essa cota ainda "
+    "*não está contemplada*.\n\n"
+    "Aqui na Consórcio Sorteado trabalhamos somente com cotas já contempladas. 🏦\n\n"
+    "Você tem alguma outra cota de consórcio que já esteja contemplada? "
+    "Se sim, pode me enviar o extrato dela que analiso na hora! 📄"
+)
+
+MSG_EXTRATO_SEM_CONTEMPLACAO_ENCERRAMENTO = (
+    "Entendido, {nome}! 😊\n\n"
+    "No momento trabalhamos somente com cotas já contempladas, então não conseguimos "
+    "fazer uma proposta para essa cota agora.\n\n"
+    "Mas fica à vontade para nos chamar no futuro caso haja uma nova contemplação — "
+    "será um prazer te atender! 🙏"
 )
 
 MSG_EXTRATO_INCORRETO_ESCALADO = (
@@ -1088,14 +1097,61 @@ async def _handle_extrato_incorreto(
     motivo: str = "",
 ) -> None:
     """
-    Gerencia resposta a extratos incorretos.
-    - Até MAX_EXTRATO_INCORRETO tentativas: orienta + envia imagem de exemplo
-    - Acima do limite: escala para humano e move para ON_HOLD
-    motivo: quando "nao-contemplada", usa mensagem específica de "demonstrativo sem contemplação"
+    Gerencia resposta a extratos incorretos ou não contemplados.
+
+    Dois fluxos distintos:
+    A) nao-contemplada: cota lida com sucesso mas não está contemplada.
+       - Informa claramente que a CS só compra cotas contempladas.
+       - Pergunta se o lead tem outra cota contemplada.
+       - Se esgotar tentativas (todas nao-contemplada): encerra cordialmente
+         e move para PERDIDO (não há humano que resolva — é critério de negócio).
+    B) extrato incorreto/ilegível: documento não é extrato ou não pôde ser lido.
+       - Até MAX_EXTRATO_INCORRETO tentativas: orienta com imagem de exemplo.
+       - Acima do limite: escala para humano (ON_HOLD).
     """
     _sem_contemplacao = "nao-contemplada" in (motivo or "").lower()
 
-    if erros >= MAX_EXTRATO_INCORRETO:
+    # ── Fluxo A: cota não contemplada ────────────────────────────────────────
+    if _sem_contemplacao:
+        if erros >= MAX_EXTRATO_INCORRETO:
+            # Lead insistiu com cotas não contempladas — encerra com cordialidade
+            logger.info(
+                "Qualificador: card %s — %d tentativas com cota não contemplada — encerrando.",
+                card_id[:8], erros,
+            )
+            bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO_ENCERRAMENTO.format(nome=nome)
+            await _send_message(card, phone, bot_msg, history=history)
+            history = history_append(history, "assistant", bot_msg)
+            async with FaroClient() as faro:
+                try:
+                    await faro.move_card(card_id, Stage.PERDIDO)
+                    await faro.update_card(card_id, {
+                        "Motivo de perda": f"Cota não contemplada após {erros} tentativas — sem cota elegível",
+                    })
+                except FaroError as e:
+                    logger.error("Qualificador: erro ao mover card %s para PERDIDO: %s", card_id[:8], e)
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                await save_journey(faro, card_id, journey)
+        else:
+            # Pergunta se tem outra cota contemplada (sem imagem de exemplo — não é erro de documento)
+            bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
+            await _send_message(card, phone, bot_msg, history=history)
+            history = history_append(history, "assistant", bot_msg)
+            async with FaroClient() as faro:
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                await save_journey(faro, card_id, journey)
+                if card.get("stage_id") != Stage.EM_CONTATO:
+                    try:
+                        await faro.move_card(card_id, Stage.EM_CONTATO)
+                        logger.info(
+                            "Qualificador: card %s → EM_CONTATO (cota não contemplada, tentativa %d)",
+                            card_id[:8], erros,
+                        )
+                    except FaroError as e:
+                        logger.warning("Qualificador: erro ao mover %s para EM_CONTATO: %s", card_id[:8], e)
+
+    # ── Fluxo B: extrato incorreto / ilegível ────────────────────────────────
+    elif erros >= MAX_EXTRATO_INCORRETO:
         # Escalada para humano
         logger.warning(
             "Qualificador: card %s atingiu %d extratos incorretos — escalando para humano.",
@@ -1119,31 +1175,19 @@ async def _handle_extrato_incorreto(
             context={"Card": card_id[:12], "Telefone": phone, "Tentativas": str(erros)},
         )
     else:
-        # Verifica disponibilidade da imagem antes de escolher o texto
+        # Orienta com imagem de exemplo
         tem_imagem = os.path.exists(_EXTRATO_EXEMPLO_PATH)
-        if _sem_contemplacao:
-            # Caso específico: demonstrativo sem seção de contemplação
-            if tem_imagem:
-                bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO.format(nome=nome)
-                await _send_message(card, phone, bot_msg, history=history)
-                await _send_extrato_exemplo(card, phone)
-            else:
-                bot_msg = MSG_EXTRATO_SEM_CONTEMPLACAO_SEM_IMAGEM.format(nome=nome)
-                await _send_message(card, phone, bot_msg, history=history)
-        elif tem_imagem:
-            # Texto com gancho "veja abaixo 👇" + imagem em seguida
+        if tem_imagem:
             bot_msg = MSG_EXTRATO_INCORRETO.format(nome=nome)
             await _send_message(card, phone, bot_msg, history=history)
             await _send_extrato_exemplo(card, phone)
         else:
-            # Sem imagem: versão única, sem referência a "veja abaixo"
             bot_msg = MSG_EXTRATO_INCORRETO_SEM_IMAGEM.format(nome=nome)
             await _send_message(card, phone, bot_msg, history=history)
         history = history_append(history, "assistant", bot_msg)
         async with FaroClient() as faro:
             await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
             await save_journey(faro, card_id, journey)
-            # Mover para EM_CONTATO — lead tentou enviar extrato, está em conversa ativa
             if card.get("stage_id") != Stage.EM_CONTATO:
                 try:
                     await faro.move_card(card_id, Stage.EM_CONTATO)
