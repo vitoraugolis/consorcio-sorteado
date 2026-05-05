@@ -1227,6 +1227,15 @@ async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) 
             f"👤 *Nome completo:*\n"
             f"🪪 *CPF:*\n"
             f"🪪 *RG:*\n"
+            f"🏠 *Endereço completo:*\n"
+            f"📮 *CEP:*\n"
+            f"💼 *Profissão / ocupação:*\n"
+            f"💍 *Estado civil:*\n"
+            f"🌍 *Nacionalidade:*\n"
+            f"📧 *E-mail:*\n"
+            f"💳 *Dados para pagamento — Conta/Agência/PIX em nome do CPF:*\n\n"
+            f"Pode me enviar tudo de uma vez ou em partes, como preferir! 😊"
+        )
 
     try:
         await _send_response(card, phone, msg)
