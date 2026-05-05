@@ -33,11 +33,11 @@ logger = logging.getLogger(__name__)
 # Campos obrigatórios e labels
 # ---------------------------------------------------------------------------
 
-_REQUIRED_FIELDS_LISTA = ["NomeCompleto", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "DadosPagamento"]
-_REQUIRED_FIELDS_BAZAR = ["NomeCompleto", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "DadosPagamento"]
+_REQUIRED_FIELDS_LISTA = ["NomeCompleto", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "Nacionalidade", "DadosPagamento"]
+_REQUIRED_FIELDS_BAZAR = ["NomeCompleto", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "Nacionalidade", "DadosPagamento"]
 
 # Campos para cota em nome de pessoa jurídica
-_REQUIRED_FIELDS_PJ = ["NomeEmpresa", "CNPJ", "NomeSocio", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "DadosPagamentoPJ"]
+_REQUIRED_FIELDS_PJ = ["NomeEmpresa", "CNPJ", "NomeSocio", "CPF", "RG", "Endereco", "CEP", "Email", "EstadoCivil", "Ocupacao", "Nacionalidade", "DadosPagamentoPJ"]
 
 _REQUIRED_FIELDS = _REQUIRED_FIELDS_LISTA  # compat legado (listas)
 
@@ -50,6 +50,7 @@ _FIELD_LABELS = {
     "Email":           "E-mail para receber o contrato",
     "EstadoCivil":     "Estado civil (solteiro, casado, etc.)",
     "Ocupacao":        "Profissão / ocupação",
+    "Nacionalidade":   "Nacionalidade",
     "DadosPagamento":  "Dados para pagamento — Conta/Agência/PIX em nome do CPF",
     # PJ
     "NomeEmpresa":     "Nome da empresa",
@@ -68,6 +69,7 @@ _FARO_FIELD_MAP = {
     "Email":           "Email",
     "EstadoCivil":     "Estado Civil",
     "Ocupacao":        "Ocupação",
+    "Nacionalidade":   "Nacionalidade",
     "DadosPagamento":  "Dados Pagamento",
     "NomeEmpresa":     "Nome Empresa",
     "CNPJ":            "CNPJ",
@@ -106,6 +108,7 @@ JSON esperado:
   "Email": "endereço de e-mail ou null",
   "EstadoCivil": "solteiro/casado/divorciado/viúvo ou null",
   "Ocupacao": "profissão ou ocupação ou null",
+  "Nacionalidade": "ex: brasileiro/brasileira ou outra nacionalidade ou null",
   "DadosPagamento": "dados bancários PF (banco, agência, conta, pix) ou null",
   "NomeEmpresa": "razão social da empresa ou null",
   "CNPJ": "xx.xxx.xxx/xxxx-xx ou null",
@@ -299,6 +302,25 @@ async def handle_dados_pessoais(card: dict, texto: str) -> None:
     history   = load_history(card)
     journey   = load_journey(card)
     collected = _load_collected(card)
+
+    # Pré-preenche campos que já temos do extrato/FARO (Bazar/LP)
+    # Evita pedir ao lead dados que o sistema já possui
+    _pre_fill = {
+        "NomeCompleto": card.get("Nome do contato") or "",
+        "CPF":          card.get("CPF") or "",
+        "RG":           card.get("RG") or "",
+        "Email":        card.get("Email") or "",
+        "EstadoCivil":  card.get("Estado Civil") or "",
+        "Ocupacao":     card.get("Ocupação") or "",
+        "Nacionalidade":card.get("Nacionalidade") or "",
+        "Endereco":     card.get("Endereço") or "",
+        "CEP":          card.get("CEP") or "",
+        "DadosPagamento": card.get("Dados Pagamento") or "",
+    }
+    for k, v in _pre_fill.items():
+        if v and not collected.get(k):
+            collected[k] = v
+
     new_data  = await _extract_fields_with_ai(texto)
 
     novos = {k: v for k, v in new_data.items() if v and not collected.get(k)}
