@@ -200,15 +200,22 @@ async def run_ativacao_listas():
         logger.info("Ativação Listas: fora da janela de envio, pulando.")
         return
 
-    # Health check — só bloqueia se HTTP falhar (status AUTH é falso positivo no Whapi)
+    # Health check — aborta se canal offline
     async with WhapiClient(canal="lista") as w:
         ok, status = await w.health_check()
     if not ok:
-        logger.error("Whapi Lista não responde (HTTP erro) — status: %s — abortando ativação", status)
-        await slack_error(
-            f"⚠️ Canal Whapi Lista não está respondendo (HTTP erro, status: {status}). "
-            "Ativação de Listas abortada. Verifique o painel Whapi."
-        )
+        # QR/unpaired = desconexão manual conhecida — loga info, sem spam no Slack
+        _status_lower = status.lower()
+        if _status_lower in ("qr", "unpaired", "loading"):
+            logger.info(
+                "Ativação Listas: canal offline (status=%s) — aguardando reconexão, pulando.", status
+            )
+        else:
+            logger.error("Whapi Lista não responde — status: %s — abortando ativação", status)
+            await slack_error(
+                f"⚠️ Canal Whapi Lista não está respondendo (status: {status}). "
+                "Ativação de Listas abortada. Verifique o painel Whapi."
+            )
         return
 
     logger.info("=== Iniciando Ativação de Listas ===")
