@@ -168,47 +168,8 @@ async def _process_card_locked(card: dict) -> None:
     async with FaroClient() as faro:
         await faro.update_card(card_id, {"Ultima atividade": datetime.now().isoformat()})
         await save_history(faro, card_id, history)
-    return
-
-    sign_url = None
-    doc_token = None
-    try:
-        async with ZapSignClient() as zap:
-            doc = await zap.create_from_template(
-                template_token=template_token,
-                doc_name=f"Contrato - {nome} - {adm}",
-                lead_signer={"name": nome, "email": card.get("Email", ""), "phone": phone},
-                form_fields=build_form_fields(card),
-            )
-        sign_url = doc.get("lead_sign_url", "")
-        doc_token = doc.get("doc_token", "")
-    except ZapSignError as e:
-        logger.error("Contrato: erro ZapSign card %s: %s", card_id[:8], e)
-        if phone:
-            await _send(card, phone, MSG_ERRO_INTERNO.format(nome=nome.split()[0] if nome else "prezado(a)"))
-        await _notify_team(f"❌ *Erro ao gerar contrato ZapSign*\nLead: {nome} | Adm: {adm}\nErro: {e}")
-        return
-
-    if phone and sign_url:
-        primeiro_nome = nome.split()[0] if nome else "prezado(a)"
-        await _send(card, phone, MSG_CONTRATO.format(nome=primeiro_nome, sign_url=sign_url))
-    elif not phone:
-        await _notify_team(f"⚠️ *Contrato sem telefone*\nLead: {nome}\nURL: {sign_url}")
-
-    async with FaroClient() as faro:
-        try:
-            update: dict = {"Ultima atividade": datetime.now().isoformat()}
-            if doc_token:
-                update["ZapSign Token"] = doc_token
-            await faro.update_card(card_id, update)
-        except FaroError as e:
-            logger.error("Contrato: erro ao atualizar card %s: %s", card_id[:8], e)
-
-    await _notify_team(
-        f"✅ *Contrato enviado para assinatura*\n"
-        f"Lead: {nome}\nAdm: {adm}\nTelefone: {phone or 'não informado'}\n"
-        f"Doc: {doc_token[:12] if doc_token else 'N/A'}..."
-    )
+    # Fase 2 (geração ZapSign) ocorre em agente_contrato.handle_extrato_recebido
+    # quando o lead envia o extrato detalhado → generate_and_send_contract é chamado lá.
 
 
 async def generate_and_send_contract(card: dict) -> bool:

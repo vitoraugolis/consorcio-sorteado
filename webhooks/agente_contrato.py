@@ -382,6 +382,36 @@ async def handle_extrato_recebido(card: dict, msg) -> None:
     required  = _required_fields_for_card(card)
     missing   = [f for f in required if not collected.get(f)]
 
+    # Verifica template ZapSign antes de aceitar extrato — evita coleta completa sem destino
+    from services.zapsign import get_template_for_adm
+    if not get_template_for_adm(adm):
+        logger.warning(
+            "agente_contrato: card %s sem template ZapSign para adm='%s' — notificando equipe",
+            card_id[:8], adm,
+        )
+        try:
+            from services.slack import slack_alert
+            await slack_alert(
+                f"⚠️ *Contrato sem template ZapSign*\n"
+                f"Lead: {nome} | Adm: {adm} | card: {card_id[:8]}\n"
+                f"Extrato recebido mas não há template configurado para essa administradora.\n"
+                f"Adicione o template em `services/zapsign.py → TEMPLATE_BY_ADM`.",
+                level="warn",
+            )
+        except Exception:
+            pass
+        if phone:
+            try:
+                async with WhapiClient() as w:
+                    await w.send_text(
+                        phone,
+                        f"Obrigada pelo extrato, {nome}! 😊 Nossa equipe vai analisar "
+                        f"e entrar em contato em breve para finalizar o contrato. 📋",
+                    )
+            except WhapiError as e:
+                logger.error("agente_contrato: erro ao avisar lead sem template: %s", e)
+        return
+
     if missing:
         # Dados incompletos — pede os que faltam antes de aceitar o extrato
         missing_labels = [_FIELD_LABELS[f] for f in missing]
