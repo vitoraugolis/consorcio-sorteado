@@ -2,10 +2,15 @@
 jobs/ativacao_bazar_cadenciada.py — Ativação Bazar cadenciada: 1 lead a cada 30-35 min
 
 Loop contínuo que:
-  1. Busca todos os leads qualificados na stage BAZAR (ordem: mais recente → mais antigo)
-  2. Dispara a mensagem para o próximo
-  3. Dorme intervalo aleatório 30-35 min
-  4. Repete
+  1. Busca leads qualificados na stage BAZAR criados a partir de DATA_CORTE_BAZAR
+     (01/05/2026 — data a partir da qual o sistema voltou a operar normalmente)
+  2. Ordena do mais recente para o mais antigo — processa pendentes antes dos novos
+  3. Dispara a mensagem para o próximo
+  4. Dorme intervalo aleatório 30-35 min
+  5. Repete
+
+IMPORTANTE: Leads criados ANTES de DATA_CORTE_BAZAR são ignorados.
+Isso evita ativar leads antigos que já foram trabalhados manualmente.
 
 Se não há leads, dorme 5 min e tenta novamente.
 Controlado via /jobs/bazar-loop/start e /jobs/bazar-loop/stop.
@@ -14,7 +19,7 @@ Controlado via /jobs/bazar-loop/start e /jobs/bazar-loop/stop.
 import asyncio
 import logging
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 from config import Stage
 from jobs.ativacao_bazar_site import (
@@ -24,6 +29,23 @@ from jobs.ativacao_bazar_site import (
 from services.faro import FaroClient, FaroError
 
 logger = logging.getLogger(__name__)
+
+# Leads criados ANTES desta data são ignorados pelo loop cadenciado.
+# Ajuste conforme necessário via variável de ambiente ou diretamente aqui.
+DATA_CORTE_BAZAR = date(2026, 5, 1)
+
+
+def _criado_apos_corte(card: dict) -> bool:
+    """Retorna True se o card foi criado a partir de DATA_CORTE_BAZAR."""
+    raw = card.get("created_at") or ""
+    if not raw:
+        return False
+    try:
+        # created_at vem como "2026-05-03T14:22:00Z" ou "2026-05-03"
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.date() >= DATA_CORTE_BAZAR
+    except Exception:
+        return False
 
 _state: dict = {
     "running": False,
@@ -61,6 +83,9 @@ async def _run_loop() -> None:
                 all_cards = await faro.get_cards_all_pages(stage_id=Stage.BAZAR)
 
             all_cards = filter_test_cards(all_cards or [])
+
+            # Filtra apenas leads criados a partir de DATA_CORTE_BAZAR (01/05/2026)
+            all_cards = [c for c in all_cards if _criado_apos_corte(c)]
 
             # Ordena do mais recente para o mais antigo
             def _dt(c):
