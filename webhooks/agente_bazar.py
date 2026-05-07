@@ -15,6 +15,7 @@ from services.faro import (
     get_name, get_phone, get_adm,
     history_append, history_to_text,
     build_card_context,
+    load_journey, journey_to_text,
 )
 from services.slack import slack_error
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
@@ -35,6 +36,9 @@ respondendo às mensagens que ele enviou.
 
 DADOS DO LEAD:
 {dados_card}
+
+JORNADA DO LEAD:
+{jornada}
 
 COMO SE COMPORTAR:
 - Leia o histórico da conversa antes de responder.
@@ -229,6 +233,7 @@ async def _respond(card: dict, texto: str) -> None:
 
     system = SYSTEM_PROMPT.format(
         dados_card=build_card_context(card_fresh),
+        jornada=journey_to_text(load_journey(card_fresh)),
         group_link=_GROUP_LINK,
     )
 
@@ -261,7 +266,7 @@ async def _respond(card: dict, texto: str) -> None:
         texto_resposta = _fallback_response(intent, nome)
 
     # ── Safety Car: audita resposta antes de enviar ──────────────────────────
-    historico_txt = history_to_text(history[:-1], max_turns=6)
+    historico_txt = history_to_text(history[:-1], max_turns=20)
     audit = await audit_response(texto_resposta, card_fresh, historico_txt, agente="agente_bazar")
     texto_resposta = audit.mensagem_final
 
