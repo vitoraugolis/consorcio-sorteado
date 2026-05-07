@@ -44,8 +44,12 @@ REDIS_QUEUE_KEY   = "fila_ativacao:queue"
 REDIS_RUNNING_KEY = "fila_ativacao:running"
 REDIS_SEEN_KEY    = "fila_ativacao:seen"   # Set de card IDs já enfileirados/processados
 
-HOURS_LOOKBACK = 8760  # 1 ano — pega todo o acúmulo histórico
+HOURS_LOOKBACK = 168   # 7 dias — janela máxima para build_queue (evita base antiga)
 FETCH_LIMIT    = 500   # máximo de cards por stage
+
+# Data de corte: leads criados antes desta data são ignorados mesmo com HOURS_LOOKBACK alto
+import datetime as _dt_module
+DATA_CORTE_FILA = _dt_module.date(2026, 5, 1)
 
 
 def _get_redis() -> aioredis.Redis:
@@ -89,6 +93,17 @@ async def build_queue() -> dict:
         except FaroError as e:
             logger.error("Erro buscando cards LP: %s", e)
             lp_cards = []
+
+    # Filtra apenas leads criados a partir de DATA_CORTE_FILA (01/05/2026)
+    def _apos_corte(card: dict) -> bool:
+        raw = card.get("created_at", "")[:10]
+        try:
+            return _dt_module.date.fromisoformat(raw) >= DATA_CORTE_FILA
+        except Exception:
+            return False
+
+    bazar_cards = [c for c in bazar_cards if _apos_corte(c)]
+    lp_cards    = [c for c in lp_cards    if _apos_corte(c)]
 
     # Pré-qualifica
     bazar_qual, bazar_nqual = [], []
