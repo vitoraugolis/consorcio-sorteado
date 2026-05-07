@@ -635,26 +635,8 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             )
             return False
 
-        # ── Safety Car: apenas para Listas (volume alto). Bazar/LP dispara direto. ──
-        from services.safety_car import ApprovalKind, request_approval, wait_for_approval
-        sequencia = card.get("Classes de Proposta") or ""
-
-        if is_lista(card):
-            await request_approval(
-                card,
-                ApprovalKind.PRECIFICACAO,
-                proposta=proposta,
-                sequencia=sequencia,
-            )
-            aprovado = await wait_for_approval(card_id, ApprovalKind.PRECIFICACAO)
-            if not aprovado:
-                logger.warning(
-                    "Precificação: aprovação não recebida para card %s — proposta NÃO enviada.",
-                    card_id[:8],
-                )
-                return False
-        else:
-            logger.info("Precificação: Bazar/LP — disparo direto sem Safety Car para card %s", card_id[:8])
+        # Safety Car de precificação removido — disparo direto para todos os fluxos
+        logger.info("Precificação: disparo direto para card %s (sem aprovação manual)", card_id[:8])
 
         agora = datetime.now(timezone.utc).isoformat()
     

@@ -573,6 +573,79 @@ async def _notify_team(message: str) -> None:
 # Handler principal
 # ---------------------------------------------------------------------------
 
+async def _gerar_msg_pede_extrato(nome: str, adm: str, card: dict, history: list) -> str:
+    """Gera pedido de extrato personalizado via IA. Fallback: MSG_PEDE_EXTRATO."""
+    from services.faro import history_to_text as _htt, build_card_context as _bcc
+    system = (
+        "Voce e Manuela, consultora da Consorcio Sorteado. Precisa pedir ao lead o extrato "
+        "atualizado da cota de consorcio contemplada. Tom: caloroso, pessoal, WhatsApp. "
+        "Max 5 linhas. Mencione o nome da administradora na mensagem. "
+        "Nunca revele ser IA. Retorne apenas o texto da mensagem, sem JSON."
+    )
+    prompt = (
+        f"Lead: {nome} | Administradora: {adm}\n"
+        f"Contexto:\n{_bcc(card)}\n"
+        f"Historico:\n{_htt(history[-4:] if history else [], max_turns=4)}\n\n"
+        f"Escreva a mensagem pedindo o extrato da cota {adm}."
+    )
+    try:
+        async with AIClient() as ai:
+            msg = await ai.complete(prompt=prompt, system=system, max_tokens=220)
+        if msg and msg.strip():
+            return msg.strip()
+    except Exception as e:
+        logger.warning("Qualificador: IA falhou em _gerar_msg_pede_extrato: %s", e)
+    return MSG_PEDE_EXTRATO.format(nome=nome, adm=adm)
+
+
+async def _gerar_msg_nao_qualificado(nome: str, adm: str, card: dict, history: list) -> str:
+    """Gera mensagem de nao qualificacao com empatia via IA. Fallback: MSG_NAO_QUALIFICADO."""
+    from services.faro import history_to_text as _htt
+    system = (
+        "Voce e Manuela, consultora da Consorcio Sorteado. O lead enviou o extrato mas a cota "
+        "nao passou nos criterios de aquisicao da empresa. Comunique isso com empatia e respeito, "
+        "sem revelar os criterios exatos, deixando a porta aberta para o futuro. "
+        "Tom humano, WhatsApp, max 4 linhas. Nunca revele ser IA. Retorne apenas o texto, sem JSON."
+    )
+    prompt = (
+        f"Lead: {nome} | Administradora: {adm}\n"
+        f"Historico:\n{_htt(history[-4:] if history else [], max_turns=4)}\n\n"
+        f"Escreva a mensagem informando que nao foi possivel prosseguir com a compra da cota."
+    )
+    try:
+        async with AIClient() as ai:
+            msg = await ai.complete(prompt=prompt, system=system, max_tokens=200)
+        if msg and msg.strip():
+            return msg.strip()
+    except Exception as e:
+        logger.warning("Qualificador: IA falhou em _gerar_msg_nao_qualificado: %s", e)
+    return MSG_NAO_QUALIFICADO.format(nome=nome, adm=adm)
+
+
+async def _gerar_msg_qualificado(nome: str, adm: str, card: dict, history: list) -> str:
+    """Gera mensagem de qualificacao positiva com entusiasmo via IA. Fallback: MSG_QUALIFICADO."""
+    from services.faro import history_to_text as _htt
+    system = (
+        "Voce e Manuela, consultora da Consorcio Sorteado. O lead tem uma cota que passou nos "
+        "criterios de aquisicao. De a boa noticia com entusiasmo genuino e informe que a proposta "
+        "personalizada chegara em breve. Tom: animado, caloroso, WhatsApp. Max 3 linhas. "
+        "Nunca revele ser IA. Retorne apenas o texto, sem JSON."
+    )
+    prompt = (
+        f"Lead: {nome} | Administradora: {adm}\n"
+        f"Historico:\n{_htt(history[-4:] if history else [], max_turns=4)}\n\n"
+        f"Escreva a mensagem comemorando que a cota foi aprovada e que a proposta chegara em breve."
+    )
+    try:
+        async with AIClient() as ai:
+            msg = await ai.complete(prompt=prompt, system=system, max_tokens=150)
+        if msg and msg.strip():
+            return msg.strip()
+    except Exception as e:
+        logger.warning("Qualificador: IA falhou em _gerar_msg_qualificado: %s", e)
+    return MSG_QUALIFICADO.format(nome=nome, adm=adm)
+
+
 async def handle_qualification(card: dict, msg) -> None:
     card_id = card.get("id", "")
     nome = get_name(card)
@@ -817,7 +890,7 @@ async def handle_qualification(card: dict, msg) -> None:
 
     # ── Caso 4: Texto sem extrato ─────────────────────────────────────────────
     logger.info("Qualificador: lead %s enviou texto sem extrato. Solicitando.", card_id[:8])
-    bot_msg = MSG_PEDE_EXTRATO.format(nome=nome, adm=adm)
+    bot_msg = await _gerar_msg_pede_extrato(nome, adm, card, history)
     await _send_message(card, phone, bot_msg, history=history)
     history = history_append(history, "user", user_text)
     history = history_append(history, "assistant", bot_msg)
@@ -859,7 +932,7 @@ async def _process_analise(
             "Qualificador: cota NÃO qualificada — card %s | pago=%.0f | credito=%.0f | %s",
             card_id[:8], analise.valor_pago, analise.valor_credito, analise.motivo,
         )
-        bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=adm)
+        bot_msg = await _gerar_msg_nao_qualificado(nome, analise.administradora or adm, card, history)
         if not is_extra_cota:
             await _send_message(card, phone, bot_msg, history=history)
         history = history_append(
@@ -934,7 +1007,7 @@ async def _process_analise(
                 )
             else:
                 # Demais fluxos (Bazar, Listas): NAO_QUALIFICADO sem contato adicional
-                bot_msg = MSG_NAO_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
+                bot_msg = await _gerar_msg_nao_qualificado(nome, analise.administradora or adm, card, history)
                 if not is_extra_cota:
                     await _send_message(card, phone, bot_msg, history=history)
                     history = history_append(
@@ -1025,7 +1098,7 @@ async def _process_analise(
                 f"(crédito R${analise.valor_credito:,.0f}). Vou analisar e retorno em breve! 📋"
             )
         else:
-            bot_msg = MSG_QUALIFICADO.format(nome=nome, adm=analise.administradora or adm)
+            bot_msg = await _gerar_msg_qualificado(nome, analise.administradora or adm, card, history)
 
         await _send_message(card if not is_extra_cota else card, phone, bot_msg, history=history)
 
