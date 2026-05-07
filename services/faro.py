@@ -491,33 +491,95 @@ def get_fonte(card: dict) -> str:
 def is_lista(card: dict) -> bool:
     """
     Retorna True se o lead veio de uma lista fria (usa Whapi pool Lista).
-    Retorna False para leads organicos Bazar/Site (usa Whapi pool Bazar).
+    Retorna False para leads orgânicos Bazar/Site (usa Whapi pool Bazar/LP).
+
+    Prioridade de resolução:
+      1. Campo Fonte contém "lista" → lista
+      2. Etiqueta contém "lista" → lista
+      3. Stage do card é LISTAS → lista
+      4. Qualquer outra condição → não é lista
     """
-    fonte = str(card.get("Fonte") or "").strip().lower()
-    etiqueta = str(card.get("Etiquetas") or "").strip().lower()
-    return "lista" in fonte or "lista" in etiqueta
+    from config import Stage as _Stage
+    fonte    = str(card.get("Fonte") or "").strip().lower()
+    etiqueta = _etiquetas_lower(card)
+    stage    = card.get("stage_id") or ""
+    return (
+        "lista" in fonte
+        or "lista" in etiqueta
+        or stage == _Stage.LISTAS
+    )
+
+
+def _etiquetas_lower(card: dict) -> str:
+    """Extrai e normaliza etiquetas: suporta string, lista de strings e lista de dicts."""
+    raw = card.get("Etiquetas") or card.get("labels") or ""
+    if isinstance(raw, list):
+        parts = []
+        for item in raw:
+            if isinstance(item, dict):
+                parts.append(str(item.get("name") or item.get("label") or ""))
+            else:
+                parts.append(str(item))
+        return " ".join(parts).lower()
+    return str(raw).lower()
 
 
 def is_bazar(card: dict) -> bool:
-    fonte = str(card.get("Fonte") or "").strip().lower()
-    return "bazar" in fonte
+    from config import Stage as _Stage
+    fonte    = str(card.get("Fonte") or "").strip().lower()
+    etiqueta = _etiquetas_lower(card)
+    stage    = card.get("stage_id") or ""
+    return (
+        "bazar" in fonte
+        or "bazar" in etiqueta
+        or stage == _Stage.BAZAR
+    )
 
 
 def get_canal(card: dict) -> str:
-    """Retorna 'lista', 'bazar', 'lp' ou 'desconhecido'. Usado para roteamento e logging."""
-    fonte = str(card.get("Fonte") or "").strip().lower()
+    """
+    Retorna 'lista', 'bazar', 'lp' ou 'desconhecido'. Usado para roteamento e logging.
+
+    Prioridade:
+      1. Campo Fonte (mais confiável quando preenchido corretamente)
+      2. Etiquetas do card (tiebreaker quando Fonte está errado/vazio)
+      3. Stage do card (fallback estrutural — stage nunca mente)
+    """
+    from config import Stage as _Stage
+    fonte    = str(card.get("Fonte") or "").strip().lower()
+    etiqueta = _etiquetas_lower(card)
+    stage    = card.get("stage_id") or ""
+
+    # 1. Fonte explícita
     if "lista" in fonte:
         return "lista"
     if "bazar" in fonte:
         return "bazar"
     if "site" in fonte or "lp" in fonte:
         return "lp"
+
+    # 2. Etiquetas como tiebreaker
+    if "lista" in etiqueta:
+        return "lista"
+    if "bazar" in etiqueta:
+        return "bazar"
+    if "lp" in etiqueta or "site" in etiqueta:
+        return "lp"
+
+    # 3. Stage como fallback estrutural
+    if stage == _Stage.LISTAS:
+        return "lista"
+    if stage == _Stage.BAZAR:
+        return "bazar"
+    if stage == _Stage.LP:
+        return "lp"
+
     return "desconhecido"
 
 
 def get_etiqueta(card: dict) -> str:
     """Retorna a etiqueta normalizada para fins de roteamento/logging."""
-    etiqueta = (card.get("Etiquetas") or "").lower()
+    etiqueta = _etiquetas_lower(card)
     for key in ["itau", "santander", "bradesco", "porto", "caixa"]:
         if key in etiqueta:
             return key

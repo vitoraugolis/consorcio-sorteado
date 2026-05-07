@@ -1,217 +1,52 @@
-"""
-jobs/relatorio_funil.py — Relatório diário de funil (funil exaustivo, layout colunar)
-
-Layout: aba única "Resumos diários"
-  - Linhas = etapas do funil (fixas, com agrupamento visual)
-  - Colunas = um dia por coluna (nova coluna adicionada à direita cada dia)
-  - Cada fluxo tem seu bloco de linhas separado por título colorido
-  - Roda às 00h BRT (03h UTC) referente ao dia ANTERIOR
-
-Endpoint manual: POST /jobs/relatorio-funil/run
-"""
-
 import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
-
+import httpx
 from config import Stage, TZ_BRASILIA, PIPELINE_ID
 from services.faro import FaroClient, FaroError, get_fonte
 from services.slack import slack_alert, slack_error
 
 logger = logging.getLogger(__name__)
 
-SPREADSHEET_ID    = "128hsf77Zgb6IZ9Y7dxwwEIez7r4JLmeQBgs4DB7u5HU"
-ABA               = "Resumos diários"
-GOOGLE_CREDS_PATH = os.path.join(os.path.dirname(__file__), "..", "secrets", "google_sheets.json")
+WEBHOOK_URL = "https://hook.us1.make.com/l2x7w83wlksrycrz7zilorookxnudt26"
 
-# ─── Cores ────────────────────────────────────────────────────────────────────
-def _rgb(r, g, b): return {"red": r/255, "green": g/255, "blue": b/255}
+RETROATIVO_DATAS = [
+    "23/04/2026", "24/04/2026", "27/04/2026", "28/04/2026",
+    "29/04/2026", "30/04/2026", "01/05/2026", "03/05/2026",
+    "04/05/2026", "05/05/2026", "06/05/2026", "07/05/2026",
+]
 
-C_BRANCO    = _rgb(255, 255, 255)
-C_PRETO_FG  = _rgb(40,  40,  40)
-C_CINZA_LN  = _rgb(240, 240, 240)   # linha zebra clara
-C_CINZA_SEP = _rgb(200, 200, 200)   # separador entre grupos
-C_ZERO      = _rgb(250, 250, 250)
-
-# Título de fluxo
-C_LISTAS_BG  = _rgb(27,  94,  32)   # verde escuro
-C_BAZAR_BG   = _rgb(13,  71, 161)   # azul escuro
-C_LP_BG      = _rgb(74,  20, 140)   # roxo escuro
-C_FG_WHITE   = _rgb(255, 255, 255)
-
-# Subtítulos de grupo
-C_GRP_LISTAS = _rgb(200, 230, 201)
-C_GRP_BAZAR  = _rgb(187, 222, 251)
-C_GRP_LP     = _rgb(225, 190, 231)
-C_GRP_FG     = _rgb(30,  30,  30)
-
-# Linha total
-C_TOTAL_BG   = _rgb(255, 243, 205)
-C_TOTAL_FG   = _rgb(80,  50,   0)
-
-# Cabeçalho de data
-C_DATA_BG    = _rgb(55,  71,  79)   # azul-cinza escuro
-C_DATA_FG    = _rgb(255, 255, 255)
+# Ajustes manuais: eventos confirmados que podem nao estar no FARO
+# Gabriell (aceite Porto Seguro) + Ludmilla (aceite delegado Manuela) + Jose (aceite Bazar) = 3 aceites Bazar
+# Gabriell = 1 sucesso Bazar
+# Douglas (neg Rk) + Matheus Costa (neg Rk) = 2 negociacoes Bazar
+# Anderson (precificado) = 1 precificacao Bazar
+MANUAL_ADJUSTMENTS = {
+    "b_acei": 3,
+    "b_suc":  1,
+    "b_neg":  2,
+    "b_prec": 1,
+}
 
 
-# ─── Definição do funil (linhas fixas da planilha) ───────────────────────────
-# Cada entry: (chave, label, tipo)
-# tipo: "titulo_fluxo" | "grupo" | "metrica" | "total" | "sep" | "espaco"
-# chave None = linha visual sem dado
-
-def _funil_listas():
-    return [
-        ("_tit",   "📋  FLUXO LISTAS",                     "titulo_fluxo", "listas"),
-        # ── Disparos
-        ("_g1",    "Disparos",                              "grupo",  "listas"),
-        ("l_atv1", "1ª ativação enviada",                   "metrica","listas"),
-        ("l_atv2", "2ª ativação enviada",                   "metrica","listas"),
-        ("l_atv3", "3ª ativação enviada",                   "metrica","listas"),
-        ("l_atv4", "4ª ativação enviada",                   "metrica","listas"),
-        ("l_prob", "Problema de contato (número inválido)", "metrica","listas"),
-        # ── Respostas
-        ("_g2",    "Respostas recebidas",                   "grupo",  "listas"),
-        ("l_int",  "Demonstraram interesse",                "metrica","listas"),
-        ("l_nint", "Sem interesse / recusa",                "metrica","listas"),
-        ("l_sret", "Sem retorno (silêncio total)",          "metrica","listas"),
-        # ── Qualificação
-        ("_g3",    "Qualificação",                          "grupo",  "listas"),
-        ("l_prec", "Foram para precificação",               "metrica","listas"),
-        ("l_neg",  "Em negociação",                         "metrica","listas"),
-        ("l_ngc",  "Negociação congelada",                  "metrica","listas"),
-        # ── Fechamento
-        ("_g4",    "Fechamento",                            "grupo",  "listas"),
-        ("l_acei", "Aceitaram a proposta",                  "metrica","listas"),
-        ("l_assi", "Em assinatura",                         "metrica","listas"),
-        ("l_suc",  "Sucesso (contrato fechado)",            "metrica","listas"),
-        # ── Descarte
-        ("_g5",    "Descarte",                              "grupo",  "listas"),
-        ("l_nq",   "Não qualificados",                      "metrica","listas"),
-        ("l_perd", "Perdidos",                              "metrica","listas"),
-        ("l_disp", "Dispensados",                           "metrica","listas"),
-        ("l_lixo", "Lixo (duplicata / inválido)",           "metrica","listas"),
-        # ── Total
-        ("l_tot",  "TOTAL DO DIA — Listas",                 "total",  "listas"),
-        ("_esp1",  "",                                      "espaco", "listas"),
-    ]
-
-def _funil_bazar():
-    return [
-        ("_tit",   "🏪  FLUXO BAZAR",                       "titulo_fluxo", "bazar"),
-        # ── Disparos
-        ("_g1",    "Disparos",                              "grupo",  "bazar"),
-        ("b_atv1", "1ª ativação enviada",                   "metrica","bazar"),
-        ("b_atv2", "2ª ativação enviada",                   "metrica","bazar"),
-        ("b_atv3", "3ª ativação enviada",                   "metrica","bazar"),
-        ("b_atv4", "4ª ativação enviada",                   "metrica","bazar"),
-        ("b_prob", "Problema de contato (número inválido)", "metrica","bazar"),
-        # ── Engajamento
-        ("_g2",    "Engajamento",                           "grupo",  "bazar"),
-        ("b_cont", "Em conversa (aguardando extrato)",      "metrica","bazar"),
-        ("b_extr", "Extratos recebidos",                    "metrica","bazar"),
-        ("b_eval", "Extrato válido (analisado com sucesso)","metrica","bazar"),
-        ("b_einv", "Extrato inválido / ilegível",           "metrica","bazar"),
-        ("b_ncnt", "Cota não contemplada (extrato errado)", "metrica","bazar"),
-        ("b_lanc", "Cotas de lance (LP Lance)",             "metrica","bazar"),
-        ("b_hold", "On hold (aguardando doc complementar)", "metrica","bazar"),
-        # ── Qualificação
-        ("_g3",    "Qualificação",                          "grupo",  "bazar"),
-        ("b_prec", "Foram para precificação",               "metrica","bazar"),
-        ("b_neg",  "Em negociação",                         "metrica","bazar"),
-        ("b_ngc",  "Negociação congelada",                  "metrica","bazar"),
-        # ── Fechamento
-        ("_g4",    "Fechamento",                            "grupo",  "bazar"),
-        ("b_acei", "Aceitaram a proposta",                  "metrica","bazar"),
-        ("b_assi", "Em assinatura",                         "metrica","bazar"),
-        ("b_suc",  "Sucesso (contrato fechado)",            "metrica","bazar"),
-        # ── Descarte
-        ("_g5",    "Descarte",                              "grupo",  "bazar"),
-        ("b_nq",   "Não qualificados",                      "metrica","bazar"),
-        ("b_perd", "Perdidos",                              "metrica","bazar"),
-        ("b_disp", "Dispensados",                           "metrica","bazar"),
-        ("b_lixo", "Lixo (duplicata / inválido)",           "metrica","bazar"),
-        # ── Subtotal por motivo de perda
-        ("_g6",    "Motivo de perda (detalhamento)",        "grupo",  "bazar"),
-        ("b_psm",  "  → Sem margem / usou lance",           "metrica","bazar"),
-        ("b_psi",  "  → Sem interesse",                     "metrica","bazar"),
-        ("b_psr",  "  → Sem retorno",                       "metrica","bazar"),
-        ("b_pnp",  "  → ADM não parceira",                  "metrica","bazar"),
-        ("b_pcv",  "  → Cota já vendida",                   "metrica","bazar"),
-        ("b_pout", "  → Outros motivos",                    "metrica","bazar"),
-        # ── Total
-        ("b_tot",  "TOTAL DO DIA — Bazar",                  "total",  "bazar"),
-        ("_esp2",  "",                                      "espaco", "bazar"),
-    ]
-
-def _funil_lp():
-    return [
-        ("_tit",   "🌐  FLUXO LP / SITE",                   "titulo_fluxo", "lp"),
-        # ── Disparos
-        ("_g1",    "Ativações",                             "grupo",  "lp"),
-        ("p_atv1", "1ª ativação enviada",                   "metrica","lp"),
-        ("p_atv2", "2ª ativação enviada",                   "metrica","lp"),
-        ("p_atv3", "3ª ativação enviada",                   "metrica","lp"),
-        ("p_atv4", "4ª ativação enviada",                   "metrica","lp"),
-        ("p_prob", "Problema de contato (número inválido)", "metrica","lp"),
-        # ── Engajamento
-        ("_g2",    "Engajamento",                           "grupo",  "lp"),
-        ("p_cont", "Em conversa (aguardando extrato)",      "metrica","lp"),
-        ("p_extr", "Extratos recebidos",                    "metrica","lp"),
-        ("p_eval", "Extrato válido (analisado)",            "metrica","lp"),
-        ("p_einv", "Extrato inválido / ilegível",           "metrica","lp"),
-        ("p_ncnt", "Cota não contemplada",                  "metrica","lp"),
-        ("p_lanc", "Leads de lance (LP Lance)",             "metrica","lp"),
-        # ── Qualificação / Fechamento
-        ("_g3",    "Qualificação e fechamento",             "grupo",  "lp"),
-        ("p_prec", "Foram para precificação",               "metrica","lp"),
-        ("p_neg",  "Em negociação",                         "metrica","lp"),
-        ("p_acei", "Aceitaram a proposta",                  "metrica","lp"),
-        ("p_assi", "Em assinatura",                         "metrica","lp"),
-        ("p_suc",  "Sucesso (contrato fechado)",            "metrica","lp"),
-        # ── Descarte
-        ("_g4",    "Descarte",                              "grupo",  "lp"),
-        ("p_nq",   "Não qualificados",                      "metrica","lp"),
-        ("p_perd", "Perdidos",                              "metrica","lp"),
-        ("p_disp", "Dispensados",                           "metrica","lp"),
-        # ── Total
-        ("p_tot",  "TOTAL DO DIA — LP",                     "total",  "lp"),
-        ("_esp3",  "",                                      "espaco", "lp"),
-    ]
-
-
-# ─── Coleta ───────────────────────────────────────────────────────────────────
-
-async def _fetch_all_cards() -> list[dict]:
-    all_cards: list[dict] = []
-    offset, limit = 0, 200
-    async with FaroClient() as faro:
-        while True:
-            try:
-                result = await faro._get("/api-cards-list", params={
-                    "pipeline_id": PIPELINE_ID, "limit": limit, "offset": offset,
-                })
-                cards = result.get("items") or result.get("cards") or []
-                if not cards: break
-                all_cards.extend(cards)
-                if len(cards) < limit: break
-                offset += limit
-            except FaroError as e:
-                logger.error("relatorio_funil: offset=%d: %s", offset, e)
-                break
-    return all_cards
-
-
-# ─── Filtros de data ──────────────────────────────────────────────────────────
-
-def _is_date(val: Optional[str], iso: str, br: str) -> bool:
+def _is_date(val, iso, br):
     if not val: return False
     v = str(val).strip()
     return v.startswith(iso) or v == br
 
 def _ativado(card, iso, br):
-    return _is_date(card.get("Data de primeira ativação"), iso, br)
+    return _is_date(card.get("Data de primeira ativacao"), iso, br) or _is_date(card.get("Data de primeira ativação"), iso, br)
+
+def _ativado2(card, iso, br):
+    return _is_date(card.get("Data de segunda ativacao"), iso, br) or _is_date(card.get("Data de segunda ativação"), iso, br)
+
+def _ativado3(card, iso, br):
+    return _is_date(card.get("Data de terceira ativacao"), iso, br) or _is_date(card.get("Data de terceira ativação"), iso, br)
+
+def _ativado4(card, iso, br):
+    return _is_date(card.get("Data de quarta ativacao"), iso, br) or _is_date(card.get("Data de quarta ativação"), iso, br)
 
 def _movido(card, iso, br):
     return (
@@ -219,19 +54,8 @@ def _movido(card, iso, br):
         _is_date(card.get("Ultima atividade"), iso, br)
     )
 
-def _ativado2(card, iso, br):
-    return _is_date(card.get("Data de segunda ativação"), iso, br)
 
-def _ativado3(card, iso, br):
-    return _is_date(card.get("Data de terceira ativação"), iso, br)
-
-def _ativado4(card, iso, br):
-    return _is_date(card.get("Data de quarta ativação"), iso, br)
-
-
-# ─── Cálculo de métricas ──────────────────────────────────────────────────────
-
-def _calcular(cards: list[dict], fluxo: str, iso: str, br: str) -> dict[str, int]:
+def _calcular(cards, fluxo, iso, br):
     def match(c):
         f = (get_fonte(c) or c.get("Etiquetas") or "").lower()
         if fluxo == "listas": return "lista" in f
@@ -239,8 +63,8 @@ def _calcular(cards: list[dict], fluxo: str, iso: str, br: str) -> dict[str, int
         if fluxo == "lp":     return f in ("lp", "landing page") or "site" in f
         return False
 
-    sub  = [c for c in cards if match(c)]
-    mov  = [c for c in sub if _movido(c, iso, br)]
+    sub = [c for c in cards if match(c)]
+    mov = [c for c in sub if _movido(c, iso, br)]
 
     def cnt(stage_id):
         return sum(1 for c in mov if c.get("stage_id") == stage_id)
@@ -250,22 +74,17 @@ def _calcular(cards: list[dict], fluxo: str, iso: str, br: str) -> dict[str, int
                    if c.get("stage_id") == Stage.PERDIDO
                    and substr.lower() in (c.get("Motivo de perda") or "").lower())
 
-    # Disparos — usa campos específicos de data de ativação
     atv1 = sum(1 for c in sub if _ativado(c, iso, br))
     atv2 = sum(1 for c in sub if _ativado2(c, iso, br))
     atv3 = sum(1 for c in sub if _ativado3(c, iso, br))
     atv4 = sum(1 for c in sub if _ativado4(c, iso, br))
 
     total_ids = {c["id"] for c in sub if _ativado(c, iso, br) or _movido(c, iso, br)}
-
     prefix = {"listas": "l_", "bazar": "b_", "lp": "p_"}[fluxo]
     p = prefix
 
     m = {
-        f"{p}atv1": atv1,
-        f"{p}atv2": atv2,
-        f"{p}atv3": atv3,
-        f"{p}atv4": atv4,
+        f"{p}atv1": atv1, f"{p}atv2": atv2, f"{p}atv3": atv3, f"{p}atv4": atv4,
         f"{p}prob": cnt(Stage.PROBLEMA_CONTATO),
         f"{p}prec": cnt(Stage.PRECIFICACAO),
         f"{p}neg":  cnt(Stage.EM_NEGOCIACAO),
@@ -286,26 +105,23 @@ def _calcular(cards: list[dict], fluxo: str, iso: str, br: str) -> dict[str, int
             Stage.ASSINATURA, Stage.FINALIZACAO_COMERCIAL, Stage.SUCESSO,
             Stage.NEG_CONGELADA,
         })
-        sem_int = cnt_motivo("sem interesse")
-        sem_ret = cnt_motivo("sem retorno")
         m.update({
             "l_int":  interessados,
-            "l_nint": sem_int,
-            "l_sret": sem_ret,
+            "l_nint": cnt_motivo("sem interesse"),
+            "l_sret": cnt_motivo("sem retorno"),
         })
-
-    else:  # bazar / lp
+    else:
         m.update({
             f"{p}cont": cnt(Stage.EM_CONTATO),
             f"{p}extr": sum(1 for c in mov if c.get("Link do Extrato")),
-            f"{p}eval": sum(1 for c in mov if c.get("Link do Extrato") and c.get("Crédito")),
+            f"{p}eval": sum(1 for c in mov if c.get("Link do Extrato") and c.get("Credito") or c.get("Crédito")),
             f"{p}einv": sum(1 for c in mov if any(
                 t in (c.get("Motivo dispensa") or "").lower()
-                for t in ("incorreto", "ilegível", "invalido")
+                for t in ("incorreto", "ilegivel", "invalido", "ilegível")
             )),
-            f"{p}ncnt": sum(1 for c in mov if "nao-cont" in (c.get("Tipo contemplação") or "").lower()
-                            or "não contemplado" in (c.get("Tipo contemplação") or "").lower()),
-            f"{p}lanc": sum(1 for c in mov if "lance" in (c.get("Tipo contemplação") or "").lower()),
+            f"{p}ncnt": sum(1 for c in mov if "nao-cont" in (c.get("Tipo contemplacao") or c.get("Tipo contemplação") or "").lower()
+                            or "nao contemplado" in (c.get("Tipo contemplacao") or c.get("Tipo contemplação") or "").lower()),
+            f"{p}lanc": sum(1 for c in mov if "lance" in (c.get("Tipo contemplacao") or c.get("Tipo contemplação") or "").lower()),
             f"{p}hold": cnt(Stage.ON_HOLD),
         })
 
@@ -314,59 +130,263 @@ def _calcular(cards: list[dict], fluxo: str, iso: str, br: str) -> dict[str, int
         psm = cnt_motivo("sem margem")
         psi = cnt_motivo("sem interesse")
         psr = cnt_motivo("sem retorno")
-        pnp = sum(1 for c in mov
-                  if c.get("stage_id") == Stage.PERDIDO
-                  and "adm" in (c.get("Motivo de perda") or "").lower()
-                  and "parceira" in (c.get("Motivo de perda") or "").lower())
+        pnp = sum(1 for c in mov if c.get("stage_id") == Stage.PERDIDO and "adm" in (c.get("Motivo de perda") or "").lower() and "parceira" in (c.get("Motivo de perda") or "").lower())
         pcv = cnt_motivo("cota vendida")
-        pout = max(0, perdidos_tot - psm - psi - psr - pnp - pcv)
-        m.update({
-            "b_psm": psm, "b_psi": psi, "b_psr": psr,
-            "b_pnp": pnp, "b_pcv": pcv, "b_pout": pout,
-        })
+        m.update({"b_psm": psm, "b_psi": psi, "b_psr": psr, "b_pnp": pnp, "b_pcv": pcv, "b_pout": max(0, perdidos_tot - psm - psi - psr - pnp - pcv)})
 
     return m
 
 
-# ─── Slack ─────────────────────────────────────────────────────────────────────
+def _calcular_consolidado(ml, mb, mp):
+    return {
+        "g_atv": ml.get("l_atv1", 0) + mb.get("b_atv1", 0) + mp.get("p_atv1", 0),
+        "g_neg": ml.get("l_neg", 0)  + mb.get("b_neg", 0)  + mp.get("p_neg", 0),
+        "g_suc": ml.get("l_suc", 0)  + mb.get("b_suc", 0)  + mp.get("p_suc", 0),
+    }
 
-def _fmt_slack(data_br: str, ml: dict, mb: dict, mp: dict) -> str:
-    all_m = {**ml, **mb, **mp}
 
-    def bloco(emoji, nome, funil_fn):
-        linhas = [f"{emoji} *{nome}*"]
-        for chave, label, tipo, _ in funil_fn():
-            if tipo in ("titulo_fluxo", "grupo", "espaco"):
+def _pct(num, den):
+    if not den: return "—"
+    return f"{num/den*100:.1f}%"
+
+def _calcular_taxas(all_m):
+    TAXAS = {
+        "bt_extr": ("b_extr", "b_atv1"), "bt_eval": ("b_eval", "b_extr"),
+        "bt_prec": ("b_prec", "b_eval"), "bt_neg": ("b_neg", "b_prec"),
+        "bt_conv": ("b_suc", "b_atv1"),
+        "lt_resp": ("l_int", "l_atv1"), "lt_qual": ("l_prec", "l_int"),
+        "lt_neg":  ("l_neg", "l_prec"), "lt_conv": ("l_suc", "l_atv1"),
+        "pt_extr": ("p_extr", "p_atv1"), "pt_eval": ("p_eval", "p_extr"),
+        "pt_prec": ("p_prec", "p_eval"), "pt_neg": ("p_neg", "p_prec"),
+        "pt_conv": ("p_suc", "p_atv1"), "g_conv": ("g_suc", "g_atv"),
+    }
+    return {k: _pct(all_m.get(n, 0), all_m.get(d, 0)) for k, (n, d) in TAXAS.items()}
+
+
+async def _fetch_all_cards():
+    all_cards = []
+    offset, limit = 0, 200
+    async with FaroClient() as faro:
+        while True:
+            try:
+                result = await faro._get("/api-cards-list", params={
+                    "pipeline_id": PIPELINE_ID, "limit": limit, "offset": offset,
+                })
+                cards = result.get("items") or result.get("cards") or []
+                if not cards:
+                    break
+                all_cards.extend(cards)
+                if len(cards) < limit:
+                    break
+                offset += limit
+            except FaroError as e:
+                logger.error("relatorio_funil: offset=%d: %s", offset, e)
+                break
+    return all_cards
+
+
+async def _post_webhook(html):
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(WEBHOOK_URL, json={"html": html})
+        resp.raise_for_status()
+        logger.info("relatorio_funil: webhook OK status=%d", resp.status_code)
+
+
+def _row(label, value, highlight=False):
+    bg = "#f1f8e9" if highlight else "#ffffff"
+    fw = "bold" if highlight else "normal"
+    if not value:
+        return ""
+    return (
+        f'<tr style="background:{bg};">'
+        f'<td style="padding:5px 10px;border-bottom:1px solid #eee;font-size:13px;color:#333;">{label}</td>'
+        f'<td style="padding:5px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:{fw};font-size:13px;color:#111;">{value}</td>'
+        f'</tr>'
+    )
+
+
+def _secao_fluxo(cor, emoji, nome, metricas_labels, valores, taxas=None, taxas_labels=None):
+    rows = ""
+    for label, chave in metricas_labels:
+        v = valores.get(chave, 0)
+        if not v:
+            continue
+        rows += _row(label, v)
+    if taxas and taxas_labels:
+        for chave_t, label_t in taxas_labels:
+            v = taxas.get(chave_t, "—")
+            if v == "—":
                 continue
-            v = all_m.get(chave, 0) or 0
-            if v == 0:
-                continue
-            if tipo == "total":
-                linhas.append(f"━ *{label}: {v}*")
-            else:
-                linhas.append(f"  › {label}: *{v}*")
-        return "\n".join(linhas)
-
-    return "\n\n".join([
-        f"📅 *Relatório — {data_br}*",
-        bloco("📋", "Listas",    _funil_listas),
-        bloco("🏪", "Bazar",     _funil_bazar),
-        bloco("🌐", "LP / Site", _funil_lp),
-    ])
+            rows += _row(f"  → {label_t}", v, highlight=True)
+    if not rows:
+        return ""
+    return (
+        f'<div style="margin-bottom:14px;">'
+        f'<div style="background:{cor};color:#fff;padding:8px 12px;border-radius:4px 4px 0 0;font-weight:bold;font-size:14px;">{emoji} {nome}</div>'
+        f'<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #ddd;border-top:none;border-radius:0 0 4px 4px;">'
+        f'{rows}'
+        f'</table></div>'
+    )
 
 
-# ─── Job principal ─────────────────────────────────────────────────────────────
+def _build_html_dia(data_br, ml, mb, mp):
+    mg = _calcular_consolidado(ml, mb, mp)
+    all_m = {**ml, **mb, **mp, **mg}
+    taxas = _calcular_taxas(all_m)
 
-async def run_relatorio_funil() -> None:
-    """
-    Roda às 00h BRT (03h UTC) e reporta o dia ANTERIOR.
-    Também pode ser chamado manualmente via POST /jobs/relatorio-funil/run,
-    nesse caso reporta o dia CORRENTE (útil para testes e verificação intraday).
-    """
+    listas_m = [
+        ("1a ativacao", "l_atv1"), ("2a ativacao", "l_atv2"),
+        ("3a ativacao", "l_atv3"), ("4a ativacao", "l_atv4"),
+        ("Problema de contato", "l_prob"),
+        ("Demonstraram interesse", "l_int"),
+        ("Sem interesse/recusa", "l_nint"), ("Sem retorno", "l_sret"),
+        ("Precificacao", "l_prec"), ("Em negociacao", "l_neg"),
+        ("Neg. congelada", "l_ngc"), ("Aceites", "l_acei"),
+        ("Assinatura", "l_assi"), ("Sucesso", "l_suc"),
+        ("Nao qualificados", "l_nq"), ("Perdidos", "l_perd"),
+        ("Dispensados", "l_disp"), ("Lixo", "l_lixo"),
+    ]
+    listas_t = [
+        ("lt_resp", "Taxa resposta"), ("lt_qual", "Taxa qualificacao"),
+        ("lt_neg", "Taxa negociacao"), ("lt_conv", "Taxa conversao"),
+    ]
+    bazar_m = [
+        ("1a ativacao", "b_atv1"), ("2a ativacao", "b_atv2"),
+        ("3a ativacao", "b_atv3"), ("4a ativacao", "b_atv4"),
+        ("Problema de contato", "b_prob"),
+        ("Em conversa", "b_cont"), ("Extratos recebidos", "b_extr"),
+        ("Extrato valido", "b_eval"), ("Extrato invalido", "b_einv"),
+        ("Nao contemplado", "b_ncnt"), ("Cotas lance", "b_lanc"),
+        ("On hold", "b_hold"), ("Precificacao", "b_prec"),
+        ("Em negociacao", "b_neg"), ("Neg. congelada", "b_ngc"),
+        ("Aceites", "b_acei"), ("Assinatura", "b_assi"),
+        ("Sucesso", "b_suc"), ("Nao qualificados", "b_nq"),
+        ("Perdidos", "b_perd"), ("Dispensados", "b_disp"), ("Lixo", "b_lixo"),
+    ]
+    bazar_t = [
+        ("bt_extr", "Taxa extrato recebido"), ("bt_eval", "Taxa extrato valido"),
+        ("bt_prec", "Taxa precificacao"), ("bt_neg", "Taxa negociacao"),
+        ("bt_conv", "Taxa conversao"),
+    ]
+    lp_m = [
+        ("1a ativacao", "p_atv1"), ("2a ativacao", "p_atv2"),
+        ("3a ativacao", "p_atv3"), ("4a ativacao", "p_atv4"),
+        ("Problema de contato", "p_prob"),
+        ("Em conversa", "p_cont"), ("Extratos recebidos", "p_extr"),
+        ("Extrato valido", "p_eval"), ("Extrato invalido", "p_einv"),
+        ("Nao contemplado", "p_ncnt"), ("Leads lance", "p_lanc"),
+        ("Precificacao", "p_prec"), ("Em negociacao", "p_neg"),
+        ("Aceites", "p_acei"), ("Assinatura", "p_assi"),
+        ("Sucesso", "p_suc"), ("Nao qualificados", "p_nq"),
+        ("Perdidos", "p_perd"), ("Dispensados", "p_disp"),
+    ]
+    lp_t = [
+        ("pt_extr", "Taxa extrato recebido"), ("pt_eval", "Taxa extrato valido"),
+        ("pt_prec", "Taxa precificacao"), ("pt_neg", "Taxa negociacao"),
+        ("pt_conv", "Taxa conversao"),
+    ]
+
+    sl = _secao_fluxo("#1b5e20", "\U0001f4cb", "LISTAS", listas_m, ml, taxas, listas_t)
+    sb = _secao_fluxo("#0d47a1", "\U0001f3ea", "BAZAR", bazar_m, mb, taxas, bazar_t)
+    sp = _secao_fluxo("#4a148c", "\U0001f310", "LP / SITE", lp_m, mp, taxas, lp_t)
+
+    if not sl and not sb and not sp:
+        return f'<div style="color:#aaa;font-style:italic;padding:8px 0;">Sem movimentacao em {data_br}</div>'
+
+    return (
+        f'<div style="margin-bottom:28px;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;">'
+        f'<div style="background:#37474f;color:#fff;padding:10px 16px;font-weight:bold;font-size:16px;">\U0001f4c5 {data_br}</div>'
+        f'<div style="padding:14px 16px;">{sl}{sb}{sp}</div>'
+        f'</div>'
+    )
+
+
+def _build_html_relatorio(titulo, subtitulo, secoes_html, totais_ml, totais_mb, totais_mp):
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    agora_br = _dt.now(_ZI("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
+
+    mg = _calcular_consolidado(totais_ml, totais_mb, totais_mp)
+    all_m = {**totais_ml, **totais_mb, **totais_mp, **mg}
+    taxas = _calcular_taxas(all_m)
+
+    totais_items = [
+        ("Listas — Total ativacoes", totais_ml.get("l_atv1", 0)),
+        ("Listas — Precificacoes", totais_ml.get("l_prec", 0)),
+        ("Listas — Negociacoes", totais_ml.get("l_neg", 0)),
+        ("Listas — Aceites", totais_ml.get("l_acei", 0)),
+        ("Listas — Sucesso", totais_ml.get("l_suc", 0)),
+        ("Listas — Taxa conversao", taxas.get("lt_conv", "—")),
+        ("Bazar — Total ativacoes", totais_mb.get("b_atv1", 0)),
+        ("Bazar — Extratos recebidos", totais_mb.get("b_extr", 0)),
+        ("Bazar — Precificacoes", totais_mb.get("b_prec", 0)),
+        ("Bazar — Negociacoes", totais_mb.get("b_neg", 0)),
+        ("Bazar — Aceites", totais_mb.get("b_acei", 0)),
+        ("Bazar — Sucesso", totais_mb.get("b_suc", 0)),
+        ("Bazar — Taxa conversao", taxas.get("bt_conv", "—")),
+        ("LP — Total ativacoes", totais_mp.get("p_atv1", 0)),
+        ("LP — Extratos recebidos", totais_mp.get("p_extr", 0)),
+        ("LP — Precificacoes", totais_mp.get("p_prec", 0)),
+        ("LP — Negociacoes", totais_mp.get("p_neg", 0)),
+        ("LP — Aceites", totais_mp.get("p_acei", 0)),
+        ("LP — Sucesso", totais_mp.get("p_suc", 0)),
+        ("LP — Taxa conversao", taxas.get("pt_conv", "—")),
+        ("GERAL — Total ativacoes", mg.get("g_atv", 0)),
+        ("GERAL — Total negociacoes", mg.get("g_neg", 0)),
+        ("GERAL — Total sucesso", mg.get("g_suc", 0)),
+        ("GERAL — Taxa conversao geral", taxas.get("g_conv", "—")),
+    ]
+    totais_rows = ""
+    for lbl, v in totais_items:
+        if not v:
+            continue
+        hl = "GERAL" in lbl
+        totais_rows += _row(lbl, v, highlight=hl)
+
+    corpo = "\n".join(secoes_html)
+
+    return (
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head><meta charset=\"UTF-8\"><title>" + titulo + "</title></head>\n"
+        "<body style=\"font-family:Arial,Helvetica,sans-serif;background:#f4f4f4;margin:0;padding:20px;\">\n"
+        "  <div style=\"max-width:680px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);\">\n"
+        "    <div style=\"background:#1a237e;color:#fff;padding:28px 32px;\">\n"
+        "      <h1 style=\"margin:0 0 6px;font-size:22px;font-weight:bold;\">" + titulo + "</h1>\n"
+        "      <p style=\"margin:0;opacity:0.82;font-size:14px;\">" + subtitulo + "</p>\n"
+        "    </div>\n"
+        "    <div style=\"padding:24px 28px;\">\n"
+        "      " + corpo + "\n"
+        "      <div style=\"margin:20px 0;padding:16px 18px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;\">\n"
+        "        <h3 style=\"margin:0 0 10px;color:#1b5e20;font-size:15px;\">&#x2705; Aceites Confirmados no Periodo</h3>\n"
+        "        <ul style=\"margin:0;padding-left:18px;color:#2e7d32;font-size:13px;line-height:1.8;\">\n"
+        "          <li><strong>Gabriell</strong> &mdash; Porto Seguro &mdash; aceite confirmado, encaminhado para contrato</li>\n"
+        "          <li><strong>Ludmilla</strong> &mdash; aceite confirmado, delegado para Manuela</li>\n"
+        "          <li><strong>Jose</strong> &mdash; aceite confirmado (canal Bazar)</li>\n"
+        "        </ul>\n"
+        "      </div>\n"
+        "      <div style=\"margin-top:24px;\">\n"
+        "        <div style=\"background:#263238;color:#fff;padding:10px 14px;border-radius:4px 4px 0 0;font-weight:bold;font-size:15px;\">&#x1f3c6; Consolidado do Periodo</div>\n"
+        "        <table style=\"width:100%;border-collapse:collapse;background:#fff;border:1px solid #ddd;border-top:none;border-radius:0 0 4px 4px;\">\n"
+        "          " + totais_rows + "\n"
+        "        </table>\n"
+        "      </div>\n"
+        "    </div>\n"
+        "    <div style=\"background:#f5f5f5;padding:14px 28px;font-size:11px;color:#999;text-align:center;border-top:1px solid #e0e0e0;\">\n"
+        "      Gerado automaticamente em " + agora_br + " BRT &mdash; Consorcio Sorteado\n"
+        "    </div>\n"
+        "  </div>\n"
+        "</body>\n"
+        "</html>"
+    )
+
+
+async def run_relatorio_funil(data_alvo=None):
+    """Roda para um dia (ontem por default). Envia webhook + Slack."""
     agora_br = datetime.now(TZ_BRASILIA)
-
-    # Se rodou às 00h, reporta ontem; caso contrário, reporta hoje
-    if agora_br.hour < 3:
+    if data_alvo:
+        alvo = data_alvo
+    elif agora_br.hour < 3:
         alvo = agora_br - timedelta(days=1)
     else:
         alvo = agora_br
@@ -374,11 +394,9 @@ async def run_relatorio_funil() -> None:
     data_br  = alvo.strftime("%d/%m/%Y")
     data_iso = alvo.strftime("%Y-%m-%d")
 
-    logger.info("relatorio_funil: coletando dados de %s", data_br)
-
     try:
         cards = await _fetch_all_cards()
-        logger.info("relatorio_funil: %d cards coletados", len(cards))
+        logger.info("relatorio_funil: %d cards coletados para %s", len(cards), data_br)
     except Exception as e:
         logger.error("relatorio_funil: falha ao buscar cards: %s", e)
         return
@@ -387,237 +405,135 @@ async def run_relatorio_funil() -> None:
     mb = _calcular(cards, "bazar",  data_iso, data_br)
     mp = _calcular(cards, "lp",     data_iso, data_br)
 
-    # Slack
+    html = _build_html_relatorio(
+        "Relatorio de Funil — Consorcio Sorteado",
+        f"Data: {data_br}",
+        [_build_html_dia(data_br, ml, mb, mp)],
+        ml, mb, mp,
+    )
+
     try:
-        await slack_alert(_fmt_slack(data_br, ml, mb, mp), level="info")
+        await _post_webhook(html)
     except Exception as e:
-        logger.error("relatorio_funil: slack: %s", e)
-
-    # Sheets
-    try:
-        gc = _get_sheets_client()
-        sp = gc.open_by_key(SPREADSHEET_ID)
-        ws = _get_or_create_ws(sp, ABA)
-
-        # 1. Garante que o skeleton de linhas existe
-        _build_skeleton(ws, sp)
-
-        # 2. Encontra ou cria a coluna para essa data
-        col_idx = _find_or_add_col(ws, sp, data_br)
-
-        # 3. Escreve os valores
-        _write_col(ws, sp, col_idx, data_br, ml, mb, mp)
-
-        logger.info("relatorio_funil: Sheets atualizado — coluna %s", _col_letter(col_idx + 1))
-    except FileNotFoundError as e:
-        logger.warning("relatorio_funil: %s", e)
-    except Exception as e:
-        logger.error("relatorio_funil: erro Sheets: %s", e)
-        await slack_error("Falha ao gravar relatório no Sheets",
-                          exception=e, context={"data": data_br})
-
-    logger.info("relatorio_funil: concluído para %s", data_br)
-
-
-# ─── Google Sheets helpers ────────────────────────────────────────────────────
-
-def _get_sheets_client():
-    import gspread
-    from google.oauth2.service_account import Credentials
-    path = os.path.abspath(GOOGLE_CREDS_PATH)
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Credenciais não encontradas: {path}")
-    creds = Credentials.from_service_account_file(path, scopes=[
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ])
-    return gspread.authorize(creds)
-
-
-def _col_letter(n: int) -> str:
-    result = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
-
-
-def _get_or_create_ws(sp, nome: str):
-    import gspread
-    try:
-        return sp.worksheet(nome)
-    except gspread.exceptions.WorksheetNotFound:
-        return sp.add_worksheet(title=nome, rows=200, cols=60)
-
-
-def _build_skeleton(ws, sp) -> None:
-    """
-    Escreve estrutura fixa de linhas na planilha. Layout:
-      - Linha 1: cabeçalho — B1="Etapa", C1+ = datas (uma por dia)
-      - Linhas 2+: col A=chave (quasi-oculto), col B=label legível
-    Só executa se a planilha estiver vazia.
-    """
-    existing = ws.get_all_values()
-    if any(cell.strip() for row in existing for cell in row):
+        logger.error("relatorio_funil: erro webhook: %s", e)
+        try:
+            await slack_error("Falha ao enviar relatorio via webhook", exception=e, context={"data": data_br})
+        except Exception:
+            pass
         return
 
-    todos = _funil_listas() + _funil_bazar() + _funil_lp()
-
-    # Linha 1: header fixo para col A e B
-    ws.update("A1", [["#"]], value_input_option="RAW")
-    ws.update("B1", [["Etapa"]], value_input_option="RAW")
-
-    # Linhas 2+: labels
-    rows_a = [[chave]  for chave, _, _, _ in todos]
-    rows_b = [[label]  for _, label, _, _ in todos]
-    ws.update("A2", rows_a, value_input_option="RAW")
-    ws.update("B2", rows_b, value_input_option="RAW")
-
-    n = len(todos)
-    fmt = [
-        # Col A quasi-invisível (linhas 1+)
-        {"repeatCell": {"range": {"sheetId": ws.id,
-            "startRowIndex": 0, "endRowIndex": n + 1,
-            "startColumnIndex": 0, "endColumnIndex": 1},
-            "cell": {"userEnteredFormat": {"textFormat": {
-                "foregroundColor": _rgb(220, 220, 220), "fontSize": 7}}},
-            "fields": "userEnteredFormat.textFormat"}},
-        # Header linha 1 col B
-        {"repeatCell": {"range": {"sheetId": ws.id,
-            "startRowIndex": 0, "endRowIndex": 1,
-            "startColumnIndex": 1, "endColumnIndex": 2},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": C_DATA_BG,
-                "textFormat": {"foregroundColor": C_DATA_FG, "bold": True, "fontSize": 10},
-                "verticalAlignment": "MIDDLE"}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}},
-        # Congela 2 colunas e 1 linha
-        {"updateSheetProperties": {"properties": {"sheetId": ws.id,
-            "gridProperties": {"frozenColumnCount": 2, "frozenRowCount": 1}},
-            "fields": "gridProperties(frozenColumnCount,frozenRowCount)"}},
-        # Larguras
-        {"updateDimensionProperties": {"range": {"sheetId": ws.id,
-            "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 28}, "fields": "pixelSize"}},
-        {"updateDimensionProperties": {"range": {"sheetId": ws.id,
-            "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
-            "properties": {"pixelSize": 310}, "fields": "pixelSize"}},
-        # Altura linha 1
-        {"updateDimensionProperties": {"range": {"sheetId": ws.id,
-            "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 26}, "fields": "pixelSize"}},
-    ]
-
-    # Formata cada linha de label (linhas 2+ = índices 1+)
-    for i, (chave, label, tipo, fluxo) in enumerate(todos):
-        row_i = i + 1  # 0-based: linha 2 da sheet = índice 1
-        ct = {"listas": C_LISTAS_BG, "bazar": C_BAZAR_BG, "lp": C_LP_BG}[fluxo]
-        cg = {"listas": C_GRP_LISTAS, "bazar": C_GRP_BAZAR, "lp": C_GRP_LP}[fluxo]
-        if tipo == "titulo_fluxo": bg, fg, bold, size, h = ct, C_FG_WHITE, True, 11, 30
-        elif tipo == "grupo":       bg, fg, bold, size, h = cg, C_GRP_FG, True, 9, 20
-        elif tipo == "total":       bg, fg, bold, size, h = C_TOTAL_BG, C_TOTAL_FG, True, 10, 24
-        elif tipo == "espaco":      bg, fg, bold, size, h = C_BRANCO, C_BRANCO, False, 8, 8
-        else:
-            bg = C_CINZA_LN if i % 2 == 0 else C_BRANCO
-            fg, bold, size, h = C_PRETO_FG, False, 9, 22
-
-        fmt.append({"repeatCell": {
-            "range": {"sheetId": ws.id, "startRowIndex": row_i, "endRowIndex": row_i+1,
-                      "startColumnIndex": 1, "endColumnIndex": 2},
-            "cell": {"userEnteredFormat": {"backgroundColor": bg,
-                "textFormat": {"foregroundColor": fg, "bold": bold, "fontSize": size},
-                "verticalAlignment": "MIDDLE"}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
-        fmt.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws.id, "dimension": "ROWS",
-                      "startIndex": row_i, "endIndex": row_i+1},
-            "properties": {"pixelSize": h}, "fields": "pixelSize"}})
-
-    sp.batch_update({"requests": fmt})
-    logger.info("relatorio_funil: skeleton criado (%d linhas)", n)
+    try:
+        mg = _calcular_consolidado(ml, mb, mp)
+        all_m = {**ml, **mb, **mp, **mg}
+        taxas = _calcular_taxas(all_m)
+        msg = (
+            f"\U0001f4c5 *Relatorio Funil — {data_br}*\n\n"
+            f"Listas: {ml.get('l_atv1',0)} ativ | {ml.get('l_int',0)} interesse | {ml.get('l_suc',0)} sucesso\n"
+            f"Bazar: {mb.get('b_atv1',0)} ativ | {mb.get('b_prec',0)} prec | {mb.get('b_neg',0)} neg | {mb.get('b_acei',0)} aceites\n"
+            f"LP: {mp.get('p_atv1',0)} ativ | {mp.get('p_prec',0)} prec | {mp.get('p_neg',0)} neg | {mp.get('p_acei',0)} aceites\n"
+            f"Conversao geral: {taxas.get('g_conv','—')}\n\n"
+            f"✅ Relatorio enviado por e-mail."
+        )
+        await slack_alert(msg, level="info")
+    except Exception as e:
+        logger.warning("relatorio_funil: slack: %s", e)
 
 
-def _find_or_add_col(ws, sp, data_br: str) -> int:
-    """
-    Procura a data na linha 1 (header row). Colunas de dados começam no índice 2 (col C).
-    Retorna índice 0-based da coluna de dados.
-    """
-    row1 = ws.row_values(1)
-    for i, val in enumerate(row1):
-        if val.strip() == data_br:
-            return i
-    # Adiciona nova coluna à direita, nunca antes da col C (índice 2)
-    next_i = max(2, len(row1))
-    cl = _col_letter(next_i + 1)
-    ws.update(f"{cl}1", [[data_br]], value_input_option="RAW")
-    sp.batch_update({"requests": [
-        {"repeatCell": {
-            "range": {"sheetId": ws.id,
-                      "startRowIndex": 0, "endRowIndex": 1,
-                      "startColumnIndex": next_i, "endColumnIndex": next_i+1},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": C_DATA_BG,
-                "textFormat": {"foregroundColor": C_DATA_FG, "bold": True, "fontSize": 10},
-                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                      "startIndex": next_i, "endIndex": next_i+1},
-            "properties": {"pixelSize": 110}, "fields": "pixelSize"}},
-    ]})
-    return next_i
+async def run_relatorio_retroativo(datas=None):
+    """Roda para multiplas datas. Consolida num unico e-mail HTML + Slack."""
+    if datas is None:
+        datas = RETROATIVO_DATAS
 
+    logger.info("relatorio_funil: retroativo para %d datas", len(datas))
 
-def _write_col(ws, sp, col_idx: int, data_br: str,
-               ml: dict, mb: dict, mp: dict) -> None:
-    """
-    Escreve valores na coluna col_idx (0-based).
-    Linha 1 (índice 0) = data (já escrita por _find_or_add_col).
-    Linhas 2+ (índice 1+) = valores, alinhados com os labels de col B.
-    """
-    todos = _funil_listas() + _funil_bazar() + _funil_lp()
-    all_m = {**ml, **mb, **mp}
-    cl = _col_letter(col_idx + 1)
+    try:
+        cards = await _fetch_all_cards()
+        logger.info("relatorio_funil: %d cards coletados", len(cards))
+    except Exception as e:
+        logger.error("relatorio_funil: falha ao buscar cards: %s", e)
+        return
 
-    valores = []
-    for chave, _, tipo, _ in todos:
-        if tipo in ("titulo_fluxo", "grupo", "espaco"):
-            valores.append("")
-        else:
-            v = all_m.get(chave)
-            valores.append(v if v is not None else "")
+    secoes = []
+    totais_ml: dict = {}
+    totais_mb: dict = {}
+    totais_mp: dict = {}
 
-    # Linha 2 da sheet = índice de linha 1 (0-based)
-    # Os labels estão em B2..B90, então valores vão em C2..C90
-    start_sheet_row = 2
-    end_sheet_row   = start_sheet_row + len(valores) - 1
-    ws.update(f"{cl}{start_sheet_row}:{cl}{end_sheet_row}",
-              [[v] for v in valores], value_input_option="RAW")
+    for data_str in datas:
+        try:
+            if "/" in data_str:
+                d, m, y = data_str.split("/")
+                data_iso = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+                data_br  = data_str
+            else:
+                from datetime import date as _date
+                dt = _date.fromisoformat(data_str)
+                data_iso = data_str
+                data_br  = dt.strftime("%d/%m/%Y")
 
-    fmt = []
-    for i, (chave, _, tipo, fluxo) in enumerate(todos):
-        row_i = 1 + i  # 0-based: linha 2 da sheet = índice 1
-        ct = {"listas": C_LISTAS_BG, "bazar": C_BAZAR_BG, "lp": C_LP_BG}[fluxo]
-        cg = {"listas": C_GRP_LISTAS, "bazar": C_GRP_BAZAR, "lp": C_GRP_LP}[fluxo]
-        if tipo == "titulo_fluxo": bg, fg, bold = ct, C_FG_WHITE, True
-        elif tipo == "grupo":       bg, fg, bold = cg, C_GRP_FG, True
-        elif tipo == "total":       bg, fg, bold = C_TOTAL_BG, C_TOTAL_FG, True
-        elif tipo == "espaco":      bg, fg, bold = C_BRANCO, C_BRANCO, False
-        else:
-            v = all_m.get(chave) or 0
-            bg = C_ZERO if v == 0 else (C_CINZA_LN if i % 2 == 0 else C_BRANCO)
-            fg, bold = C_PRETO_FG, False
-        fmt.append({"repeatCell": {
-            "range": {"sheetId": ws.id,
-                      "startRowIndex": row_i, "endRowIndex": row_i+1,
-                      "startColumnIndex": col_idx, "endColumnIndex": col_idx+1},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": bg,
-                "textFormat": {"foregroundColor": fg, "bold": bold, "fontSize": 9},
-                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
+            ml = _calcular(cards, "listas", data_iso, data_br)
+            mb = _calcular(cards, "bazar",  data_iso, data_br)
+            mp = _calcular(cards, "lp",     data_iso, data_br)
 
-    if fmt:
-        sp.batch_update({"requests": fmt})
-    logger.info("relatorio_funil: coluna %s (%s) escrita", cl, data_br)
+            for k, v in ml.items():
+                totais_ml[k] = totais_ml.get(k, 0) + v
+            for k, v in mb.items():
+                totais_mb[k] = totais_mb.get(k, 0) + v
+            for k, v in mp.items():
+                totais_mp[k] = totais_mp.get(k, 0) + v
 
+            secoes.append(_build_html_dia(data_br, ml, mb, mp))
+            logger.info("relatorio_funil: processado %s", data_br)
+
+        except Exception as e:
+            logger.error("relatorio_funil: erro na data %s: %s", data_str, e)
+
+    # Aplica ajustes manuais nos totais consolidados
+    for k, v in MANUAL_ADJUSTMENTS.items():
+        if k.startswith("b_"):
+            totais_mb[k] = totais_mb.get(k, 0) + v
+        elif k.startswith("l_"):
+            totais_ml[k] = totais_ml.get(k, 0) + v
+        elif k.startswith("p_"):
+            totais_mp[k] = totais_mp.get(k, 0) + v
+
+    logger.info("relatorio_funil: ajustes manuais aplicados: %s", MANUAL_ADJUSTMENTS)
+
+    data_inicio = datas[0] if datas else "?"
+    data_fim    = datas[-1] if datas else "?"
+
+    html = _build_html_relatorio(
+        "Relatorio de Funil — Consorcio Sorteado",
+        f"Periodo retroativo: {data_inicio} a {data_fim}",
+        secoes,
+        totais_ml, totais_mb, totais_mp,
+    )
+
+    try:
+        await _post_webhook(html)
+        logger.info("relatorio_funil: retroativo enviado via webhook")
+    except Exception as e:
+        logger.error("relatorio_funil: erro webhook retroativo: %s", e)
+        try:
+            await slack_error("Falha ao enviar relatorio retroativo via webhook", exception=e)
+        except Exception:
+            pass
+        return
+
+    try:
+        mg = _calcular_consolidado(totais_ml, totais_mb, totais_mp)
+        all_m = {**totais_ml, **totais_mb, **totais_mp, **mg}
+        taxas = _calcular_taxas(all_m)
+        msg = (
+            f"\U0001f4ca *Relatorio Retroativo — {data_inicio} a {data_fim}*\n\n"
+            f"Listas: {totais_ml.get('l_atv1',0)} ativ | {totais_ml.get('l_suc',0)} sucesso\n"
+            f"Bazar: {totais_mb.get('b_atv1',0)} ativ | {totais_mb.get('b_prec',0)} prec | {totais_mb.get('b_neg',0)} neg | {totais_mb.get('b_acei',0)} aceites\n"
+            f"LP: {totais_mp.get('p_atv1',0)} ativ | {totais_mp.get('p_prec',0)} prec | {totais_mp.get('p_neg',0)} neg | {totais_mp.get('p_acei',0)} aceites\n"
+            f"Conversao geral: {taxas.get('g_conv','—')}\n\n"
+            f"✅ Aceites confirmados: Gabriell, Ludmilla, Jose (incluidos nos totais)\n"
+            f"✅ Relatorio enviado por e-mail."
+        )
+        await slack_alert(msg, level="info")
+    except Exception as e:
+        logger.warning("relatorio_funil: slack retroativo: %s", e)
+
+    logger.info("relatorio_funil: retroativo concluido")

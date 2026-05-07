@@ -14,6 +14,7 @@ Frequência sugerida: a cada 30 min, mas só processa se houver cards pendentes
 
 import asyncio
 import logging
+import os
 import random
 from datetime import datetime, timezone
 
@@ -195,7 +196,12 @@ async def run_ativacao_listas():
     """
     Job de ativação de listas.
     Deve ser chamado periodicamente pelo scheduler.
+    Controlado pela flag LISTAS_ATIVACAO_ENABLED no .env (default: true).
     """
+    if os.getenv("LISTAS_ATIVACAO_ENABLED", "true").lower() != "true":
+        logger.info("Ativação Listas: pausada via LISTAS_ATIVACAO_ENABLED=false — pulando.")
+        return
+
     if not _is_within_send_window():
         logger.info("Ativação Listas: fora da janela de envio, pulando.")
         return

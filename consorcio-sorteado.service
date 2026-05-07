@@ -1,0 +1,19 @@
+[Unit]
+Description=Consórcio Sorteado — FastAPI + APScheduler
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/.openclaw/workspace/consorcio-sorteado
+EnvironmentFile=/home/ubuntu/.openclaw/workspace/consorcio-sorteado/.env
+ExecStart=/home/ubuntu/.openclaw/workspace/consorcio-sorteado/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+ExecStartPost=/bin/sh -c 'sleep 2 && redis-cli del fila_ativacao:running > /dev/null 2>&1 || true'
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/ubuntu/.openclaw/workspace/consorcio-sorteado/logs/server.log
+StandardError=append:/home/ubuntu/.openclaw/workspace/consorcio-sorteado/logs/server.log
+
+[Install]
+WantedBy=multi-user.target

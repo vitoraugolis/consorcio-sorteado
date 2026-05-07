@@ -122,27 +122,45 @@ def _is_lead_recipient(to: str) -> bool:
     return True
 
 
+async def _register_bot_message_async(msg_id: str) -> None:
+    """Grava o message_id no Redis de forma assíncrona com retry."""
+    from services.session_store import mark_bot_message
+    for attempt in range(3):
+        try:
+            await mark_bot_message(msg_id)
+            logger.debug("_register_bot_message: marcado %s (tentativa %d)", msg_id[:16], attempt + 1)
+            return
+        except Exception as _e:
+            if attempt == 2:
+                logger.warning("_register_bot_message: falhou após 3 tentativas para %s: %s", msg_id[:16], _e)
+            else:
+                import asyncio as _asyncio
+                await _asyncio.sleep(0.1 * (attempt + 1))
+
+
 def _register_bot_message(result: dict) -> None:
     """
-    Fire-and-forget: grava o message_id retornado pelo Whapi no Redis
-    para que handle_outgoing_manual possa distinguir mensagens do bot
-    de mensagens digitadas manualmente pelo time comercial.
+    Agenda gravação do message_id no Redis como coroutine rastreável.
+    Usa create_task (não ensure_future) para garantir execução antes do
+    próximo webhook from_me chegar — evita falsos handoffs.
 
-    Não bloqueia nem propaga exceções — o envio já ocorreu.
+    Cobre: send_text, send_image, send_document, send_buttons, send_list.
     """
     import asyncio
     msg_id = (result or {}).get("id") or (result or {}).get("message_id") or ""
+    # Whapi às vezes aninha o id dentro de "message"
     if not msg_id:
+        msg_obj = (result or {}).get("message") or {}
+        msg_id = msg_obj.get("id") or ""
+    if not msg_id:
+        logger.debug("_register_bot_message: resultado sem id — %s", str(result)[:80])
         return
     try:
-        from services.session_store import mark_bot_message
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(mark_bot_message(msg_id))
-        else:
-            loop.run_until_complete(mark_bot_message(msg_id))
-    except Exception as _e:
-        logger.debug("_register_bot_message: não foi possível marcar %s: %s", msg_id[:12], _e)
+        loop = asyncio.get_running_loop()
+        loop.create_task(_register_bot_message_async(msg_id))
+    except RuntimeError:
+        # Sem event loop rodando (testes, scripts CLI) — ignora silenciosamente
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +321,13 @@ class WhapiClient:
         # ─────────────────────────────────────────────────────────────────────
 
         logger.info("Whapi[%s] send_text → %s", self._canal, phone)
+        # Camada A: registra o texto NO REDIS ANTES do POST HTTP — garante que
+        # o webhook from_me (que chega antes da resposta) já encontra o fingerprint.
+        try:
+            from services.session_store import mark_bot_text
+            await mark_bot_text(phone, message)
+        except Exception as _mbt_err:
+            logger.debug("mark_bot_text falhou (%s) — prosseguindo", _mbt_err)
         result = await self._post("/messages/text", {"to": phone, "body": message})
         # Registra message_id no Redis para distinguir mensagens do bot de mensagens manuais
         _register_bot_message(result)
@@ -334,6 +359,12 @@ class WhapiClient:
         if not await self._validate_lead_phone(phone):
             return {"sent": False, "blocked": True, "reason": "no_whatsapp"}
         logger.info("Whapi[%s] send_buttons → %s (%d botões)", self._canal, phone, len(buttons))
+        # Camada A: registra conteúdo ANTES do POST (mesmo padrão do send_text)
+        try:
+            from services.session_store import mark_bot_text
+            await mark_bot_text(phone, message)
+        except Exception as _mbt_err:
+            logger.debug("mark_bot_text (buttons) falhou (%s) — prosseguindo", _mbt_err)
         body: dict[str, Any] = {
             "to": phone,
             "type": "button",
@@ -354,6 +385,7 @@ class WhapiClient:
         if footer:
             body["footer"] = footer
         result = await self._post("/messages/interactive", body)
+        _register_bot_message(result)
         if _is_lead_recipient(to):
             try:
                 from services.slack import log_cs
@@ -380,6 +412,12 @@ class WhapiClient:
         """Envia mensagem com lista de opções."""
         phone = self._normalize_phone(to)
         logger.info("Whapi[%s] send_list → %s", self._canal, phone)
+        # Camada A: registra conteúdo ANTES do POST
+        try:
+            from services.session_store import mark_bot_text
+            await mark_bot_text(phone, message)
+        except Exception as _mbt_err:
+            logger.debug("mark_bot_text (list) falhou (%s) — prosseguindo", _mbt_err)
         body: dict[str, Any] = {
             "to": phone,
             "body": message,
@@ -390,6 +428,7 @@ class WhapiClient:
         if footer:
             body["footer"] = footer
         result = await self._post("/messages/interactive/list", body)
+        _register_bot_message(result)
         if _is_lead_recipient(to):
             try:
                 from services.slack import log_cs
@@ -408,6 +447,14 @@ class WhapiClient:
         if not await self._validate_lead_phone(phone):
             return {"sent": False, "blocked": True, "reason": "no_whatsapp"}
         logger.info("Whapi[%s] send_image → %s", self._canal, phone)
+        # Camada A: para imagens sem texto, registra marcador genérico "[image]"
+        # que bate com o msg.media_type do webhook from_me correspondente.
+        try:
+            from services.session_store import mark_bot_text
+            await mark_bot_text(phone, caption or "[image]")
+            await mark_bot_text(phone, "[image]")
+        except Exception as _mbt_err:
+            logger.debug("mark_bot_text (image) falhou (%s) — prosseguindo", _mbt_err)
         result = await self._post("/messages/image", {
             "to": phone,
             "media": image_url,
@@ -438,6 +485,13 @@ class WhapiClient:
         """Envia documento (PDF, etc.)."""
         phone = self._normalize_phone(to)
         logger.info("Whapi[%s] send_document → %s (%s)", self._canal, phone, filename)
+        # Camada A: registra marcador genérico para documento
+        try:
+            from services.session_store import mark_bot_text
+            await mark_bot_text(phone, caption or "[document]")
+            await mark_bot_text(phone, "[document]")
+        except Exception as _mbt_err:
+            logger.debug("mark_bot_text (document) falhou (%s) — prosseguindo", _mbt_err)
         result = await self._post("/messages/document", {
             "to": phone,
             "media": document_url,

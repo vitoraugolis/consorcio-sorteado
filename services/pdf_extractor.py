@@ -408,20 +408,58 @@ def _extract_pdf_from_multipart(data: bytes) -> bytes | None:
     return None
 
 
+def _resolve_direct_pdf_url(url: str) -> str:
+    """
+    Converte URLs de serviços com download direto público para a URL correta.
+
+    Suportado com download público real:
+      - Google Drive  (drive.google.com/file/d/<id>/view → uc?export=download)
+      - Dropbox       (?dl=0 → ?dl=1)
+
+    Não suportado (requer autenticação — bot deve pedir reenvio direto no WhatsApp):
+      - Adobe Acrobat (acrobat.adobe.com)
+      - OneDrive / SharePoint
+      - iCloud
+    """
+    import re as _re
+
+    # ── Google Drive ──────────────────────────────────────────────────────────
+    m = _re.search(r"drive\.google\.com/file/d/([^/\?]+)", url)
+    if m:
+        file_id = m.group(1)
+        direct = f"https://drive.google.com/uc?export=download&id={file_id}"
+        logger.info("_resolve_direct_pdf_url: Google Drive → %s", direct)
+        return direct
+
+    # ── Dropbox ───────────────────────────────────────────────────────────────
+    if "dropbox.com" in url:
+        direct = url.replace("?dl=0", "?dl=1").replace("?dl=0&", "?dl=1&")
+        if "www.dropbox.com" in direct:
+            direct = direct.replace("www.dropbox.com", "dl.dropboxusercontent.com")
+        logger.info("_resolve_direct_pdf_url: Dropbox → %s", direct[-80:])
+        return direct
+
+    return url
+
+
 async def _download_pdf(url: str) -> bytes:
     """
     Baixa o PDF da URL com retry exponencial.
+    Resolve automaticamente links com download público (Google Drive, Dropbox).
     Valida que é um PDF real (header %PDF).
     Levanta PDFInvalido ou PDFCorrompido em caso de falha.
     """
     last_error: Exception = Exception("Sem tentativas")
+
+    # Resolve URL de serviços com download direto público
+    url = _resolve_direct_pdf_url(url)
 
     for attempt in range(_MAX_RETRIES):
         delay = 2 ** attempt  # 1s, 2s, 4s
         try:
             async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
                 resp = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; ConsorcioBOT/1.0)",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "application/pdf,application/octet-stream,*/*",
                 })
                 resp.raise_for_status()

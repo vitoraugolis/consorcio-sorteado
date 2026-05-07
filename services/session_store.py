@@ -268,18 +268,64 @@ async def media_buffer_ttl(phone: str) -> int:
 
 # ─── Fingerprint de mensagens enviadas pelo bot ──────────────────────────────
 #
-# Problema: o Whapi entrega webhooks from_me=True tanto para mensagens enviadas
-# pelo bot quanto para mensagens digitadas manualmente pelo time comercial.
-# Solução: ao enviar uma mensagem, gravamos o message_id no Redis com TTL curto.
-# Ao receber um webhook from_me, verificamos se o id está nessa lista de bot.
-# Se estiver → descarta (é do bot). Se não estiver → é do comercial → handoff.
+# PROBLEMA RAIZ: o Whapi entrega o webhook from_me ANTES de retornar a resposta
+# do POST /messages/text. O msg_id só existe depois da resposta — sempre tarde demais.
+#
+# SOLUÇÃO em duas camadas:
+#
+# Camada A — pre-send (conteúdo): antes de enviar, gravamos um hash do texto no
+#   Redis (cs:bottext:{phone}:{hash}). O handle_outgoing_manual verifica esse hash
+#   quando o webhook chega — funciona mesmo que o msg_id ainda não exista.
+#
+# Camada B — post-send (msg_id): depois que o Whapi responde, gravamos o msg_id
+#   (cs:botmsg:{msg_id}). Usado como fallback e para deduplicação futura.
 
-_BOT_MSG_TTL = 300  # 5 min (mensagens recentes do bot)
+_BOT_MSG_TTL  = 300   # 5 min — TTL do fingerprint por msg_id
+_BOT_TEXT_TTL = 60    # 1 min — TTL do fingerprint por conteúdo (curto: só para a janela de entrega)
+
+import hashlib as _hashlib
+
+
+def _text_hash(phone: str, text: str) -> str:
+    """Hash determinístico de (phone, primeiros 160 chars do texto)."""
+    key = f"{phone}:{text[:160]}"
+    return _hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+async def mark_bot_text(phone: str, text: str) -> None:
+    """
+    Registra ANTES do envio que este texto vai ser enviado pelo bot para este telefone.
+    Deve ser chamado em whapi.py ANTES do POST HTTP (não após).
+    """
+    if not phone or not text:
+        return
+    try:
+        r = await get_redis()
+        h = _text_hash(phone, text)
+        await r.set(f"cs:bottext:{h}", "1", ex=_BOT_TEXT_TTL)
+    except Exception as e:
+        logger.warning("Redis mark_bot_text(%s): %s", phone[-6:], e)
+
+
+async def is_bot_text(phone: str, text: str) -> bool:
+    """
+    Retorna True se este texto foi pré-registrado como mensagem do bot para este telefone.
+    Fail-safe: em caso de erro Redis retorna False.
+    """
+    if not phone or not text:
+        return False
+    try:
+        r = await get_redis()
+        h = _text_hash(phone, text)
+        return bool(await r.exists(f"cs:bottext:{h}"))
+    except Exception as e:
+        logger.warning("Redis is_bot_text(%s): %s — assumindo NÃO é bot", phone[-6:], e)
+        return False
 
 
 async def mark_bot_message(msg_id: str) -> None:
     """
-    Registra que este message_id foi enviado pelo bot.
+    Registra que este message_id foi enviado pelo bot (camada B — post-send).
     Deve ser chamado em whapi.py após cada envio bem-sucedido.
     """
     if not msg_id:
@@ -293,10 +339,8 @@ async def mark_bot_message(msg_id: str) -> None:
 
 async def is_bot_message(msg_id: str) -> bool:
     """
-    Retorna True se o message_id foi enviado pelo bot.
-    Fail-safe: em caso de erro Redis retorna False (assume comercial — melhor
-    que ignorar um atendimento real, o pior caso é um handoff redundante protegido
-    pela flag set_handoff_flag).
+    Retorna True se o message_id foi enviado pelo bot (camada B).
+    Fail-safe: em caso de erro Redis retorna False.
     """
     if not msg_id:
         return False

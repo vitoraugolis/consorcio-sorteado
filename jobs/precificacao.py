@@ -406,8 +406,19 @@ def _build_proposal_buttons(card: dict) -> tuple[str, list[dict]]:
 # Envio unificado via Whapi
 # ---------------------------------------------------------------------------
 
+def _build_guarantee_message() -> str:
+    return (
+        "💡 *Por que fechar com a Consórcio Sorteado?*\n\n"
+        "✅ Você recebe o pagamento *à vista, direto na sua conta*, logo após assinar o contrato.\n\n"
+        "📋 A partir daí, as parcelas seguintes ficam por nossa conta — assim como todas as despesas de transferência.\n\n"
+        "🔒 E o mais importante: *a cota só sai do seu nome depois que o dinheiro já está na sua conta.* "
+        "Sem risco, sem surpresa.\n\n"
+        "Ficou alguma dúvida? É só perguntar! 😊"
+    )
+
+
 async def _send_proposal(phone: str, card: dict) -> bool:
-    """Envia imagem da proposta + mensagem de texto via Whapi (sem botões)."""
+    """Envia imagem da proposta + mensagem de texto + mensagem de garantia via Whapi."""
     image_url = await _generate_proposal_image(card)
     if image_url:
         try:
@@ -426,7 +437,9 @@ async def _send_proposal(phone: str, card: dict) -> bool:
     try:
         async with get_whapi_for_card(card) as w:
             await w.send_text(phone, mensagem)
-        logger.info("Proposta enviada → %s", phone)
+            await asyncio.sleep(3)
+            await w.send_text(phone, _build_guarantee_message())
+        logger.info("Proposta + garantia enviadas → %s", phone)
         return True
     except WhapiError as e:
         logger.error("Falha ao enviar proposta para %s: %s", phone, e)
@@ -622,22 +635,26 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             )
             return False
 
-        # ── Safety Car: pede aprovação e aguarda ────────────────────────────────
+        # ── Safety Car: apenas para Listas (volume alto). Bazar/LP dispara direto. ──
         from services.safety_car import ApprovalKind, request_approval, wait_for_approval
         sequencia = card.get("Classes de Proposta") or ""
-        await request_approval(
-            card,
-            ApprovalKind.PRECIFICACAO,
-            proposta=proposta,
-            sequencia=sequencia,
-        )
-        aprovado = await wait_for_approval(card_id, ApprovalKind.PRECIFICACAO)
-        if not aprovado:
-            logger.warning(
-                "Precificação: aprovação não recebida para card %s — proposta NÃO enviada.",
-                card_id[:8],
+
+        if is_lista(card):
+            await request_approval(
+                card,
+                ApprovalKind.PRECIFICACAO,
+                proposta=proposta,
+                sequencia=sequencia,
             )
-            return False
+            aprovado = await wait_for_approval(card_id, ApprovalKind.PRECIFICACAO)
+            if not aprovado:
+                logger.warning(
+                    "Precificação: aprovação não recebida para card %s — proposta NÃO enviada.",
+                    card_id[:8],
+                )
+                return False
+        else:
+            logger.info("Precificação: Bazar/LP — disparo direto sem Safety Car para card %s", card_id[:8])
 
         agora = datetime.now(timezone.utc).isoformat()
     

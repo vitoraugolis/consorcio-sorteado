@@ -230,6 +230,39 @@ MSG_ERRO_ANALISE = (
     "em contato em breve! 🙏"
 )
 
+MSG_LINK_EXTERNO = (
+    "Obrigada por enviar, {nome}! 😊\n\n"
+    "Recebi o link, mas infelizmente não consigo acessar documentos em links externos "
+    "(Adobe Acrobat, Google Drive, Dropbox, etc.) — o sistema precisa que o arquivo "
+    "seja enviado diretamente aqui no WhatsApp.\n\n"
+    "É bem simples:\n"
+    "• Abra o app do banco ou a plataforma da administradora\n"
+    "• Exporte ou salve o extrato como *PDF ou imagem*\n"
+    "• Envie o arquivo diretamente nesta conversa 📎\n\n"
+    "Pode mandar que analiso na hora! 📄"
+)
+
+# Domínios de serviços que exigem autenticação e não permitem download direto
+_LINK_EXTERNO_PATTERNS = re.compile(
+    r"https?://(?:"
+    r"acrobat\.adobe\.com|"
+    r"documentcloud\.adobe\.com|"
+    r"drive\.google\.com|"
+    r"docs\.google\.com|"
+    r"dropbox\.com|"
+    r"1drv\.ms|"
+    r"onedrive\.live\.com|"
+    r"sharepoint\.com|"
+    r"icloud\.com"
+    r")",
+    re.IGNORECASE,
+)
+
+def _has_external_link(text: str) -> bool:
+    """Retorna True se o texto contém link de serviço externo que requer autenticação."""
+    return bool(_LINK_EXTERNO_PATTERNS.search(text or ""))
+
+
 _RECUSA_KEYWORDS = [
     "vendi", "vender", "já vendi", "ja vendi",
     "não tenho mais", "nao tenho mais",
@@ -427,7 +460,15 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
     if rf.valores_pagos:
         valor_pago = float(rf.valores_pagos.get("total_pago") or 0)
 
-    valor_credito: float = dp.valor_credito or 0.0
+    # Para cotas contempladas, usa crédito corrigido (atualizado na data de contemplação)
+    # que é o valor real disponível para negociação. Fallback para valor_credito original.
+    _credito_corrigido = (estruturado.contemplacao.credito_corrigido or 0.0) if estruturado.contemplacao else 0.0
+    valor_credito: float = _credito_corrigido if _credito_corrigido > 0 else (dp.valor_credito or 0.0)
+    if _credito_corrigido > 0 and _credito_corrigido != (dp.valor_credito or 0.0):
+        logger.info(
+            "Qualificador: usando crédito corrigido=%.0f (original=%.0f) para precificação",
+            _credito_corrigido, dp.valor_credito or 0.0,
+        )
     administradora: Optional[str] = dp.administradora
     meses_pagos: int = dp.meses_pagos or rf.parcelas_pagas or 0
     total_parcelas: int = (dp.prazo_grupo_meses
@@ -758,7 +799,23 @@ async def handle_qualification(card: dict, msg) -> None:
             )
         return
 
-    # ── Caso 3: Texto sem extrato ─────────────────────────────────────────────
+    # ── Caso 3: Link externo (Adobe, Drive, Dropbox, etc.) ───────────────────
+    if msg.text and _has_external_link(msg.text):
+        logger.info("Qualificador: lead %s enviou link externo — solicitando envio direto.", card_id[:8])
+        bot_msg = MSG_LINK_EXTERNO.format(nome=nome)
+        await _send_message(card, phone, bot_msg, history=history)
+        history = history_append(history, "user", user_text)
+        history = history_append(history, "assistant", bot_msg)
+        async with FaroClient() as faro:
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+            if card.get("stage_id") != Stage.EM_CONTATO:
+                try:
+                    await faro.move_card(card_id, Stage.EM_CONTATO)
+                except FaroError as e:
+                    logger.warning("Qualificador: erro ao mover %s para EM_CONTATO: %s", card_id[:8], e)
+        return
+
+    # ── Caso 4: Texto sem extrato ─────────────────────────────────────────────
     logger.info("Qualificador: lead %s enviou texto sem extrato. Solicitando.", card_id[:8])
     bot_msg = MSG_PEDE_EXTRATO.format(nome=nome, adm=adm)
     await _send_message(card, phone, bot_msg, history=history)

@@ -259,29 +259,77 @@ async def handle_outgoing_manual(msg: IncomingMessage) -> None:
     conectados ao Whapi (from_me=True).
 
     Fluxo:
-    1. Ignora mensagens sem conteúdo (status de leitura, reações, etc.)
-    2. Verifica se o message_id é do bot → se sim, descarta silenciosamente
-    3. Localiza o card do lead pelo telefone destino
-    4. Aplica flag de handoff (deduplicação atômica via Redis SET NX)
-    5. Se for o primeiro handoff:
+    1. Ignora mensagens sem conteúdo (status, reações, etc.)
+    2. Ignora mensagens cujo destinatário é número interno (NOTIFY_PHONES / CONSULTANT_PHONES)
+    3. Verifica fingerprint Redis (message_id marcado pelo bot → descarta)
+       — Camada 2: aguarda até 500ms para dar tempo ao create_task do _register_bot_message
+    4. Localiza o card do lead pelo telefone destino
+    5. Aplica flag de handoff (deduplicação atômica via Redis SET NX)
+    6. Se for o primeiro handoff:
        a. Move o card para FINALIZACAO_COMERCIAL (exceto stages protegidos)
        b. Appenda o histórico na descrição do card
        c. Envia alerta no Slack
-    6. Sempre: registra o turno do comercial no histórico Redis
+    7. Sempre: registra o turno do comercial no histórico Redis
     """
+    import asyncio as _asyncio
+
     # ── Filtra mensagens sem conteúdo relevante ───────────────────────────────
     if not msg.text and not msg.media_type:
         return
 
+    # ── Filtra destinatários internos (nunca são leads) ───────────────────────
+    # Evita handoff acidental quando o time envia msg para si mesmo ou para
+    # o grupo de alertas via o mesmo número Whapi.
+    from config import NOTIFY_PHONES, CONSULTANT_PHONES
+    _dest_digits = "".join(c for c in msg.phone if c.isdigit())
+    _internos = set()
+    for v in NOTIFY_PHONES:
+        _internos.add("".join(c for c in str(v) if c.isdigit()))
+    for v in CONSULTANT_PHONES.values():
+        _internos.add("".join(c for c in str(v) if c.isdigit()))
+    if any(_dest_digits.endswith(i) or i.endswith(_dest_digits) for i in _internos if i):
+        logger.debug("handle_outgoing_manual: destinatário interno %s — ignorando", _dest_digits[-6:])
+        return
+
     # ── Verifica fingerprint: é mensagem do bot? ──────────────────────────────
-    from services.session_store import is_bot_message, set_handoff_flag, mark_bot_message
-    msg_id = msg.raw.get("id") or msg.raw.get("message_id") or ""
+    # Camada A (conteúdo — pré-send): verifica hash do texto contra o que o bot
+    #   registrou ANTES de fazer o POST HTTP. Funciona mesmo quando o webhook
+    #   chega antes da resposta HTTP (race condition Whapi confirmada nos logs).
+    # Camada B (msg_id — pós-send): fallback para quando a Camada A não captura
+    #   (ex: send_image, send_document onde não há texto para hash).
+    from services.session_store import is_bot_message, is_bot_text, set_handoff_flag
+    msg_id   = msg.raw.get("id") or msg.raw.get("message_id") or ""
+    msg_text = msg.text or ""
+    # Para mídia sem texto, normaliza para marcador genérico usado no mark_bot_text
+    if not msg_text and msg.media_type:
+        msg_text = f"[{msg.media_type}]"
+
+    # Camada A — verifica pelo conteúdo (não depende de timing)
+    if msg_text and await is_bot_text(msg.phone, msg_text):
+        logger.debug(
+            "handle_outgoing_manual: msg para %s identificada como bot (camada A — conteúdo) — ignorando",
+            msg.phone[-6:],
+        )
+        return
+
+    # Camada B — verifica pelo msg_id (pós-send, pode chegar tarde)
     if msg_id and await is_bot_message(msg_id):
         logger.debug(
-            "handle_outgoing_manual: msg_id=%s já registrado como bot — ignorando",
+            "handle_outgoing_manual: msg_id=%s identificado como bot (camada B — msg_id) — ignorando",
             msg_id[:16],
         )
         return
+
+    # Camada B com espera: aguarda 300ms e tenta de novo (absorve latência mínima)
+    if msg_id:
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.3)
+        if await is_bot_message(msg_id):
+            logger.debug(
+                "handle_outgoing_manual: msg_id=%s identificado como bot (camada B +300ms) — ignorando",
+                msg_id[:16],
+            )
+            return
 
     # ── Localiza o card pelo telefone destino ─────────────────────────────────
     card = await _find_card(msg.phone, canal_hint=_canal_hint_from_token(msg.whapi_token))
@@ -309,7 +357,6 @@ async def handle_outgoing_manual(msg: IncomingMessage) -> None:
 
     # ── Flag de handoff — atômica (SET NX) ───────────────────────────────────
     # Garante que múltiplas mensagens em sequência não movam o card N vezes.
-    # Mesmo em caso de race condition, apenas uma tarefa passará pelo NX.
     primeiro_handoff = False
     if not stage_protegido:
         primeiro_handoff = await set_handoff_flag(phone)
@@ -328,7 +375,6 @@ async def handle_outgoing_manual(msg: IncomingMessage) -> None:
                     "handle_outgoing_manual: erro ao mover card %s para FINALIZACAO_COMERCIAL: %s",
                     card_id[:8], e,
                 )
-                # Não aborta — ainda registra o histórico e o Slack
 
             # ── Appenda o histórico completo na descrição do card ─────────────
             try:
@@ -367,7 +413,6 @@ async def handle_outgoing_manual(msg: IncomingMessage) -> None:
             )
 
         # ── Sempre: registra o turno do comercial no histórico Redis ──────────
-        # Isso garante que o contexto humano fica visível ao bot caso precise retomar.
         try:
             history = await load_history_smart(phone, card)
             history = history_append(history, "assistant", f"[COMERCIAL]: {texto}")
