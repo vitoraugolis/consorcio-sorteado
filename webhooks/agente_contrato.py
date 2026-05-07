@@ -18,6 +18,8 @@ import logging
 import re
 from typing import Optional
 
+from config import Stage
+
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
@@ -359,6 +361,143 @@ async def handle_dados_pessoais(card: dict, texto: str) -> None:
             logger.warning("agente_contrato: falha ao notificar dados contrato Slack: %s", _sc_err)
 
 
+async def _handover_sem_template(card: dict, collected: dict, required: list) -> None:
+    """
+    Handover para agente comercial quando a adm não tem template ZapSign.
+    Move card para FINALIZACAO_COMERCIAL, avisa o lead e envia briefing detalhado no Slack.
+    """
+    from services.slack import slack_alert
+    from services.faro import get_fonte
+
+    card_id = card.get("id", "")
+    nome    = get_name(card)
+    phone   = get_phone(card)
+    adm     = get_adm(card)
+    fonte   = get_fonte(card) or "?"
+
+    # ── Monta briefing completo ──────────────────────────────────────────────
+    def _v(key: str, faro_key: str | None = None) -> str:
+        """Retorna valor coletado ou do card, com fallback '—'."""
+        v = collected.get(key) or (card.get(faro_key) if faro_key else None)
+        return str(v).strip() if v else "—"
+
+    def _fmt_brl(val) -> str:
+        try:
+            return f"R$ {float(val):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            return str(val) if val else "—"
+
+    # Dados pessoais coletados
+    dados_pessoais = (
+        f"• Nome: {_v('NomeCompleto', 'Nome do contato')}\n"
+        f"• CPF: {_v('CPF', 'CPF')}\n"
+        f"• RG: {_v('RG', 'RG')}\n"
+        f"• E-mail: {_v('Email', 'Email')}\n"
+        f"• Endereço: {_v('Endereco', 'Endereço')}\n"
+        f"• CEP: {_v('CEP', 'CEP')}\n"
+        f"• Estado civil: {_v('EstadoCivil', 'Estado Civil')}\n"
+        f"• Profissão: {_v('Ocupacao', 'Ocupação')}\n"
+        f"• Nacionalidade: {_v('Nacionalidade', 'Nacionalidade')}\n"
+        f"• Dados de pagamento: {_v('DadosPagamento', 'Dados Pagamento')}\n"
+    )
+
+    # Dados PJ (se aplicável)
+    dados_pj = ""
+    if collected.get("NomeEmpresa") or collected.get("CNPJ"):
+        dados_pj = (
+            f"\n*Pessoa Jurídica:*\n"
+            f"• Empresa: {_v('NomeEmpresa', 'Nome Empresa')}\n"
+            f"• CNPJ: {_v('CNPJ', 'CNPJ')}\n"
+            f"• Sócio: {_v('NomeSocio', 'Nome Sócio')}\n"
+            f"• Dados pagamento PJ: {_v('DadosPagamentoPJ', 'Dados Pagamento PJ')}\n"
+        )
+
+    # Dados da cota
+    credito      = _fmt_brl(card.get("Crédito") or card.get("Credito"))
+    proposta     = _fmt_brl(card.get("Proposta Realizada") or card.get("Proposta Aceita"))
+    parc_pagas   = card.get("Parcelas pagas") or "—"
+    parc_vencer  = card.get("Parcelas a vencer") or "—"
+    val_parc     = _fmt_brl(card.get("Valor das parcelas"))
+    grupo        = card.get("Grupo") or "—"
+    cota_num     = card.get("Cota") or "—"
+    tipo_bem     = card.get("Tipo de bem") or "—"
+    tipo_cont    = card.get("Tipo contemplação") or card.get("Tipo de contemplação") or "—"
+
+    dados_cota = (
+        f"• Administradora: *{adm}*\n"
+        f"• Grupo/Cota: {grupo} / {cota_num}\n"
+        f"• Tipo de bem: {tipo_bem}\n"
+        f"• Tipo de contemplação: {tipo_cont}\n"
+        f"• Crédito: {credito}\n"
+        f"• Parcelas pagas: {parc_pagas} | A vencer: {parc_vencer} | Valor: {val_parc}\n"
+        f"• Proposta realizada: {proposta}\n"
+        f"• Fonte do lead: {fonte}\n"
+    )
+
+    # Campos que ainda faltam (se houver)
+    missing = [f for f in required if not collected.get(f)]
+    aviso_faltantes = ""
+    if missing:
+        falta_labels = ", ".join(_FIELD_LABELS.get(f, f) for f in missing)
+        aviso_faltantes = f"\n⚠️ *Dados ainda pendentes:* {falta_labels}\n"
+
+    card_url = f"https://ecinffgoycqvktmrmvaz.supabase.co"  # FARO não tem URL direta por card
+
+    briefing = (
+        f"📋 *HANDOVER PARA AGENTE COMERCIAL — Contrato Manual*\n\n"
+        f"*Por que manual?* Administradora *{adm}* não possui template ZapSign configurado.\n"
+        f"O contrato precisa ser gerado e assinado manualmente.\n\n"
+        f"─────────────────────────────\n"
+        f"*LEAD*\n"
+        f"• Nome: *{nome}*\n"
+        f"• Telefone: {phone or '—'}\n"
+        f"• Card ID: `{card_id[:8]}`\n\n"
+        f"*DADOS PESSOAIS COLETADOS*\n"
+        f"{dados_pessoais}"
+        f"{dados_pj}"
+        f"\n*DADOS DA COTA*\n"
+        f"{dados_cota}"
+        f"{aviso_faltantes}"
+        f"─────────────────────────────\n"
+        f"*PRÓXIMOS PASSOS:*\n"
+        f"1️⃣ Preparar o contrato manualmente para {adm}\n"
+        f"2️⃣ Enviar para assinatura do cliente via ZapSign (upload manual) ou outra via\n"
+        f"3️⃣ Mover o card para *Sucesso* após assinatura completa\n"
+        f"4️⃣ Considerar adicionar template ZapSign para {adm} se for adm recorrente"
+    )
+
+    # ── Notifica Slack ───────────────────────────────────────────────────────
+    try:
+        await slack_alert(briefing, level="warn")
+        logger.info("agente_contrato: handover sem template enviado ao Slack para card %s", card_id[:8])
+    except Exception as e:
+        logger.error("agente_contrato: falha ao enviar handover Slack: %s", e)
+
+    # ── Move card para FINALIZACAO_COMERCIAL (agente comercial assume) ───────
+    try:
+        async with FaroClient() as faro:
+            await faro.move_card(card_id, Stage.FINALIZACAO_COMERCIAL)
+            await faro.update_card(card_id, {
+                "Situacao Negociacao": f"Handover manual — sem template ZapSign para {adm}",
+            })
+        logger.info("agente_contrato: card %s movido para FINALIZACAO_COMERCIAL", card_id[:8])
+    except FaroError as e:
+        logger.error("agente_contrato: erro ao mover card %s no handover: %s", card_id[:8], e)
+
+    # ── Avisa o lead ─────────────────────────────────────────────────────────
+    if phone:
+        try:
+            async with WhapiClient() as w:
+                await w.send_text(
+                    phone,
+                    f"Perfeito, {nome.split()[0] if nome else 'prezado(a)'}! 📄 Recebi todas as informações.\n\n"
+                    f"Nossa equipe vai preparar o seu contrato e entrar em contato em breve "
+                    f"para finalizar a assinatura. Qualquer dúvida, é só chamar! 😊",
+                )
+        except WhapiError as e:
+            logger.error("agente_contrato: erro ao avisar lead no handover: %s", e)
+
+
 async def handle_extrato_recebido(card: dict, msg) -> None:
     """
     Chamado quando lead envia mídia (foto/PDF do extrato) em ASSINATURA.
@@ -382,34 +521,16 @@ async def handle_extrato_recebido(card: dict, msg) -> None:
     required  = _required_fields_for_card(card)
     missing   = [f for f in required if not collected.get(f)]
 
-    # Verifica template ZapSign antes de aceitar extrato — evita coleta completa sem destino
+    # Verifica template ZapSign antes de aceitar extrato
+    # Se não há template para a adm: coleta está completa, mas contrato é manual.
+    # → Handover para agente comercial com briefing detalhado.
     from services.zapsign import get_template_for_adm
     if not get_template_for_adm(adm):
         logger.warning(
-            "agente_contrato: card %s sem template ZapSign para adm='%s' — notificando equipe",
+            "agente_contrato: card %s sem template ZapSign para adm='%s' — handover para agente comercial",
             card_id[:8], adm,
         )
-        try:
-            from services.slack import slack_alert
-            await slack_alert(
-                f"⚠️ *Contrato sem template ZapSign*\n"
-                f"Lead: {nome} | Adm: {adm} | card: {card_id[:8]}\n"
-                f"Extrato recebido mas não há template configurado para essa administradora.\n"
-                f"Adicione o template em `services/zapsign.py → TEMPLATE_BY_ADM`.",
-                level="warn",
-            )
-        except Exception:
-            pass
-        if phone:
-            try:
-                async with WhapiClient() as w:
-                    await w.send_text(
-                        phone,
-                        f"Obrigada pelo extrato, {nome}! 😊 Nossa equipe vai analisar "
-                        f"e entrar em contato em breve para finalizar o contrato. 📋",
-                    )
-            except WhapiError as e:
-                logger.error("agente_contrato: erro ao avisar lead sem template: %s", e)
+        await _handover_sem_template(card, collected, required)
         return
 
     if missing:
