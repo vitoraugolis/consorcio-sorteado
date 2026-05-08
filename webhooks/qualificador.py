@@ -1315,7 +1315,11 @@ async def _handle_extrato_incorreto(
     # ── Fluxo A: cota não contemplada ────────────────────────────────────────
     # Independente do número de tentativas: uma única mensagem que informa a
     # situação, deixa a porta aberta para outra cota e encerra cordialmente.
-    # Move para PERDIDO — não há atendimento humano que resolva um critério de negócio.
+    #
+    # Destino por fluxo:
+    #   - Lead LP (site/landing page): COTAS_NAO_CONTEMPLADAS (se stage configurado)
+    #     → stage especial para acompanhamento; quando a cota for contemplada, reativar.
+    #   - Demais fluxos (Bazar, etc.): PERDIDO — não há atendimento humano que resolva.
     if _sem_contemplacao:
         logger.info(
             "Qualificador: card %s — cota não contemplada — encerrando com mensagem única.",
@@ -1324,14 +1328,36 @@ async def _handle_extrato_incorreto(
         bot_msg = await _gerar_msg_nao_contemplada(nome, card, history)
         await _send_message(card, phone, bot_msg, history=history)
         history = history_append(history, "assistant", bot_msg)
+
+        # Determina stage de destino
+        _fonte_card = (get_fonte(card) or "").lower()
+        _is_lp = "lp" in _fonte_card or "site" in _fonte_card or "landing" in _fonte_card
+        _stage_dest = (
+            Stage.COTAS_NAO_CONTEMPLADAS
+            if _is_lp and Stage.COTAS_NAO_CONTEMPLADAS
+            else Stage.PERDIDO
+        )
+        _motivo = (
+            "Cota não contemplada (LP) — aguardando contemplação futura"
+            if _stage_dest == Stage.COTAS_NAO_CONTEMPLADAS
+            else "Cota não contemplada — sem cota elegível no momento"
+        )
+        logger.info(
+            "Qualificador: card %s cota não contemplada → %s (lp=%s)",
+            card_id[:8], _stage_dest[:8] if _stage_dest else "PERDIDO", _is_lp,
+        )
+
         async with FaroClient() as faro:
             try:
-                await faro.move_card(card_id, Stage.PERDIDO)
+                if _stage_dest:
+                    await faro.move_card(card_id, _stage_dest)
+                else:
+                    await faro.move_card(card_id, Stage.PERDIDO)
                 await faro.update_card(card_id, {
-                    "Motivo de perda": "Cota não contemplada — sem cota elegível no momento",
+                    "Motivo de perda": _motivo,
                 })
             except FaroError as e:
-                logger.error("Qualificador: erro ao mover card %s para PERDIDO: %s", card_id[:8], e)
+                logger.error("Qualificador: erro ao mover card %s: %s", card_id[:8], e)
             await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
             await save_journey(faro, card_id, journey)
 

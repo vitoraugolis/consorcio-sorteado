@@ -150,7 +150,8 @@ EXTRATO ILEGÍVEL OU INCORRETO (até 3 tentativas)
 COTA NÃO CONTEMPLADA (Bazar/LP)
   → Informar que a CS só compra cotas já contempladas
   → Perguntar se tem outra cota contemplada
-  → Se não tiver: mover para PERDIDO
+  → Lead LP: mover para COTAS NÃO CONTEMPLADAS (aguarda futura contemplação)
+  → Lead Bazar: mover para PERDIDO
 
 COTA DE LANCE (LP)
   → Mover para LP LANCE + mensagem de sondagem com deságio
