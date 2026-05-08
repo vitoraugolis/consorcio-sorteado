@@ -358,7 +358,7 @@ async def _guarded_task(coro, label: str = "task", critical: bool = False):
     try:
         await coro
     except Exception as e:
-        logger.error("Task '%s' falhou: %s", label, e)
+        logger.error("Task '%s' falhou: %s", label, e, exc_info=True)
         if critical and _SENTRY_DSN:
             sentry_sdk.capture_exception(e)
         try:
