@@ -532,6 +532,22 @@ async def route_message(msg: IncomingMessage) -> None:
 
     if not card:
         logger.info("Router: %s não encontrado no CRM.", msg.phone)
+        # Se enviou documento/imagem sem estar no CRM, notifica equipe — pode ser lead perdido
+        if msg.media_type in ("document", "image"):
+            try:
+                from services.whapi import notify_team
+                from services.slack import slack_alert
+                aviso = (
+                    f"⚠️ *Lead fora do CRM enviou extrato*\n"
+                    f"Número: `{msg.phone}`\n"
+                    f"Tipo: {msg.media_type}\n"
+                    f"Este número não está cadastrado em nenhum pipeline — "
+                    f"verificar se é lead orgânico ou número incorreto no FARO."
+                )
+                asyncio.ensure_future(notify_team(aviso))
+                asyncio.ensure_future(slack_alert(aviso, level="warning"))
+            except Exception as e:
+                logger.warning("Router: falha ao notificar equipe sobre lead fora do CRM: %s", e)
         return
 
     card_id = card.get("id", "")

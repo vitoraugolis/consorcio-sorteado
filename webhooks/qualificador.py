@@ -66,6 +66,7 @@ class ExtratoResultado(str, Enum):
     QUALIFICADO = "QUALIFICADO"
     NAO_QUALIFICADO = "NAO_QUALIFICADO"
     EXTRATO_INCORRETO = "EXTRATO_INCORRETO"
+    TIPO_BEM_NAO_ACEITO = "TIPO_BEM_NAO_ACEITO"
 
 
 @dataclass
@@ -207,6 +208,19 @@ MSG_EXTRATO_INCORRETO_ESCALADO = (
     "consultor da nossa equipe que vai te ajudar pessoalmente.\n\n"
     "Em breve alguém entra em contato! 🙏"
 )
+
+MSG_TIPO_BEM_NAO_ACEITO = (
+    "Olá, {nome}! Tudo bem?\n\n"
+    "Obrigado por enviar o extrato da sua cota {adm}. 🙏\n\n"
+    "Infelizmente, no momento trabalhamos apenas com cotas de *imóvel* — "
+    "não fazemos aquisição de cotas de {tipo_bem}.\n\n"
+    "{complemento}"
+    "Se no futuro você tiver uma cota de imóvel para negociar, pode contar "
+    "com a gente! 😊"
+)
+
+# Tipos de bem que o sistema NÃO opera — tudo que não for imóvel
+BENS_NAO_ACEITOS = {"veículo", "veiculo", "moto", "caminhão", "caminhao", "serviço", "servico"}
 
 MSG_NAO_QUALIFICADO = (
     "Olá, {nome}! Tudo bem?\n\n"
@@ -528,6 +542,23 @@ async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
         "MOTO": "Moto", "CAMINHAO": "Caminhão", "SERVICO": "Serviço",
     }
     tipo_bem = produto_map.get((dp.produto or "").upper(), dp.produto)
+
+    # ── Bloqueio por tipo de bem: só operamos imóvel ──────────────────────────
+    if tipo_bem and tipo_bem.lower() in BENS_NAO_ACEITOS:
+        logger.info(
+            "Qualificador: tipo de bem '%s' não operado — bloqueando cota adm=%s",
+            tipo_bem, administradora,
+        )
+        return ExtratoAnalise(
+            resultado=ExtratoResultado.TIPO_BEM_NAO_ACEITO,
+            administradora=administradora,
+            valor_credito=valor_credito,
+            valor_pago=valor_pago,
+            motivo=f"Tipo de bem '{tipo_bem}' não operado — trabalhamos apenas com imóvel",
+            tipo_bem=tipo_bem,
+            grupo=dp.grupo,
+            cota=dp.cota,
+        )
 
     analise = ExtratoAnalise(
         resultado=resultado,
@@ -937,6 +968,59 @@ async def _process_analise(
     Processa o resultado de análise de extrato para um card específico.
     Chamado pelo handle_qualification para cada cota distinta detectada no lote.
     """
+    # ── TIPO_BEM_NAO_ACEITO — cota de veículo/moto/caminhão/serviço ─────────
+    if analise.resultado == ExtratoResultado.TIPO_BEM_NAO_ACEITO:
+        tipo_bem_label = analise.tipo_bem or "veículo"
+        pct_pago = (
+            (analise.valor_pago / analise.valor_credito * 100)
+            if analise.valor_credito and analise.valor_pago
+            else None
+        )
+        # Complemento: se já pagou muito (>40%), menciona que a cota pode ser difícil de vender
+        if pct_pago is not None and pct_pago > 40:
+            complemento = (
+                f"Notamos que você já pagou {pct_pago:.0f}% do crédito — "
+                f"nesse percentual, pode ser mais difícil encontrar comprador no mercado. "
+                f"Vale consultar uma administradora ou especialista. 💡\n\n"
+            )
+        else:
+            complemento = ""
+
+        bot_msg = MSG_TIPO_BEM_NAO_ACEITO.format(
+            nome=nome,
+            adm=analise.administradora or adm,
+            tipo_bem=tipo_bem_label,
+            complemento=complemento,
+        )
+        logger.info(
+            "Qualificador: tipo_bem=%s não operado — card %s | adm=%s | pago=%.0f/%.0f (%.1f%%)",
+            tipo_bem_label, card_id[:8], analise.administradora,
+            analise.valor_pago, analise.valor_credito, pct_pago or 0,
+        )
+        if not is_extra_cota:
+            await _send_message(card, phone, bot_msg, history=history)
+        history = history_append(
+            history, "user",
+            f"[Extrato — cota {analise.administradora or adm}, tipo={tipo_bem_label}, "
+            f"crédito R${analise.valor_credito:,.0f}, pago R${analise.valor_pago:,.0f}]",
+        )
+        if not is_extra_cota:
+            history = history_append(history, "assistant", bot_msg)
+        async with FaroClient() as faro:
+            try:
+                await faro.move_card(card_id, Stage.PERDIDO)
+                await faro.update_card(card_id, {
+                    "Motivo dispensa": f"Tipo de bem não operado: {tipo_bem_label}",
+                    "Tipo de bem": tipo_bem_label,
+                    "Valor do crédito": str(analise.valor_credito) if analise.valor_credito else "",
+                    "Valor pago até o momento": str(analise.valor_pago) if analise.valor_pago else "",
+                })
+            except FaroError as e:
+                logger.error("Qualificador: erro ao mover card %s para PERDIDO (tipo_bem): %s", card_id[:8], e)
+            if not is_extra_cota:
+                await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+        return
+
     # ── NAO_QUALIFICADO ───────────────────────────────────────────────────────
     if analise.resultado == ExtratoResultado.NAO_QUALIFICADO:
         logger.info(
