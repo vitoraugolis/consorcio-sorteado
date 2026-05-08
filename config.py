@@ -44,8 +44,7 @@ class Stage:
     PROBLEMA_CONTATO = "0f593ed2-3c5e-477e-9b0d-1740808fe145"
     LP_LANCE   = "090a876f-09ba-4bc1-a0a0-92f30a0d7cab"  # Lead LP Lance
     EM_CONTATO = "417d8c74-c96b-413d-95fe-7226f50cdc2e"  # Lead em conversa ativa aguardando extrato
-    # ⚠️  PENDENTE: criar stage "Cotas Não Contempladas" no FARO e substituir o UUID abaixo
-    COTAS_NAO_CONTEMPLADAS = os.getenv("STAGE_COTAS_NAO_CONTEMPLADAS", "")
+    COTAS_NAO_CONTEMPLADAS = os.getenv("STAGE_COTAS_NAO_CONTEMPLADAS", "94518081-d6ba-46da-ab19-8e031e6c546a")
 
 
 TERMINAL_STAGES: frozenset = frozenset({

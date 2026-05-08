@@ -46,6 +46,7 @@ STAGES_MAP = {
     "0f593ed2-3c5e-477e-9b0d-1740808fe145": ("PROBLEMA DE CONTATO",   "Número inválido ou sem WhatsApp — aguarda atualização de contato"),
     "090a876f-09ba-4bc1-a0a0-92f30a0d7cab": ("LP LANCE",              "Lead LP com cota contemplada por lance — fluxo especial, aguarda decisão"),
     "417d8c74-c96b-413d-95fe-7226f50cdc2e": ("EM CONTATO",            "Lead em conversa ativa aguardando envio de extrato"),
+    "94518081-d6ba-46da-ab19-8e031e6c546a": ("COTAS NÃO CONTEMPLADAS", "Lead LP com cota ainda não contemplada — aguarda contemplação futura para reativar"),
 }
 
 # ---------------------------------------------------------------------------
