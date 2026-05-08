@@ -40,9 +40,12 @@ _log_dir.mkdir(exist_ok=True)
 _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 from logging.handlers import RotatingFileHandler
 _file_handler = RotatingFileHandler(
-    _log_dir / "server.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    _log_dir / "server.log", maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8",
 )
 _file_handler.setFormatter(_fmt)
+_file_handler.namer  = lambda name: name + ".gz"
+_file_handler.rotator = lambda source, dest: __import__("gzip").open(dest, "wb").write(
+    open(source, "rb").read()) or __import__("os").remove(source)
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
 if not any(isinstance(h, RotatingFileHandler) for h in _root.handlers):
@@ -207,10 +210,10 @@ def setup_scheduler():
     scheduler.add_job(run_relatorio_funil, CronTrigger(hour=3, minute=0, timezone="UTC"),
                       id="relatorio_funil", name="Relatório Diário de Funil",
                       max_instances=1, misfire_grace_time=600)
-    # Safety Car pausado — reativar após testes
-    # scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
-    #                   id="safety_car", name="Safety Car — Monitor de Pipeline",
-    #                   max_instances=1, misfire_grace_time=120)
+    # Safety Car — monitor de pipeline a cada 15min
+    scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
+                      id="safety_car", name="Safety Car — Monitor de Pipeline",
+                      max_instances=1, misfire_grace_time=120)
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
 
 
@@ -231,12 +234,12 @@ async def _recover_debounce() -> None:
     """
     Varredura de startup: detecta e reprocessa mensagens de debounce
     que sobreviveram a um restart (buffer Redis ainda presente).
-    Aguarda 5s para estabilização antes de iniciar.
+    Aguarda 10s para estabilização do pool FARO antes de iniciar.
     """
     from services.session_store import get_redis, pop_debounce_buffer
     from services.faro import FaroClient, FaroError, get_canal
     from config import Stage
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)  # aguarda pool FARO warm + scheduler estabilizar
     try:
         r = await get_redis()
         keys = await r.keys("cs:debounce:*")
@@ -251,15 +254,27 @@ async def _recover_debounce() -> None:
                 continue
             combined = " ".join(t if isinstance(t, str) else t.decode() for t in texts)
             logger.info("Debounce recovery: phone=...%s, %d msg(s) pendente(s)", phone[-6:], len(texts))
+            # Retry com backoff para o pool FARO
+            card = None
+            for attempt in range(3):
+                try:
+                    async with FaroClient() as faro:
+                        card = await faro.find_card_by_phone(phone)
+                    break
+                except Exception as e:
+                    wait = (attempt + 1) * 5
+                    logger.warning(
+                        "Debounce recovery: tentativa %d de buscar card ...%s falhou (%s) — retry em %ds",
+                        attempt + 1, phone[-6:], e, wait,
+                    )
+                    await asyncio.sleep(wait)
+
+            if not card:
+                logger.warning("Debounce recovery: card não encontrado para ...%s — descartando", phone[-6:])
+                continue
+            stage = card.get("stage_id") or ""
+            canal = get_canal(card)
             try:
-                async with FaroClient() as faro:
-                    card = await faro.find_card_by_phone(phone)
-                if not card:
-                    logger.warning("Debounce recovery: card não encontrado para ...%s — descartando", phone[-6:])
-                    continue
-                stage = card.get("stage_id") or ""
-                canal = get_canal(card)
-                # Rotear para o agente correto pelo stage/canal
                 if stage in (Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ASSINATURA):
                     from webhooks.negociador import handle_message as _neg_handle
                     await _neg_handle(card, combined, stage)
@@ -615,16 +630,15 @@ async def _handle_zapsign_signed(doc_token: str, doc_name: str) -> None:
     try:
         async with FaroClient() as faro:
             await faro.move_card(card_id, Stage.SUCESSO)
-            await asyncio.sleep(1)
-            await faro.move_card(card_id, Stage.FINALIZACAO_COMERCIAL)
+            logger.info("ZapSign: card %s movido para SUCESSO.", card_id[:8])
     except FaroError as e:
-        logger.error("ZapSign: erro ao mover card %s: %s", card_id[:8], e)
+        logger.error("ZapSign: erro ao mover card %s para SUCESSO: %s", card_id[:8], e)
 
     mensagem_equipe = (
         f"🎉 *Contrato assinado com sucesso!*\n\n"
-        f"Cliente: {nome}\nTelefone: {phone or 'não informado'}\n"
+        f"Cliente: *{nome}*\nTelefone: {phone or 'não informado'}\n"
         f"Documento: {doc_name}\n\n"
-        f"O card foi movido para *Finalização com Agente Comercial*. 👆"
+        f"✅ Card movido para *Sucesso*."
     )
     if NOTIFY_PHONES:
         try:
@@ -796,12 +810,22 @@ async def trigger_relatorio_funil(key: str = ""):
 async def trigger_relatorio_retroativo(key: str = "", datas: list[str] = None):
     """
     Roda relatório retroativo para uma lista de datas.
-    Body: {"datas": ["04/05/2026", "05/05/2026", "06/05/2026"]}
+    Body: {"datas": ["04/05/2026", "05/05/2026"]}
+    Formato aceito: DD/MM/YYYY
     """
     if key != SECRET_KEY:
         raise HTTPException(status_code=401, detail="Chave inválida")
     if not datas:
         raise HTTPException(status_code=400, detail="Lista de datas obrigatória")
+    # Valida formato antes de despachar
+    import re as _re
+    _DATE_RE = _re.compile(r"^\d{2}/\d{2}/\d{4}$")
+    invalidas = [d for d in datas if not _DATE_RE.match(d)]
+    if invalidas:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Formato inválido (esperado DD/MM/YYYY): {invalidas}"
+        )
     import asyncio
     asyncio.create_task(run_relatorio_retroativo(datas))
     return {"status": "started", "datas": datas, "message": f"Retroativo para {len(datas)} data(s) disparado"}

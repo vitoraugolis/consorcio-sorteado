@@ -170,6 +170,34 @@ class AIClient:
         primary  = model or "gemini-2.5-flash"
         fallback = fallback_model or "gpt-4o-mini"
 
+        # ── Context overflow guard ────────────────────────────────────────────
+        # Estimativa conservadora: 1 token ≈ 4 chars.
+        # Limite seguro: 80k tokens de entrada (deixa margem para max_tokens de saída).
+        # Se ultrapassar, trunca pelo início (mantém turnos mais recentes).
+        _MAX_INPUT_CHARS = 80_000 * 4  # ~320k chars
+        _system_chars  = len(system)
+        _history_chars = sum(len(m.get("content", "")) for m in history)
+        _total_chars   = _system_chars + _history_chars
+
+        if _total_chars > _MAX_INPUT_CHARS:
+            _overflow = _total_chars - _MAX_INPUT_CHARS
+            logger.warning(
+                "AI complete_with_history: contexto estimado em ~%dk chars (%.0fk tokens) "
+                "— truncando %d chars do início do histórico para evitar overflow.",
+                _total_chars // 1000,
+                _total_chars / 4000,
+                _overflow,
+            )
+            # Remove turnos do início até caber (preserva sempre pelo menos 1 turno)
+            trimmed = list(history)
+            while len(trimmed) > 1:
+                removed_chars = len(trimmed[0].get("content", ""))
+                trimmed = trimmed[1:]
+                _overflow -= removed_chars
+                if _overflow <= 0:
+                    break
+            history = trimmed
+
         for attempt_model in (primary, fallback):
             try:
                 provider = self._detect_provider(attempt_model)

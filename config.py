@@ -54,6 +54,7 @@ TERMINAL_STAGES: frozenset = frozenset({
     Stage.DISPENSADOS,
     Stage.LIXO,
     Stage.SUCESSO,
+    Stage.COTAS_NAO_CONTEMPLADAS,  # espera passiva — sem follow-up automático
 })
 
 
@@ -208,7 +209,9 @@ IMAGES_DIR  = os.getenv("IMAGES_DIR", "/tmp/cs_images")
 # ---------------------------------------------------------------------------
 # Modo de testes
 # ---------------------------------------------------------------------------
-TEST_MODE  = os.getenv("TEST_MODE", "true").lower() in ("1", "true", "yes")
+# TEST_MODE: default False — nunca bloquear produção por falta de .env
+# Para testes locais, definir TEST_MODE=true explicitamente no .env
+TEST_MODE  = os.getenv("TEST_MODE", "false").lower() in ("1", "true", "yes")
 TEST_PHONE = os.getenv("TEST_PHONE", "")
 
 
