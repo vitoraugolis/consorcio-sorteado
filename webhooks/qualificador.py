@@ -37,12 +37,22 @@ from services.safety_car import audit_response
 logger = logging.getLogger(__name__)
 
 QUALIFICATION_STAGES = {
+    # ── Ativações (Primeira → Quarta) ─────────────────────────────────────────
+    # Lead respondeu durante cadência de ativação. Agente qualificador atende.
     Stage.PRIMEIRA_ATIVACAO,
     Stage.SEGUNDA_ATIVACAO,
     Stage.TERCEIRA_ATIVACAO,
     Stage.QUARTA_ATIVACAO,
-    Stage.TESTES,    # stage de testes — processa normalmente
-    Stage.EM_CONTATO,  # lead em conversa ativa aguardando extrato
+    # ── Espera ────────────────────────────────────────────────────────────────
+    # Lead LP aguardando envio de extrato. Só reage a mídia (texto = silêncio).
+    # Incluída aqui para unificar o roteamento de mídia no qualificador.
+    Stage.ESPERA,
+    # ── Em Contato ────────────────────────────────────────────────────────────
+    # Lead em conversa ativa, já enviou algo, aguardando extrato completo.
+    Stage.EM_CONTATO,
+    # ── TESTES ────────────────────────────────────────────────────────────────
+    # Stage de testes — processa normalmente para validar fluxos.
+    Stage.TESTES,
 }
 
 # Máximo de extratos incorretos antes de escalar para humano

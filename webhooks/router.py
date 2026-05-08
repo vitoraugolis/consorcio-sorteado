@@ -84,7 +84,63 @@ def _describe_media(msg: "IncomingMessage") -> str:
     return f"[{msg.media_type}]"
 
 
-HANDLED_STAGES = {Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.FINALIZACAO_COMERCIAL}
+# ---------------------------------------------------------------------------
+# Mapeamento oficial de responsabilidades por stage
+# Atualizado conforme definição do produto (2026-05-08)
+# ---------------------------------------------------------------------------
+
+# FASES DE AÇÃO — sistema age e move automaticamente (jobs, não agentes de chat)
+# Listas, Bazar, LP: ativação via job. Precificação: proposta automática.
+ACTION_STAGES = frozenset({
+    Stage.LISTAS,
+    Stage.BAZAR,
+    Stage.LP,
+    Stage.PRECIFICACAO,
+})
+
+# FASES DO AGENTE DE QUALIFICAÇÃO
+# Responde mensagens e extratos. Sabe que o lead está nessas fases e age de forma personalizada.
+QUALIFICATION_AGENT_STAGES = frozenset({
+    Stage.PRIMEIRA_ATIVACAO,
+    Stage.SEGUNDA_ATIVACAO,
+    Stage.TERCEIRA_ATIVACAO,
+    Stage.QUARTA_ATIVACAO,
+    Stage.ESPERA,
+    Stage.EM_CONTATO,
+    Stage.LP_LANCE,
+    Stage.COTAS_NAO_CONTEMPLADAS,
+    Stage.NAO_QUALIFICADO,
+})
+
+# FASES DO AGENTE DE NEGOCIAÇÃO
+# Proposta enviada — negocia, faz follow-up, lida com objeções.
+NEGOTIATION_AGENT_STAGES = frozenset({
+    Stage.EM_NEGOCIACAO,
+    Stage.NEG_CONGELADA,
+    Stage.ON_HOLD,
+})
+
+# FASES DO AGENTE DE CONTRATOS
+# Aceite confirmado — coleta dados, acompanha assinatura.
+CONTRACT_AGENT_STAGES = frozenset({
+    Stage.ACEITO,
+    Stage.ASSINATURA,
+})
+
+# FASES DE SILÊNCIO — nenhum agente responde mensagens do lead
+SILENCE_STAGES = frozenset({
+    Stage.FINALIZACAO_COMERCIAL,  # equipe humana assumiu
+    Stage.SUCESSO,                # negócio fechado
+    Stage.PERDIDO,
+    Stage.TESTES,
+    Stage.LIXO,
+    Stage.FLUXO_CADENCIA,
+    Stage.DISPENSADOS,
+    Stage.PROBLEMA_CONTATO,
+}) | TERMINAL_STAGES
+
+# Compat: HANDLED_STAGES e ACTIVATION_STAGES mantidos para uso interno legado
+HANDLED_STAGES = NEGOTIATION_AGENT_STAGES | {Stage.PRECIFICACAO, Stage.FINALIZACAO_COMERCIAL}
 ACTIVATION_STAGES = {
     Stage.PRIMEIRA_ATIVACAO, Stage.SEGUNDA_ATIVACAO,
     Stage.TERCEIRA_ATIVACAO, Stage.QUARTA_ATIVACAO,
@@ -483,12 +539,16 @@ async def route_message(msg: IncomingMessage) -> None:
     nome = card.get("Nome do contato") or card.get("title") or "?"
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
 
-    # Stage TESTES: silêncio total — nenhum agente responde
-    if current_stage == Stage.TESTES:
-        logger.info("Router: %s em stage TESTES — mensagem ignorada.", nome)
+    # ── FASES DE SILÊNCIO ─────────────────────────────────────────────────────
+    # Nenhum agente responde. Inclui: FINALIZACAO_COMERCIAL, SUCESSO, PERDIDO,
+    # TESTES, LIXO, FLUXO_CADENCIA, DISPENSADOS, PROBLEMA_CONTATO e terminais.
+    if current_stage in SILENCE_STAGES:
+        logger.info("Router: %s em stage de silêncio (%s) — mensagem ignorada.", nome, current_stage[:8])
         return
 
-    # Se proposta já foi enviada, negociador assume independente da stage
+    # ── OVERRIDE: proposta já enviada → negociador assume ────────────────────
+    # Se a proposta foi enviada, o negociador assume independente da stage atual.
+    # Protege leads que ficaram em stages intermediários após envio da proposta.
     if _proposta_ja_enviada(card) and msg.is_processable:
         async def _dispatch_neg(c: dict, texto: str) -> None:
             await handle_message(card=c, mensagem=texto, current_stage_id=current_stage)
@@ -496,18 +556,22 @@ async def route_message(msg: IncomingMessage) -> None:
                           dispatch=_dispatch_neg)
         return
 
-    # Listas em stages de ativação → agente SDR Listas
-    # Regra: is_lista()==True OU Fonte não definida (sem origem = lista fria)
+    # ── FASES DO AGENTE DE QUALIFICAÇÃO ──────────────────────────────────────
+    # Primeira → Quarta Ativação, Espera, Em Contato, LP Lance,
+    # Cotas Não Contempladas, Não Qualificado.
+    # O agente sabe em qual fase está o lead e age de forma personalizada.
+
     _fonte = str(card.get("Fonte") or "").strip().lower()
     _is_lista_card = is_lista(card) or (not _fonte)
+
+    # 1) Ativações de Listas → SDR Listas
     if current_stage in ACTIVATION_STAGES and _is_lista_card:
         if msg.is_processable:
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=agente_listas.handle_message)
         return
 
-    # LP Lance: leads contemplados por lance — agente específico responde.
-    # Se o lead enviar mídia (extrato) → qualificador processa.
+    # 2) LP Lance — agente especializado; mídia → qualificador
     if current_stage == Stage.LP_LANCE:
         if msg.is_media_message:
             asyncio.create_task(agente_lp_lance.handle_extrato_recebido(card, msg))
@@ -516,31 +580,57 @@ async def route_message(msg: IncomingMessage) -> None:
                               dispatch=agente_lp_lance.handle_message)
         return
 
-    # Qualificação: stages de ativação, apenas Bazar/Site (Fonte definida)
-    # LP usa agente_lp (prompt correto para leads de site/landing page)
-    # Bazar usa agente_bazar
-    if current_stage in QUALIFICATION_STAGES and not _is_lista_card:
+    # 3) Ativações Bazar/LP + Em Contato + Espera → qualificador/SDR Bazar-LP
+    if current_stage in QUALIFICATION_AGENT_STAGES and not _is_lista_card:
+        # ESPERA: só reage a mídia; texto = silêncio (aguardando extrato)
+        if current_stage == Stage.ESPERA:
+            if msg.is_media_message:
+                await handle_qualification(card=card, msg=msg)
+            else:
+                logger.info("Router: %s em ESPERA enviou texto — ignorando (aguardando extrato)", nome)
+            return
+
+        # COTAS_NAO_CONTEMPLADAS: lead aguardando contemplação futura.
+        # Responde apenas se enviar novo extrato (possível nova cota).
+        # Texto: SDR LP responde para manter relacionamento.
+        if current_stage == Stage.COTAS_NAO_CONTEMPLADAS:
+            if msg.is_media_message:
+                await handle_qualification(card=card, msg=msg)
+            elif msg.is_processable:
+                debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                                  dispatch=agente_lp.handle_message)
+            return
+
+        # NAO_QUALIFICADO: lead voltou a falar; SDR responde para triagem.
+        if current_stage == Stage.NAO_QUALIFICADO:
+            if msg.is_media_message:
+                await handle_qualification(card=card, msg=msg)
+            elif msg.is_processable:
+                fonte = _fonte
+                _dispatch = agente_lp.handle_message if "lp" in fonte or "site" in fonte else agente_bazar.handle_message
+                debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                                  dispatch=_dispatch)
+            return
+
+        # Ativações Bazar/LP + Em Contato → qualificador (mídia) / SDR (texto)
         if msg.is_media_message:
             await handle_qualification(card=card, msg=msg)
         elif msg.is_processable:
-            fonte = str(card.get("Fonte") or "").lower()
-            _dispatch = agente_lp.handle_message if "lp" in fonte or "site" in fonte else agente_bazar.handle_message
+            _dispatch = agente_lp.handle_message if "lp" in _fonte or "site" in _fonte else agente_bazar.handle_message
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=_dispatch)
         return
 
-    # ESPERA: lead aguardando envio de extrato (LP retroativa)
-    # Mídia → qualifica extrato; texto → silêncio total (não respondemos até receber o extrato)
-    if current_stage == Stage.ESPERA:
-        if msg.is_media_message:
-            await handle_qualification(card=card, msg=msg)
-        else:
-            logger.info("Router: %s em ESPERA enviou texto — ignorando (aguardando extrato)", nome)
-        return
-
-    # ASSINATURA: qualquer mensagem nessa stage vai para agente_contrato — sem exceção
-    # Inclui leads com ZapSign Token já gerado (ex: template inativo, aguardando reenvio)
-    if current_stage == Stage.ASSINATURA:
+    # ── FASES DO AGENTE DE CONTRATOS ─────────────────────────────────────────
+    # ACEITO + ASSINATURA: coleta dados, acompanha assinatura ZapSign.
+    if current_stage in CONTRACT_AGENT_STAGES:
+        if current_stage == Stage.ACEITO:
+            # ACEITO: coleta dados pessoais para contrato
+            if msg.is_processable:
+                debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                                  dispatch=handle_dados_pessoais)
+            return
+        # ASSINATURA: texto → agente_contrato; mídia → qualificador (ex: reenvio de extrato)
         if msg.is_media_message:
             asyncio.create_task(handle_extrato_recebido(card, msg))
         elif msg.is_processable:
@@ -548,19 +638,18 @@ async def route_message(msg: IncomingMessage) -> None:
                               dispatch=handle_dados_pessoais)
         return
 
-    # Negociação / suporte
-    if current_stage in HANDLED_STAGES:
+    # ── FASES DO AGENTE DE NEGOCIAÇÃO ────────────────────────────────────────
+    # EM_NEGOCIACAO, NEG_CONGELADA, ON_HOLD: negociador responde com autonomia total.
+    if current_stage in NEGOTIATION_AGENT_STAGES:
         if not msg.is_processable:
             return
-
         async def _dispatch_negociador(c: dict, texto: str) -> None:
             await handle_message(card=c, mensagem=texto, current_stage_id=current_stage)
-
         debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                           dispatch=_dispatch_negociador)
         return
 
-    logger.info("Router: stage %s não tratado para %s.", current_stage[:8], nome)
+    logger.info("Router: stage %s não mapeado para %s — sem ação.", current_stage[:8], nome)
 
 
 
