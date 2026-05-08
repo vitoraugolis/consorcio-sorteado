@@ -562,6 +562,17 @@ async def route_message(msg: IncomingMessage) -> None:
         logger.info("Router: %s em stage de silêncio (%s) — mensagem ignorada.", nome, current_stage[:8])
         return
 
+    # ── WATCHDOG: marca mensagem como pendente de resposta ───────────────────
+    # Stages que esperam resposta ativa do sistema. ACTION_STAGES (BAZAR/LP/LISTAS)
+    # são excluídos — lead está aguardando ativação, não conversando.
+    if current_stage not in ACTION_STAGES:
+        try:
+            from jobs.watchdog_extratos import mark_message_pending
+            descricao = msg.media_type or (msg.text or "")[:60]
+            asyncio.ensure_future(mark_message_pending(phone, card_id, nome, descricao))
+        except Exception:
+            pass
+
     # ── OVERRIDE: proposta já enviada → negociador assume ────────────────────
     # Se a proposta foi enviada, o negociador assume independente da stage atual.
     # Protege leads que ficaram em stages intermediários após envio da proposta.

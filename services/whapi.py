@@ -334,6 +334,14 @@ class WhapiClient:
         result = await self._post("/messages/text", {"to": phone, "body": message})
         # Registra message_id no Redis para distinguir mensagens do bot de mensagens manuais
         _register_bot_message(result)
+        # Limpa marcador de pendente — sistema respondeu ao lead
+        if result.get("sent") or result.get("id"):
+            try:
+                from jobs.watchdog_extratos import clear_message_pending
+                import asyncio
+                asyncio.ensure_future(clear_message_pending(phone))
+            except Exception:
+                pass
         # Log no #log-cs — ignora grupos (@g.us) e números internos da equipe
         if _is_lead_recipient(to):
             try:
@@ -389,6 +397,14 @@ class WhapiClient:
             body["footer"] = footer
         result = await self._post("/messages/interactive", body)
         _register_bot_message(result)
+        # Limpa marcador de pendente — sistema respondeu ao lead
+        if result.get("sent") or result.get("id"):
+            try:
+                from jobs.watchdog_extratos import clear_message_pending
+                import asyncio
+                asyncio.ensure_future(clear_message_pending(phone))
+            except Exception:
+                pass
         if _is_lead_recipient(to):
             try:
                 from services.slack import log_cs
