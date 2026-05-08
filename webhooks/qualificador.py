@@ -779,11 +779,25 @@ async def handle_qualification(card: dict, msg) -> None:
 
         # Analisa cada imagem em paralelo
         async def _safe_analyze(e: dict) -> tuple[dict, ExtratoAnalise | None]:
-            try:
-                return e, await _analyze_extrato(e["url"])
-            except Exception as exc:
-                logger.error("Qualificador: erro na análise de %s: %s", e["url"][:60], exc)
-                return e, None
+            last_exc: Exception | None = None
+            for attempt in range(1, 4):  # 3 tentativas: 0s, 15s, 45s
+                try:
+                    return e, await _analyze_extrato(e["url"])
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < 3:
+                        wait = 15 * attempt
+                        logger.warning(
+                            "Qualificador: tentativa %d/3 falhou para %s — retry em %ds: %s",
+                            attempt, e["url"][:60], wait, exc,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.error(
+                            "Qualificador: 3 tentativas esgotadas para %s: %s",
+                            e["url"][:60], exc,
+                        )
+            return e, None
 
         resultados = await asyncio.gather(*[_safe_analyze(e) for e in lote])
 

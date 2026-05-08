@@ -758,6 +758,10 @@ async def _resolve_whapi_token(payload: dict) -> Optional[str]:
     return WHAPI_BAZAR_TOKEN or (WHAPI_LISTA_TOKENS[0] if WHAPI_LISTA_TOKENS else None)
 
 
+# Referências fortes para tasks de background (evita GC durante awaits longos)
+_active_tasks: set[asyncio.Task] = set()
+
+
 async def handle_whapi_webhook(payload: dict) -> dict:
     """Entry point para POST /webhook/whapi."""
     # Resolve token do canal para transcrição de áudio
@@ -767,5 +771,7 @@ async def handle_whapi_webhook(payload: dict) -> dict:
         return {"status": "ok", "processed": 0}
     logger.info("Whapi webhook: %d mensagem(ns)", len(messages))
     for msg in messages:
-        asyncio.create_task(route_message(msg))
+        task = asyncio.create_task(route_message(msg))
+        _active_tasks.add(task)
+        task.add_done_callback(_active_tasks.discard)
     return {"status": "ok", "processed": len(messages)}
