@@ -32,7 +32,7 @@ from config import (
     filter_test_cards,
 )
 from services.faro import FaroClient, FaroError, get_adm, get_name
-from services.whapi import WhapiClient, WhapiError
+from services.whapi import WhapiClient, WhapiError, resolve_phone
 from services.ai import AIClient, AIError
 from services.session_store import acquire_mutex, release_mutex
 from services.slack import slack_error
@@ -114,24 +114,24 @@ async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, 
     # Proteção primária: se já tem data de primeira ativação, não disparar de novo
     if card.get("Data de primeira ativação"):
         logger.info("Card %s já ativado em %s — pulando.", card_id[:8], card["Data de primeira ativação"])
-        # Move para PRIMEIRA_ATIVACAO caso ainda esteja em Listas por algum bug anterior
         try:
             await faro.move_card(card_id, Stage.PRIMEIRA_ATIVACAO)
         except FaroError:
             pass
         return False
 
-    raw_phone = card.get("Telefone") or card.get("Telefone alternativo") or ""
-
-    if not raw_phone:
-        logger.warning("Card %s sem telefone, movendo para Não Qualificado", card_id[:8])
-        try:
-            await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-        except FaroError:
-            pass
+    # ── Resolução de telefone com verificação de existência ──────────────────
+    # resolve_phone testa o número principal, depois o alternativo (sem o 9),
+    # corrige o FARO se necessário e move para PROBLEMA_CONTATO se nenhum funcionar.
+    phone = await resolve_phone(card, canal="lista")
+    if not phone:
+        # resolve_phone já moveu para PROBLEMA_CONTATO e registrou o motivo
+        logger.warning(
+            "Card %s: nenhum número com WhatsApp — movido para PROBLEMA_CONTATO.",
+            card_id[:8],
+        )
         return False
 
-    phone = await _normalize_phone(str(raw_phone))
     nome = get_name(card)
     adm = get_adm(card)
     message = ACTIVATION_MESSAGE.format(nome=nome, adm=adm)
@@ -161,21 +161,8 @@ async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, 
                 sent = True
             except WhapiError as e2:
                 logger.error("Fallback texto também falhou card %s: %s", card_id[:8], e2)
-                if e2.status_code in (400, 404):
-                    try:
-                        await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-                        await faro.update_card(card_id, {"Situação": "telefone inválido"})
-                    except FaroError:
-                        pass
         else:
-            # Número inválido ou bloqueado → move para Não Qualificado
             logger.error("Erro Whapi card %s: %s", card_id[:8], e)
-            if e.status_code in (400, 404):
-                try:
-                    await faro.move_card(card_id, Stage.NAO_QUALIFICADO)
-                    await faro.update_card(card_id, {"Situação": "telefone inválido"})
-                except FaroError:
-                    pass
 
     if sent:
         try:

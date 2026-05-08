@@ -36,6 +36,7 @@ from services.faro import (
 from services.slack import slack_warning
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 from services.session_store import load_history_smart, save_history_smart
+from services.agent_knowledge import get_knowledge_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,13 @@ MSG_LP_LANCE = (
 # Classificador de intent
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """
-Você é Manuela, consultora da Consórcio Sorteado.
-O lead recebeu uma mensagem explicando que cotas de lance têm limitação, mas que
-pode enviar o extrato se quiser receber uma proposta mesmo assim.
+_SYSTEM_PROMPT = (get_knowledge_for_agent("lp_lance") + """
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 SEU PAPEL AGORA — AGENTE LP LANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+O lead recebeu uma mensagem explicando que cotas de lance têm limitação de ágio,
+mas que pode enviar o extrato e receber uma proposta mesmo assim.
 
 Classifique a resposta do lead em um dos intents abaixo e gere uma resposta curta
 e natural (máx 3 linhas). Retorne EXCLUSIVAMENTE JSON puro, sem markdown.
@@ -80,7 +84,7 @@ DADOS DO LEAD:
 
 JSON esperado:
 {{"intent": "QUER_PROPOSTA|SEM_INTERESSE|AMBIGUO", "response": "mensagem para o lead"}}
-""".strip()
+""").strip()
 
 _FALLBACK_QUER = "Ótimo! Pode me enviar o extrato da cota quando quiser — analiso rapidinho. 😊📄"
 _FALLBACK_sem  = "Entendido! Qualquer coisa, estamos por aqui. Até mais! 🙏"

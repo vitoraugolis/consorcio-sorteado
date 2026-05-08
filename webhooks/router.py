@@ -506,10 +506,14 @@ async def route_message(msg: IncomingMessage) -> None:
                               dispatch=agente_listas.handle_message)
         return
 
-    # LP Lance: leads contemplados por lance — silêncio total.
-    # Nenhum agente responde. Equipe humana trata manualmente.
+    # LP Lance: leads contemplados por lance — agente específico responde.
+    # Se o lead enviar mídia (extrato) → qualificador processa.
     if current_stage == Stage.LP_LANCE:
-        logger.debug("Router: LP_LANCE — silêncio total para card %s", card.get("id", "")[:8])
+        if msg.is_media_message:
+            asyncio.create_task(agente_lp_lance.handle_extrato_recebido(card, msg))
+        elif msg.is_processable:
+            debounce.schedule(phone=msg.phone, text=msg.text, card=card,
+                              dispatch=agente_lp_lance.handle_message)
         return
 
     # Qualificação: stages de ativação, apenas Bazar/Site (Fonte definida)

@@ -22,6 +22,7 @@ from services.whapi import WhapiClient, WhapiError
 from services.slack import slack_error
 from services.session_store import load_history_smart, save_history_smart
 from services.safety_car import audit_response
+from services.agent_knowledge import get_knowledge_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,11 @@ def _get_consultor_info(adm: str) -> str:
 
 
 SYSTEM_PROMPT = """
-Você é Manuela, consultora SDR da Consórcio Sorteado.
+{knowledge}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 SEU PAPEL AGORA — AGENTE SDR DE LISTAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONSULTOR RESPONSÁVEL: {consultor_info}
 
 DADOS DO LEAD:
@@ -55,13 +59,16 @@ DADOS DO LEAD:
 JORNADA DO LEAD:
 {jornada}
 
-OBJETIVO: Confirmar recebimento do interesse e informar que a proposta chegará em instantes.
-NÃO faça perguntas. NÃO peça confirmação. Apenas informe com entusiasmo que a proposta será enviada.
-Respostas curtas (máx 2 linhas). Nunca revele ser IA.
+CONTEXTO: Este lead veio de uma lista fria. Ele recebeu uma mensagem com botões
+perguntando se tem interesse em receber proposta pela cota contemplada.
+
+OBJETIVO: Confirmar recebimento do interesse e informar que a proposta chegará
+em instantes. NÃO faça perguntas. NÃO peça confirmação. Apenas informe com
+entusiasmo que a proposta será enviada.
 
 QUANDO O LEAD DEMONSTRAR INTERESSE (botão ou texto positivo):
 - Classifique como INTERESSE
-- Responda de forma entusiasmada que a proposta chegará em instantes no WhatsApp
+- Responda de forma entusiasmada que a proposta chegará em instantes
 
 QUANDO RECUSAR: convide para o grupo: {group_link}
 QUANDO QUISER FALAR COM HUMANO: classifique como REDIRECIONAR.
@@ -70,6 +77,11 @@ QUANDO O LEAD QUISER COMPRAR UMA COTA OU IMÓVEL (QUER_COMPRAR):
 Use intent QUER_COMPRAR. O lead quer COMPRAR — não vender. Responda com naturalidade
 informando que vai redirecionar para um representante do departamento de venda de cotas.
 NÃO tente converter para venda de cota. Apenas redirecione com cordialidade.
+
+PARA QUALQUER SITUAÇÃO FORA DO COMUM (reclamação, dúvida, objeção, desconfiança):
+Use seu conhecimento completo do sistema para dar a melhor resposta possível.
+Você tem AUTONOMIA para mover o lead para o stage mais adequado conforme o mapa
+de stages acima. Use-o.
 
 FORMATO JSON puro:
 {{
@@ -211,6 +223,7 @@ async def _respond(card: dict, texto: str) -> None:
     history = history_append(history, "user", texto)
 
     system = SYSTEM_PROMPT.format(
+        knowledge=get_knowledge_for_agent("sdr_listas"),
         consultor_info=_get_consultor_info(adm),
         dados_card=build_card_context(card_fresh),
         jornada=journey_to_text(load_journey(card_fresh)),

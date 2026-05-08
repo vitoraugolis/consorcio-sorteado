@@ -28,6 +28,7 @@ from services.faro import (
     load_journey, journey_to_text,
 )
 from services.whapi import WhapiClient, WhapiError
+from services.agent_knowledge import get_knowledge_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -193,12 +194,17 @@ async def _save_collected(faro: FaroClient, card_id: str, collected: dict) -> No
 # Construção de resposta (IA com fallback estático)
 # ---------------------------------------------------------------------------
 
-_COLLECT_SYSTEM = """
-Você é Manuela, consultora da Consórcio Sorteado.
-Está coletando dados pessoais de um lead que aceitou vender sua cota contemplada.
+_COLLECT_SYSTEM = (get_knowledge_for_agent("agente_contrato") + """
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 SEU PAPEL AGORA — AGENTE DE COLETA DE DADOS PARA CONTRATO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+O lead aceitou vender sua cota contemplada. Você está coletando os dados pessoais
+necessários para gerar o contrato de compra e venda.
+
 Tom: caloroso, direto, pessoal — continuidade natural da conversa anterior.
 Máximo 5 linhas. Apenas o texto da mensagem, sem aspas.
-""".strip()
+""").strip()
 
 
 def _build_response_static(nome: str, collected: dict, adm: str, required: list | None = None) -> tuple[str, bool]:
