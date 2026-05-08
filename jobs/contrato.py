@@ -17,7 +17,7 @@ from services.faro import (
     load_journey, journey_to_text,
 )
 from services.ai import AIClient, AIError
-from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
+from services.whapi import WhapiClient, WhapiError, get_whapi_for_card, notify_team as _notify_team_central
 from services.zapsign import ZapSignClient, ZapSignError, get_template_for_adm, build_form_fields
 
 logger = logging.getLogger(__name__)
@@ -80,14 +80,8 @@ async def _send(card: dict, phone: str, text: str) -> bool:
 
 
 async def _notify_team(text: str) -> None:
-    if not NOTIFY_PHONES:
-        return
-    try:
-        async with WhapiClient(canal="lista") as w:
-            for phone in NOTIFY_PHONES:
-                await w.send_text(phone, text)
-    except WhapiError as e:
-        logger.warning("Falha ao notificar equipe: %s", e)
+    """Notifica a equipe via grupo WhatsApp (com fallback para NOTIFY_PHONES)."""
+    await _notify_team_central(text)
 async def _process_card(card: dict) -> None:
     card_id = card.get("id", "")
     from services.session_store import acquire_mutex, release_mutex

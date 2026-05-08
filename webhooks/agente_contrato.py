@@ -28,7 +28,7 @@ from services.faro import (
     load_history, history_append, save_history, history_to_text,
     load_journey, journey_to_text,
 )
-from services.whapi import WhapiClient, WhapiError
+from services.whapi import WhapiClient, WhapiError, notify_team as _notify_team_group
 from services.agent_knowledge import get_knowledge_for_agent
 
 logger = logging.getLogger(__name__)
@@ -474,7 +474,12 @@ async def _handover_sem_template(card: dict, collected: dict, required: list) ->
         f"4️⃣ Considerar adicionar template ZapSign para {adm} se for adm recorrente"
     )
 
-    # ── Notifica Slack ───────────────────────────────────────────────────────
+    # ── Notifica grupo WhatsApp + Slack ─────────────────────────────────────
+    try:
+        await _notify_team_group(briefing)
+        logger.info("agente_contrato: handover sem template enviado ao grupo para card %s", card_id[:8])
+    except Exception as e:
+        logger.warning("agente_contrato: falha ao enviar handover no grupo: %s", e)
     try:
         await slack_alert(briefing, level="warn")
         logger.info("agente_contrato: handover sem template enviado ao Slack para card %s", card_id[:8])

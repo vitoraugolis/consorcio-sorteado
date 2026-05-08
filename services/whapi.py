@@ -202,6 +202,9 @@ class WhapiClient:
     # ------------------------------------------------------------------
 
     def _normalize_phone(self, phone: str) -> str:
+        # Grupos WhatsApp (@g.us) e outros JIDs especiais não devem ser normalizados
+        if "@" in str(phone):
+            return str(phone)
         digits = "".join(c for c in phone if c.isdigit())
         if not digits.startswith("55"):
             digits = "55" + digits
