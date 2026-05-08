@@ -229,14 +229,18 @@ class TestHandleDadosPessoais:
 
         faro = MagicMock()
         faro.update_card = AsyncMock()
+        faro.move_card = AsyncMock()
+        faro.add_activity = AsyncMock()
         faro.__aenter__ = AsyncMock(return_value=faro)
         faro.__aexit__ = AsyncMock(return_value=False)
 
         msg = MagicMock()
         msg.media_type = "image"
 
+        # Mock do template para a adm entrar no fluxo de coleta (não handoff)
         with patch("webhooks.agente_contrato.WhapiClient", return_value=whapi), \
-             patch("webhooks.agente_contrato.FaroClient", return_value=faro):
+             patch("webhooks.agente_contrato.FaroClient", return_value=faro), \
+             patch("services.zapsign.get_template_for_adm", return_value="template-fake-token"):
             await handle_extrato_recebido(card, msg)
 
         # Deve pedir os dados — não chamar generate_and_send_contract
@@ -248,7 +252,12 @@ class TestHandleDadosPessoais:
     async def test_extrato_com_dados_completos_gera_contrato(self):
         from webhooks.agente_contrato import handle_extrato_recebido
 
-        dados = {"CPF": "111.222.333-44", "RG": "12345", "Endereco": "Rua A 1", "Email": "a@b.com"}
+        dados = {
+            "CPF": "111.222.333-44", "RG": "12345", "Endereco": "Rua A 1",
+            "Email": "a@b.com", "NomeCompleto": "Ana Teste", "CEP": "01310-100",
+            "EstadoCivil": "solteira", "Ocupacao": "analista", "Nacionalidade": "brasileira",
+            "DadosPagamento": "Itaú ag 1234 cc 56789-0",
+        }
         card = card_assinatura(**{"Dados Pessoais Texto": json.dumps(dados)})
 
         whapi = MagicMock()
@@ -258,6 +267,8 @@ class TestHandleDadosPessoais:
 
         faro = MagicMock()
         faro.update_card = AsyncMock()
+        faro.move_card = AsyncMock()
+        faro.add_activity = AsyncMock()
         faro.__aenter__ = AsyncMock(return_value=faro)
         faro.__aexit__ = AsyncMock(return_value=False)
 
@@ -268,12 +279,14 @@ class TestHandleDadosPessoais:
 
         with patch("webhooks.agente_contrato.WhapiClient", return_value=whapi), \
              patch("webhooks.agente_contrato.FaroClient", return_value=faro), \
-             patch("webhooks.agente_contrato.FaroClient", return_value=faro), \
-             patch("jobs.contrato.generate_and_send_contract", contract_mock), \
-             patch("asyncio.create_task") as mock_task:
+             patch("services.zapsign.get_template_for_adm", return_value="template-fake-token"), \
+             patch("webhooks.agente_contrato.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
             await handle_extrato_recebido(card, msg)
 
-        # Deve ter disparado confirmação ao lead
+        # Deve ter disparado confirmação ao lead (extrato + dados completos)
         assert whapi.send_text.called
+        texto_enviado = whapi.send_text.call_args[0][1]
+        assert any(w in texto_enviado.lower() for w in ["extrato", "contrato", "perfeito", "preparando"])
         # Deve ter criado task para gerar contrato
-        assert mock_task.called
+        assert mock_asyncio.create_task.called

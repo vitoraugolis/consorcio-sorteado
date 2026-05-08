@@ -13,6 +13,7 @@ Fluxo para leads de lista em stage ASSINATURA (sem ZapSign Token ainda):
     - Quando extrato chega (mídia) → gera contrato ZapSign
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -139,7 +140,7 @@ async def _extract_fields_with_ai(texto: str) -> dict:
                 k: v for k, v in data.items()
                 if v and str(v).strip().lower() not in ("null", "none", "")
             }
-        except (AIError, json.JSONDecodeError, KeyError) as e:
+        except Exception as e:
             logger.warning("agente_contrato: falha na extração IA: %s", e)
             # Fallback: CPF, CNPJ e e-mail via regex
             result = {}
@@ -582,6 +583,5 @@ async def handle_extrato_recebido(card: dict, msg) -> None:
         await save_history(faro, card_id, history)
 
     from jobs.contrato import generate_and_send_contract
-    import asyncio
     asyncio.create_task(generate_and_send_contract(card))
     logger.info("agente_contrato: extrato recebido para card %s → gerando ZapSign.", card_id[:8])

@@ -113,9 +113,12 @@ class TestRouteMessage:
 
     @pytest.mark.asyncio
     async def test_bazar_em_ativacao_vai_para_agente_bazar(self):
-        from webhooks.router import route_message, QUALIFICATION_STAGES
+        from webhooks.router import route_message
+        from config import Stage
 
-        stage = next(iter(QUALIFICATION_STAGES))
+        # Usa EM_CONTATO: stage genérico de qualificação Bazar/LP,
+        # sem tratamento especial (não é ESPERA, COTAS_NAO_CONTEMPLADAS, NAO_QUALIFICADO, LP_LANCE).
+        stage = Stage.EM_CONTATO
         card = _card(fonte="Bazar", stage_id=stage)
         msg = _make_msg(text="quero vender")
 
