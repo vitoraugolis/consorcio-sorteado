@@ -9,7 +9,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from config import Stage, NOTIFY_PHONES
+from config import Stage, NOTIFY_PHONES, SDR_MODEL
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
@@ -224,7 +224,7 @@ async def _respond(card: dict, texto: str) -> None:
         async with AIClient() as ai:
             resposta_raw = await ai.complete_with_history(
                 history=history, system=system, max_tokens=350,
-                model="gpt-4o-mini", fallback_model="gpt-4o-mini",
+                model="gpt-4o-mini", fallback_model=SDR_MODEL,
             )
             m = re.search(r"\{.*\}", resposta_raw, re.DOTALL)
             if m:

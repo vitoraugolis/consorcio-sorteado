@@ -17,6 +17,7 @@ from config import (
     PUBLIC_URL,
     QUALIFICACAO_PERCENTUAL_MAXIMO,
     QUALIFICACAO_VALOR_PAGO_MAXIMO,
+    QUALIFICADOR_MODEL,
 )
 from services.ai import AIClient, AIError
 from services.pdf_extractor import (

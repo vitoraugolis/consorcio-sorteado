@@ -18,7 +18,7 @@ import logging
 import re
 from typing import Optional
 
-from config import Stage
+from config import Stage, CONTRATO_MODEL
 
 from services.ai import AIClient, AIError
 from services.faro import (
@@ -128,6 +128,7 @@ async def _extract_fields_with_ai(texto: str) -> dict:
                 prompt=_EXTRACT_PROMPT.format(texto=texto.replace('"', "'")),
                 system=_EXTRACT_SYSTEM,
                 max_tokens=250,
+                model=CONTRATO_MODEL,
             )
             m = re.search(r"\{.*\}", raw, re.DOTALL)
             if not m:
@@ -267,7 +268,7 @@ async def _build_response(
 
     try:
         async with AIClient() as ai:
-            msg = await ai.complete(prompt=prompt, system=_COLLECT_SYSTEM, max_tokens=220)
+            msg = await ai.complete(prompt=prompt, system=_COLLECT_SYSTEM, max_tokens=220, model=CONTRATO_MODEL)
         return msg.strip(), is_complete
     except (AIError, Exception) as e:
         logger.warning("agente_contrato: IA falhou na geração de resposta: %s — usando fallback", e)

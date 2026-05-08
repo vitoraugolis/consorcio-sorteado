@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from config import Stage, NOTIFY_PHONES, CONSULTANT_PHONES as _CONSULTANT_PHONES_CFG
+from config import Stage, NOTIFY_PHONES, CONSULTANT_PHONES as _CONSULTANT_PHONES_CFG, NEGOCIADOR_MODEL
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
@@ -1130,6 +1130,7 @@ async def _classify_with_ai(
             prompt=prompt,
             system=_system,
             max_tokens=500,
+            model=NEGOCIADOR_MODEL,
         )
 
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)

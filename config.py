@@ -128,6 +128,12 @@ DEFAULT_VISION_MODEL = os.getenv("DEFAULT_VISION_MODEL", "gpt-4o")
 GEMINI_MODEL_PDF     = os.getenv("GEMINI_MODEL_PDF", "gemini-2.5-flash")
 HISTORY_MODEL      = os.getenv("HISTORY_MODEL", "gemini-2.0-flash")
 
+# Modelos por agente — configuráveis via .env
+NEGOCIADOR_MODEL   = os.getenv("NEGOCIADOR_MODEL",   "claude-sonnet-4-5")
+CONTRATO_MODEL     = os.getenv("CONTRATO_MODEL",     "claude-sonnet-4-5")
+SDR_MODEL          = os.getenv("SDR_MODEL",           "gpt-4o-mini")
+QUALIFICADOR_MODEL = os.getenv("QUALIFICADOR_MODEL",  "gpt-4o-mini")
+
 # ---------------------------------------------------------------------------
 # Comportamento dos jobs
 # ---------------------------------------------------------------------------

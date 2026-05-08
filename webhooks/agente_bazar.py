@@ -8,7 +8,7 @@ import random
 import re
 from datetime import datetime, timezone
 
-from config import Stage, NOTIFY_PHONES
+from config import Stage, NOTIFY_PHONES, SDR_MODEL
 from services.ai import AIClient, AIError
 from services.faro import (
     FaroClient, FaroError,
@@ -245,8 +245,8 @@ async def _respond(card: dict, texto: str) -> None:
                 history=history,
                 system=system,
                 max_tokens=350,
-                model="gpt-4o-mini",
-                fallback_model="gpt-4o-mini",
+                model=SDR_MODEL,
+                fallback_model=SDR_MODEL,
             )
             # Tenta extrair JSON — tolera texto antes/depois e blocos ```json
             raw_clean = re.sub(r"```(?:json)?|```", "", resposta_raw).strip()
