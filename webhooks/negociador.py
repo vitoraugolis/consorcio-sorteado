@@ -80,9 +80,9 @@ def _build_handoff_notification(card: dict, mensagem: str, history: list | None 
             card.get("id", "?")[:8],
         )
     resumo_turns = []
-    for turn in history[-6:]:
+    for turn in history[-12:]:  # aumentado de 6 para 12 turnos
         role = "Lead" if turn.get("role") == "user" else "Manuela"
-        resumo_turns.append(f"*{role}:* {turn.get('content', '')[:120]}")
+        resumo_turns.append(f"*{role}:* {turn.get('content', '')[:200]}")  # 200 chars (era 120)
     resumo = "\n".join(resumo_turns) if resumo_turns else f"*Lead:* {mensagem}"
 
     if "bazar" in fonte:
@@ -258,9 +258,9 @@ def _build_contraproposta_notification(card: dict, mensagem: str, history: list 
             card.get("id", "?")[:8],
         )
     resumo_turns = []
-    for turn in history[-6:]:
+    for turn in history[-12:]:  # aumentado de 6 para 12 turnos
         role = "Lead" if turn.get("role") == "user" else "Manuela"
-        resumo_turns.append(f"*{role}:* {turn.get('content', '')[:120]}")
+        resumo_turns.append(f"*{role}:* {turn.get('content', '')[:200]}")  # 200 chars (era 120)
     resumo = "\n".join(resumo_turns) if resumo_turns else f"*Lead:* {mensagem}"
 
     msg = (
@@ -1091,16 +1091,46 @@ def _detect_tom(texto: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _history_to_text(history: list[dict], exclude_last: bool = True) -> str:
-    """Converte histórico de conversa para texto para incluir em prompts."""
+    """Converte histórico de conversa para texto para incluir em prompts de classificação."""
     turns = history[:-1] if exclude_last and history else history
     if not turns:
         return "(sem histórico anterior)"
-    recent = turns[-8:]  # máximo de 8 turnos de contexto
+    recent = turns[-20:]  # últimos 20 turnos de contexto (aumentado de 8)
     lines = []
     for t in recent:
         role = "Lead" if t.get("role") == "user" else "Manuela"
-        lines.append(f"{role}: {t.get('content', '')[:200]}")
+        lines.append(f"{role}: {t.get('content', '')[:500]}")  # 500 chars por turn (era 200)
     return "\n".join(lines)
+
+
+def _split_history_for_classify(
+    history: list[dict],
+    mensagem: str,
+) -> tuple[list[dict], str]:
+    """
+    Divide o histórico para o prompt de classificação do negociador.
+
+    Estratégia:
+    - O histórico completo (sem a última mensagem do usuário) vai como mensagens reais
+      para o complete_with_history — o modelo vê a conversa real, não texto achatado.
+    - O CLASSIFY_PROMPT é enviado como última mensagem do usuário, com o histórico
+      textual mais antigo embutido apenas quando o histórico total é muito longo.
+
+    Retorna:
+        messages: lista de mensagens para o modelo (sem a última do usuário, que vai no prompt)
+        historico_txt: histórico como texto para embutir no prompt de classificação
+    """
+    # Exclui a última entrada (que é a mensagem atual do lead, adicionada antes da chamada)
+    turns_sem_atual = history[:-1] if history else []
+
+    # Últimos 30 turnos como mensagens reais — o modelo processa como conversa autêntica
+    recent_as_messages = turns_sem_atual[-30:]
+
+    # Para o campo {historico} no CLASSIFY_PROMPT usamos os mesmos 20 últimos como texto
+    # (serve de âncora textual para o modelo identificar o contexto no prompt)
+    historico_txt = _history_to_text(turns_sem_atual, exclude_last=False)
+
+    return recent_as_messages, historico_txt
 
 
 async def _classify_with_ai(
@@ -1113,24 +1143,38 @@ async def _classify_with_ai(
 ) -> NegotiationResult:
     """
     Classifica a mensagem e gera resposta via IA.
-    Usa sempre ai.complete() com histórico embutido como texto — garante retorno JSON.
+
+    Usa complete_with_history() — o histórico da conversa passa como mensagens reais
+    ao modelo (não como texto achatado no prompt). Isso garante que o modelo "vive"
+    a conversa completa em vez de ler um resumo truncado, eliminando respostas
+    fora de contexto, repetitivas e sem humanização.
+
+    O prompt de classificação (intent + resposta) é a última mensagem do usuário.
     """
-    historico_txt = _history_to_text(history or [], exclude_last=True)
+    _history = history or []
+    conv_messages, historico_txt = _split_history_for_classify(_history, mensagem)
 
     _system = SYSTEM_PROMPT + extra_system if extra_system else SYSTEM_PROMPT
-    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
+
+    # Prompt de classificação como última mensagem do usuário
+    classify_prompt = CLASSIFY_PROMPT_TEMPLATE.format(
         stage_nome=stage_nome,
         dados_card=build_card_context(card),
         mensagem=mensagem,
         historico=historico_txt,
     )
 
+    # Monta histórico + prompt de classificação como mensagens reais
+    # O modelo recebe: [histórico real] + [mensagem de classificação]
+    messages_for_model = conv_messages + [{"role": "user", "content": classify_prompt}]
+
     try:
-        raw = await ai.complete(
-            prompt=prompt,
+        raw = await ai.complete_with_history(
+            history=messages_for_model,
             system=_system,
-            max_tokens=500,
+            max_tokens=600,
             model=NEGOCIADOR_MODEL,
+            fallback_model="gpt-4o-mini",
         )
 
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1145,8 +1189,8 @@ async def _classify_with_ai(
             raise AIError("Resposta vazia da IA")
 
         logger.info(
-            "Negociador IA: intent=%s | reasoning=%s",
-            intent, data.get("reasoning", "")[:80]
+            "Negociador IA: intent=%s | reasoning=%s | history_turns=%d",
+            intent, data.get("reasoning", "")[:80], len(conv_messages),
         )
         return _build_result(intent, ai_response, card, mensagem)
 
@@ -1194,7 +1238,7 @@ async def _handle_assinatura_message(card: dict, mensagem: str, history: list | 
     # Gera resposta contextual com IA para dúvidas genéricas em ASSINATURA
     try:
         # Usa history passado pelo caller (Redis) para evitar leitura stale do campo FARO
-        history_ctx = _history_to_text(history or [], max_turns=4)
+        history_ctx = _history_to_text(history or [], max_turns=10)  # aumentado de 4 para 10
         from services.ai import AIClient, AIError
         system = (
             "Você é Manuela, consultora da Consórcio Sorteado. "
@@ -1404,7 +1448,7 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
     # ── Audita resposta (sem Safety Car — responde autonomamente) ─────────────
     from services.safety_car import audit_response
     from services.faro import history_to_text
-    historico_txt = history_to_text(history[:-1], max_turns=6)
+    historico_txt = history_to_text(history[:-1], max_turns=15)  # aumentado de 6 para 15
 
     if result.response_message:
         audit = await audit_response(result.response_message, card_fresh, historico_txt, agente="negociador")

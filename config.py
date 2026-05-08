@@ -242,7 +242,7 @@ def filter_test_cards(cards: list) -> list:
 # Agentes de IA
 # ---------------------------------------------------------------------------
 DEBOUNCE_SECONDS  = int(os.getenv("DEBOUNCE_SECONDS", "15"))
-HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "30"))
+HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "100"))
 REDIS_URL         = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
 # ---------------------------------------------------------------------------

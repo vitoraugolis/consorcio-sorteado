@@ -5,7 +5,7 @@ Substitui dicts/sets em memória por estado persistente no Redis local.
 Garante que reinícios do servidor não percam conversas em andamento.
 
 Estrutura das chaves:
-  cs:conv:{phone}        → histórico de mensagens (list, max 50)
+  cs:conv:{phone}        → histórico de mensagens (list, max HISTORY_MAX_TURNS*2)
   cs:mutex:{resource}    → distributed lock / mutex (string, com TTL)
   cs:debounce:{phone}    → buffer de debounce (list de textos)
 """
@@ -16,7 +16,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from config import REDIS_URL
+from config import REDIS_URL, HISTORY_MAX_TURNS
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +64,10 @@ async def get_history(phone: str) -> list[dict]:
         return []
 
 
-async def append_history(phone: str, role: str, content: str, max_turns: int = 50) -> None:
+async def append_history(phone: str, role: str, content: str, max_turns: int = None) -> None:
     """Adiciona uma mensagem ao histórico. Mantém no máximo max_turns entradas."""
+    if max_turns is None:
+        max_turns = HISTORY_MAX_TURNS * 2  # cada turn = 1 entrada; HISTORY_MAX_TURNS = pares
     try:
         r = await get_redis()
         key = f"cs:conv:{phone}"
@@ -175,7 +177,7 @@ async def save_history_smart(
     history: list[dict],
     faro_client: Any | None = None,
     card_id: str | None = None,
-    max_turns: int = 50,
+    max_turns: int = None,
 ) -> None:
     """
     Salva histórico no Redis (primário) e opcionalmente no FARO (backup).
@@ -184,6 +186,10 @@ async def save_history_smart(
     """
     import asyncio
     from services.faro import save_history as faro_save_history
+
+    # max_turns padrão = HISTORY_MAX_TURNS * 2 (pares user/assistant)
+    if max_turns is None:
+        max_turns = HISTORY_MAX_TURNS * 2
 
     # Trunca para max_turns
     if len(history) > max_turns:

@@ -194,9 +194,19 @@ class AIClient:
         if system:
             contents.append({"role": "user", "parts": [{"text": f"[Instruções do sistema: {system}]"}]})
             contents.append({"role": "model", "parts": [{"text": "Entendido."}]})
+
+        # Gemini exige alternância user/model. Mescla turnos consecutivos do mesmo role.
         for msg in history:
             role = "model" if msg["role"] == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+            if contents and contents[-1]["role"] == role:
+                contents[-1]["parts"][0]["text"] += "\n" + msg["content"]
+            else:
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+        # Garante que termina com user (Gemini rejeita se última msg for "model")
+        if contents and contents[-1]["role"] == "model":
+            contents.append({"role": "user", "parts": [{"text": "(aguardando resposta)"}]})
+
         r = await self._client.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             params={"key": GEMINI_API_KEY},
@@ -224,7 +234,25 @@ class AIClient:
     async def _anthropic_chat(self, history: list[dict], system: str, model: str, max_tokens: int) -> str:
         if not ANTHROPIC_API_KEY:
             raise AIError("ANTHROPIC_API_KEY não configurada")
-        body = {"model": model, "max_tokens": max_tokens, "messages": history}
+
+        # Anthropic exige alternância user/assistant e última msg = user.
+        # Sanitiza: mescla turnos consecutivos do mesmo role.
+        sanitized: list[dict] = []
+        for msg in history:
+            role    = msg.get("role", "user")
+            content = msg.get("content", "")
+            if sanitized and sanitized[-1]["role"] == role:
+                sanitized[-1]["content"] += "\n" + content
+            else:
+                sanitized.append({"role": role, "content": content})
+        # Garante que começa com user
+        if sanitized and sanitized[0]["role"] != "user":
+            sanitized.insert(0, {"role": "user", "content": "(início da conversa)"})
+        # Garante que termina com user
+        if sanitized and sanitized[-1]["role"] != "user":
+            sanitized.append({"role": "user", "content": "(aguardando resposta)"})
+
+        body = {"model": model, "max_tokens": max_tokens, "messages": sanitized}
         if system:
             body["system"] = system
         r = await self._client.post(
