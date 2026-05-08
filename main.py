@@ -341,6 +341,7 @@ async def lifespan(app: FastAPI):
         slack_info("Sistema Consórcio Sorteado iniciado",
                    context={"Jobs ativos": str(len(scheduler.get_jobs())), "Ambiente": "Produção", "Redis": "✅" if redis_ok else "⚠️ offline"}),
         "slack_info startup",
+        critical=False,
     ))
     yield
     logger.info("🛑 Encerrando sistema...")

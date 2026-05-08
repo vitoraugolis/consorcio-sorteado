@@ -96,19 +96,22 @@ async def _process_card(card: dict, whapi: WhapiClient, faro: FaroClient) -> boo
         return False
     try:
         # Mutex por telefone (TTL 24h) — evita duplicata entre cards do mesmo número
+        # ATENÇÃO: apenas checa se já foi enviado; o mutex só é gravado APÓS envio confirmado
         raw_phone = card.get("Telefone") or card.get("Telefone alternativo") or ""
         phone_digits = "".join(c for c in str(raw_phone) if c.isdigit())
         if phone_digits:
-            phone_sent = await acquire_mutex(f"listas_sent:{phone_digits}", ttl=86400)
-            if not phone_sent:
+            from services.session_store import get_redis
+            r = await get_redis()
+            already_sent = await r.get(f"cs:mutex:listas_sent:{phone_digits}")
+            if already_sent:
                 logger.info("Telefone %s já recebeu ativação hoje — pulando card %s.", phone_digits[-4:], card_id[:8])
                 return False
-        return await _process_card_inner(card, whapi, faro, card_id)
+        return await _process_card_inner(card, whapi, faro, card_id, phone_digits)
     finally:
         await release_mutex(f"ativacao:{card_id}")
 
 
-async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, card_id: str) -> bool:
+async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, card_id: str, phone_digits: str = "") -> bool:
     """Lógica interna de processamento — chamada apenas pelo mutex de _process_card."""
 
     # Proteção primária: se já tem data de primeira ativação, não disparar de novo
@@ -165,6 +168,9 @@ async def _process_card_inner(card: dict, whapi: WhapiClient, faro: FaroClient, 
             logger.error("Erro Whapi card %s: %s", card_id[:8], e)
 
     if sent:
+        # Grava mutex APENAS após envio confirmado — evita bloqueio permanente por falha de envio
+        if phone_digits:
+            await acquire_mutex(f"listas_sent:{phone_digits}", ttl=86400)
         try:
             await faro.move_card(card_id, Stage.PRIMEIRA_ATIVACAO)
             await faro.update_card(card_id, {

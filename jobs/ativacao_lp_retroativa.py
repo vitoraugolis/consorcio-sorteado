@@ -113,6 +113,10 @@ async def _build_queue() -> list[dict]:
                     or "site" in str(c.get("Fonte") or "").lower()
                 ]
                 todos.extend(lp)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                # Loop sendo encerrado (restart) ou timeout — não é erro crítico
+                logger.info("_build_queue: stage %s cancelada (shutdown/timeout) — ignorando.", stage_id[:8])
+                break
             except Exception as e:
                 logger.warning("_build_queue: erro na stage %s: %s", stage_id[:8], e)
 
