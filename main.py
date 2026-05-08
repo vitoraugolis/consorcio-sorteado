@@ -28,6 +28,7 @@ from jobs.contrato import run_contrato_safe
 from jobs.precificacao import run_precificacao_safe
 from jobs.sla_monitor import run_sla_monitor_safe
 from jobs.relatorio_funil import run_relatorio_funil, run_relatorio_retroativo
+from jobs.watchdog_extratos import run_watchdog_extratos
 from webhooks.router import handle_whapi_webhook
 from services.safety_car import run_pipeline_monitor
 
@@ -214,6 +215,9 @@ def setup_scheduler():
     scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
                       id="safety_car", name="Safety Car — Monitor de Pipeline",
                       max_instances=1, misfire_grace_time=120)
+    scheduler.add_job(run_watchdog_extratos, IntervalTrigger(minutes=5),
+                      id="watchdog_extratos", name="Watchdog — Extratos não processados",
+                      max_instances=1, misfire_grace_time=60)
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
 
 

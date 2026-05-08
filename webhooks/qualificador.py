@@ -780,6 +780,18 @@ async def handle_qualification(card: dict, msg) -> None:
         )
 
         if buf_size == 1:
+            # Marca extrato como pendente no Redis — watchdog monitora esta key
+            try:
+                from services.session_store import get_redis
+                _rd = await get_redis()
+                await _rd.set(
+                    f"extrato:pendente:{phone}",
+                    f"{card_id}|{nome}",
+                    ex=600,  # 10 min: se não deletar, watchdog alerta
+                )
+            except Exception:
+                pass
+
             # Primeira imagem deste lote: aguarda 30s antes de processar
             logger.info("Qualificador: card %s — aguardando 30s por possíveis imagens adicionais.", card_id[:8])
             await asyncio.sleep(30)
@@ -1027,6 +1039,14 @@ async def _process_analise(
     Processa o resultado de análise de extrato para um card específico.
     Chamado pelo handle_qualification para cada cota distinta detectada no lote.
     """
+    # Remove marcador de pendente — extrato chegou e está sendo processado
+    try:
+        from services.session_store import get_redis
+        _rd = await get_redis()
+        await _rd.delete(f"extrato:pendente:{phone}")
+    except Exception:
+        pass
+
     # ── TIPO_BEM_NAO_ACEITO — cota de veículo/moto/caminhão/serviço ─────────
     if analise.resultado == ExtratoResultado.TIPO_BEM_NAO_ACEITO:
         tipo_bem_label = analise.tipo_bem or "veículo"
