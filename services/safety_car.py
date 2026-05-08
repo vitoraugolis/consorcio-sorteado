@@ -229,31 +229,7 @@ async def run_pipeline_monitor() -> None:
     anomalias: list[PipelineAnomaly] = []
 
     try:
-        async with FaroClient() as faro:
-            # Verifica cada stage com SLA definido
-            for stage_id, sla_seconds in _SLA.items():
-                try:
-                    cards = await faro.get_cards_from_stage(stage_id=stage_id)
-                    for card in cards:
-                        anomalia = _check_card_sla(card, stage_id, sla_seconds)
-                        if anomalia:
-                            anomalias.append(anomalia)
-                except FaroError as e:
-                    logger.warning("SafetyCar[monitor]: erro ao buscar stage %s: %s", stage_id[:8], e)
-
-            # Verifica leads em reativação com SLA ultrapassado
-            for stage_id, dias in REATIVACAO_DIAS.items():
-                try:
-                    cards = await faro.get_cards_from_stage(stage_id=stage_id)
-                    sla_segundos = int(dias * 86400 * _REATIVACAO_TOLERANCIA)
-                    for card in cards:
-                        anomalia = _check_card_sla(card, stage_id, sla_segundos)
-                        if anomalia:
-                            anomalia.tipo = "reativacao_atrasada"
-                            anomalia.severity = "WARNING"
-                            anomalias.append(anomalia)
-                except FaroError as e:
-                    logger.warning("SafetyCar[monitor]: erro ao buscar reativação %s: %s", stage_id[:8], e)
+        pass  # checagens de SLA removidas — Safety Car mantido para uso futuro
 
     except Exception as e:
         logger.error("SafetyCar[monitor]: falha geral na varredura: %s", e)
