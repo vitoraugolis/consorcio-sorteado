@@ -317,24 +317,7 @@ async def _run_loop() -> None:
             max_s = _state["interval_max"] * 60
             wait_s = random.randint(min_s, max_s)
             logger.info("LP retro: ✉️  enviado — próximo disparo em %ds (~%.1fmin)...", wait_s, wait_s / 60)
-
-            # Pausa o sleep verificando periodicamente se leads novos chegaram
-            elapsed = 0
-            while elapsed < wait_s:
-                await asyncio.sleep(min(30, wait_s - elapsed))
-                elapsed += 30
-                if not _state["running"]:
-                    break
-                # Leads novos têm prioridade — suspende LP retro até fila principal esvaziar
-                try:
-                    from jobs.fila_ativacao import has_leads_novos_pendentes
-                    if await has_leads_novos_pendentes():
-                        logger.info("LP retro: fila principal Bazar/LP tem leads novos — pausando até liberar.")
-                        while _state["running"] and await has_leads_novos_pendentes():
-                            await asyncio.sleep(60)
-                        logger.info("LP retro: fila principal liberada — retomando.")
-                except Exception:
-                    pass  # fail-open: se Redis falhar, continua normalmente
+            await asyncio.sleep(wait_s)
         else:
             logger.info("LP retro: ⏩ pulado — avançando para o próximo imediatamente")
 

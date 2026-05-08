@@ -199,12 +199,6 @@ async def run_ativacao_listas():
         logger.info("Ativação Listas: fora da janela de envio, pulando.")
         return
 
-    # Leads novos Bazar/LP têm prioridade absoluta — Listas aguarda fila principal esvaziar
-    from jobs.fila_ativacao import has_leads_novos_pendentes
-    if await has_leads_novos_pendentes():
-        logger.info("Ativação Listas: fila principal Bazar/LP tem leads novos pendentes — adiando Listas.")
-        return
-
     # Health check — aborta se canal offline
     async with WhapiClient(canal="lista") as w:
         ok, status = await w.health_check()

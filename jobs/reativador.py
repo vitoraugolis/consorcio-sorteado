@@ -202,12 +202,6 @@ async def run_reativador():
         logger.info("Reativador: fora da janela de envio, pulando.")
         return
 
-    # Leads novos têm prioridade absoluta — reativação aguarda fila principal esvaziar
-    from jobs.fila_ativacao import has_leads_novos_pendentes
-    if await has_leads_novos_pendentes():
-        logger.info("Reativador: fila principal Bazar/LP tem leads novos pendentes — adiando reativação.")
-        return
-
     logger.info("=== Iniciando Reativador ===")
     stages_to_check = [
         Stage.PRIMEIRA_ATIVACAO,
