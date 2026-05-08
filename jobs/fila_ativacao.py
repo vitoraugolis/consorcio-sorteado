@@ -408,3 +408,24 @@ async def run_watch_novos_leads_safe():
     except Exception as e:
         import logging
         logging.getLogger(__name__).exception("run_watch_novos_leads: erro inesperado: %s", e)
+
+
+async def has_leads_novos_pendentes() -> bool:
+    """
+    Retorna True se a fila principal de Bazar/LP tem leads novos aguardando.
+    Usado pelos jobs secundários (Reativador, Listas) para ceder prioridade.
+
+    Critério: fila Redis não vazia OU fila rodando (está em processo de ativação).
+    """
+    r = _get_redis()
+    try:
+        queue_len = await r.llen(REDIS_QUEUE_KEY)
+        if queue_len > 0:
+            return True
+        running = await r.get(REDIS_RUNNING_KEY)
+        return bool(running)
+    except Exception:
+        # Fail-open: se Redis falhar, não bloqueia os jobs secundários
+        return False
+    finally:
+        await r.aclose()
