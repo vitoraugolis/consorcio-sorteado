@@ -88,6 +88,12 @@ async def slack_alert(
     except httpx.RequestError as e:
         logger.error("Slack: erro de rede ao enviar alerta: %s", e)
         return False
+    except Exception as e:
+        # anyio ≥ 4 lança ValueError("second argument (exceptions) must be a non-empty sequence")
+        # quando todas as tentativas TCP falham com lista vazia — bug do anyio com Python 3.12.
+        # Tratamos como falha de rede transitória (não é erro de lógica).
+        logger.warning("Slack: falha de conexão ao enviar alerta (%s): %s", level, e)
+        return False
 
 
 async def slack_error(message: str, exception: Exception = None, context: dict = None) -> bool:
@@ -190,4 +196,7 @@ async def log_cs(
         return False
     except httpx.RequestError as e:
         logger.error("Slack log-cs: erro de rede: %s", e)
+        return False
+    except Exception as e:
+        logger.warning("Slack log-cs: falha de conexão: %s", e)
         return False
