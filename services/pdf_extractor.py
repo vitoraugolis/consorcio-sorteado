@@ -800,3 +800,33 @@ async def extract_extrato(pdf_url: str) -> ExtratoEstruturado:
     )
 
     return resultado
+
+
+async def download_pdf_bytes(url: str) -> bytes:
+    """
+    Baixa PDF de uma URL e retorna os bytes brutos.
+    Alias público de _download_pdf — use para persistir mídia antes que a URL expire.
+    Levanta PDFInvalido / PDFCorrompido em caso de falha.
+    """
+    return await _download_pdf(url)
+
+
+async def extract_extrato_from_bytes(pdf_bytes: bytes) -> "ExtratoEstruturado":
+    """
+    Extrai dados de extrato a partir de bytes já baixados (sem re-download).
+    Útil quando a URL original já expirou mas os bytes foram preservados.
+    """
+    warnings: list[str] = []
+    logger.info("Extrator (bytes): enviando %d bytes para Gemini", len(pdf_bytes))
+    raw_text = await _call_gemini(pdf_bytes)
+    raw_dict = _parse_gemini_json(raw_text)
+    normalized = _walk_normalize(raw_dict)
+    resultado = _map_to_dataclasses(normalized)
+    resultado.warnings = warnings
+    logger.info(
+        "Extrator (bytes): concluído | adm=%s | credito=%.0f | confidence=%.2f",
+        resultado.dados_plano.administradora or "?",
+        resultado.dados_plano.valor_credito or 0,
+        resultado.confidence_score,
+    )
+    return resultado

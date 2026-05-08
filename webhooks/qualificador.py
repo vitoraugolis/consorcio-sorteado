@@ -375,18 +375,28 @@ async def _send_extrato_exemplo(card: dict, phone: str) -> bool:
 # Análise via IA — com timeout
 # ---------------------------------------------------------------------------
 
-async def _analyze_extrato(media_url: str) -> ExtratoAnalise:
+async def _analyze_extrato(media_url: str, pdf_bytes: bytes | None = None) -> ExtratoAnalise:
     """
     Analisa extrato de consórcio via pdf_extractor (Gemini 2.5 Flash inline PDF).
     Ponte de compatibilidade: retorna ExtratoAnalise para o fluxo existente.
+
+    Se pdf_bytes for fornecido, usa os bytes diretamente (sem re-download).
+    Isso garante análise mesmo quando a URL original já expirou.
     """
     from config import QUALIFICACAO_PERCENTUAL_MAXIMO, QUALIFICACAO_VALOR_PAGO_MAXIMO
 
     try:
-        estruturado: ExtratoEstruturado = await asyncio.wait_for(
-            extract_extrato(media_url),
-            timeout=130.0,  # pdf_extractor já tem retry interno de 120s
-        )
+        if pdf_bytes:
+            from services.pdf_extractor import extract_extrato_from_bytes
+            estruturado: ExtratoEstruturado = await asyncio.wait_for(
+                extract_extrato_from_bytes(pdf_bytes),
+                timeout=130.0,
+            )
+        else:
+            estruturado: ExtratoEstruturado = await asyncio.wait_for(
+                extract_extrato(media_url),
+                timeout=130.0,  # pdf_extractor já tem retry interno de 120s
+            )
     except asyncio.TimeoutError:
         raise AIError("Timeout na análise de extrato (>130s)")
     except (PDFInvalido, PDFCorrompido) as e:
@@ -747,7 +757,22 @@ async def handle_qualification(card: dict, msg) -> None:
 
         # ── Buffer de 30s: aguarda possíveis imagens adicionais do mesmo lead ──
         from services.session_store import push_media_buffer, pop_media_buffer, media_buffer_ttl
-        entry = {"url": media_url, "media_type": msg.media_type, "raw": msg.raw or {}}
+        from services.pdf_extractor import download_pdf_bytes
+
+        # Baixa bytes imediatamente — URLs do Wasabi expiram em ~15-20min.
+        # Guardar bytes agora garante análise mesmo se URL expirar durante buffer/retry.
+        pdf_bytes: bytes | None = None
+        try:
+            pdf_bytes = await download_pdf_bytes(media_url)
+            logger.info("Qualificador: card %s — PDF baixado (%d bytes) antes do buffer.", card_id[:8], len(pdf_bytes))
+        except Exception as dl_exc:
+            logger.warning("Qualificador: card %s — falha ao pré-baixar PDF (%s); usará URL original.", card_id[:8], dl_exc)
+
+        entry = {"url": media_url, "media_type": msg.media_type, "raw": msg.raw or {}, "pdf_bytes_b64": None}
+        if pdf_bytes:
+            import base64 as _b64
+            entry["pdf_bytes_b64"] = _b64.b64encode(pdf_bytes).decode()
+
         buf_size = await push_media_buffer(phone, entry)
         logger.info(
             "Qualificador: card %s — mídia #%d enfileirada (url=%s…)",
@@ -779,24 +804,44 @@ async def handle_qualification(card: dict, msg) -> None:
 
         # Analisa cada imagem em paralelo
         async def _safe_analyze(e: dict) -> tuple[dict, ExtratoAnalise | None]:
+            # Prefere bytes pré-baixados (imunes a expiração de URL Wasabi)
+            import base64 as _b64
+            b64 = e.get("pdf_bytes_b64")
+            pre_bytes: bytes | None = _b64.b64decode(b64) if b64 else None
+
             last_exc: Exception | None = None
             for attempt in range(1, 4):  # 3 tentativas: 0s, 15s, 45s
                 try:
-                    return e, await _analyze_extrato(e["url"])
+                    return e, await _analyze_extrato(e["url"], pdf_bytes=pre_bytes)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < 3:
                         wait = 15 * attempt
                         logger.warning(
-                            "Qualificador: tentativa %d/3 falhou para %s — retry em %ds: %s",
-                            attempt, e["url"][:60], wait, exc,
+                            "Qualificador: tentativa %d/3 falhou para card %s — retry em %ds: %s",
+                            attempt, card_id[:8], wait, exc,
                         )
                         await asyncio.sleep(wait)
                     else:
                         logger.error(
-                            "Qualificador: 3 tentativas esgotadas para %s: %s",
-                            e["url"][:60], exc,
+                            "Qualificador: 3 tentativas esgotadas para card %s (%s): %s",
+                            card_id[:8], nome, exc,
                         )
+                        # Alerta equipe — lead enviou extrato e sistema não conseguiu ler
+                        try:
+                            from services.whapi import notify_team
+                            from services.slack import slack_alert
+                            aviso = (
+                                f"⚠️ *Falha na leitura de extrato*\n"
+                                f"Lead: *{nome}* (`{phone[-4:]}`)\n"
+                                f"Card: `{card_id[:8]}`\n"
+                                f"Erro após 3 tentativas: `{exc}`\n"
+                                f"Ação: verificar e qualificar manualmente."
+                            )
+                            asyncio.ensure_future(notify_team(aviso))
+                            asyncio.ensure_future(slack_alert(aviso, level="error"))
+                        except Exception:
+                            pass
             return e, None
 
         resultados = await asyncio.gather(*[_safe_analyze(e) for e in lote])
