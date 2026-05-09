@@ -532,11 +532,16 @@ INTENTS — escolha o que melhor descreve a INTENÇÃO real por trás da mensage
 - ACEITAR:          aceitação INCONDICIONAL ("aceito", "pode fechar", "topei", "bora",
                     "perfeito", "confirmado", "combinado", "pode enviar o contrato")
                     ATENÇÃO: "aceito por R$ X" ou "fecho se você me der X" → CONTRA_PROPOSTA
+                    ATENÇÃO: "recebi proposta de R$ X e não aceitei" → OFERECERAM_MAIS (negativa, não aceite!)
+                    ATENÇÃO: qualquer frase com "não aceitei", "recusei", "não concordei" → NUNCA é ACEITAR
 - RECUSAR:          recusa a vender ou pedido para parar o contato
 - MELHORAR_VALOR:   quer mais dinheiro mas sem citar valor específico
-- CONTRA_PROPOSTA:  cita um VALOR NUMÉRICO como condição ("fecho por 90 mil", "aceito por R$ X")
+- CONTRA_PROPOSTA:  cita um VALOR NUMÉRICO como condição ("fecho por 90 mil", "aceito por R$ X",
+                    "não entrego por menos de R$ X")
                     Se apenas pergunta SE pode fazer contraproposta → DUVIDA
 - OFERECERAM_MAIS:  outro comprador ou empresa ofereceu valor maior (pode ou não ter citado o valor)
+                    TAMBÉM: lead menciona proposta anterior que recusou ("recebi R$ X e não aceitei",
+                    "já me ofereceram X e recusei") — indica que quer mais do que o concorrente ofertou
 - NEGOCIAR:         objeção ao valor sem especificar quanto quer; quer "negociar" sem dizer o número
 - DUVIDA:           pergunta sobre processo, documentação, prazo, contrato, pagamento, segurança —
                     qualquer pergunta operacional. Responda com clareza e segurança.
