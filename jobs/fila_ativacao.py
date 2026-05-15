@@ -345,6 +345,21 @@ async def run_fila_ativacao():
                 if fonte == "lp":
                     canal_ok = await _check_whapi_lp_health()
                 else:
+                    # Respeita flag granular BAZAR_ATIVACAO_ENABLED=false
+                    # Permite pausar só o Bazar sem travar o fluxo LP
+                    if os.getenv("BAZAR_ATIVACAO_ENABLED", "true").lower() == "false":
+                        logger.info(
+                            "Fila: BAZAR_ATIVACAO_ENABLED=false — pulando card %s (bazar), "
+                            "devolvendo ao final da fila.",
+                            card["id"][:8],
+                        )
+                        r = _get_redis()
+                        try:
+                            await r.rpush(REDIS_QUEUE_KEY, json.dumps(item, ensure_ascii=False))
+                        finally:
+                            await r.aclose()
+                        await asyncio.sleep(60)
+                        continue
                     canal_ok = await _check_whapi_bazar_health()
                 if not canal_ok:
                     # Devolve o card e pausa 5 min antes de tentar de novo
