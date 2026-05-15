@@ -132,7 +132,7 @@ async def transcribe_audio(raw_msg: dict, whapi_token: str) -> Optional[str]:
             logger.warning("transcriber: áudio ininteligível msg_id=%s", msg_id)
             return None
         dur = audio_obj.get("seconds") or audio_obj.get("duration") or "?"
-        logger.info("transcriber: áudio %ss transcrito (%d chars)", dur, len(text))
+        logger.info("transcriber: áudio %ss transcrito (%d chars): '%s'", dur, len(text), text)
         return text
     except Exception as e:
         logger.error("transcriber: erro na chamada Gemini: %s", e)

@@ -30,7 +30,16 @@ async def _fire(phone: str, dispatch: Callable[[Any, str], Awaitable[None]]) -> 
     _pending.pop(phone, None)
     if not texts or card is None:
         return
-    combined = " ".join(texts)
+    # Fix 2026-05-15: separar mensagens com marcador explícito em vez de espaço simples.
+    # Antes: ' '.join(texts) — perdia o contexto de que eram mensagens distintas.
+    # O lead pode mandar áudio + texto complementar; juntá-los sem separador fazia
+    # o regex de extração de valores pegar o número errado da mensagem errada
+    # (ex: "17 mil" do áudio e "43" do texto — o primeiro era capturado).
+    # Agora: ' | '.join(texts) deixa claro para a IA que são turnos separados.
+    if len(texts) == 1:
+        combined = texts[0]
+    else:
+        combined = " | ".join(texts)
     logger.debug("Debounce[%s]: %d msg(s) → dispatch", phone[-6:], len(texts))
     try:
         await dispatch(card, combined)

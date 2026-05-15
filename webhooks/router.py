@@ -495,7 +495,9 @@ async def route_message(msg: IncomingMessage) -> None:
     if msg.is_audio and msg.whapi_token:
         transcricao = await transcribe_audio(msg.raw, msg.whapi_token)
         if transcricao:
-            logger.info("Router: áudio transcrito para %s: '%s'", msg.phone, transcricao[:80])
+            # Fix 2026-05-15: logar transcrição completa para permitir auditoria forense.
+            # Antes truncava a 80 chars; isso ocultou o "17 mil" no caso do lead 1c55c3d4.
+            logger.info("Router: áudio transcrito para %s: '%s'", msg.phone, transcricao)
             msg.text = transcricao
             msg.media_type = None  # trata como texto a partir daqui
         else:
@@ -506,7 +508,7 @@ async def route_message(msg: IncomingMessage) -> None:
         return
 
     logger.info("Router [%s]: %s → media=%s texto='%s'",
-                msg.source, msg.phone, msg.media_type or "none", (msg.text or "")[:60])
+                msg.source, msg.phone, msg.media_type or "none", (msg.text or "")[:200])
 
     card = await _find_card(msg.phone, canal_hint=_canal_hint_from_token(msg.whapi_token))
 
