@@ -165,60 +165,73 @@ def _parse_br_number(raw: str) -> float:
 
 def _extract_lead_value(mensagem: str, proposta_atual: float = 0.0) -> float:
     """
-    Extrai valor monetário mencionado pelo lead.
+    Extrai valor monetário mencionado pelo lead como PROPOSTA ABSOLUTA.
 
-    Usa proposta_atual como âncora de contexto:
-    se o número extraído for menor que 1% da proposta vigente,
-    interpreta como estando na mesma ordem de grandeza (multiplica por 1000).
+    Estratégia: coleta TODOS os valores monetários encontrados na mensagem
+    (em todos os formatos) e retorna o MAIOR.
 
-    Ex: proposta=200.000 + lead diz "320" → 320 < 2.000 → retorna 320.000
+    Isso evita que números menores mencionados em contexto incremental
+    ("quero 17 mil a mais, a DM como ofereceu 43") contaminem a extração —
+    o maior valor (43000) prevalece sobre o menor (17000).
+
+    Usa proposta_atual como âncora para números curtos (2-3 dígitos):
+    se val < 1% da proposta vigente, interpreta como mesma ordem de grandeza.
+    Ex: proposta=200.000 + lead diz "320" → 320 < 2.000 → candidato = 320.000
+
+    CORREÇÃO (2026-05-15): antes retornava o PRIMEIRO match; agora coleta
+    TODOS os candidatos de todos os formatos e retorna o maior.
+    Corrige o bug do lead 1c55c3d4 onde "17 mil" era capturado antes de "43"
+    numa mensagem de debounce concatenado (áudio + texto).
     """
     texto = mensagem.lower()
+    candidatos: list[float] = []
 
     # R$ 350.000 / R$350.000,00 / R$350000
-    m = re.search(r"r\$\s*([\d.,]+)", texto)
-    if m:
+    for m in re.finditer(r"r\$\s*([\d.,]+)", texto):
         try:
-            return _parse_br_number(m.group(1))
+            candidatos.append(_parse_br_number(m.group(1)))
         except ValueError:
             pass
+
     # Formato BR com separador de milhar: 500.000,00 / 500.000 / 1.000.000
-    m = re.search(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?)\b", texto)
-    if m:
+    for m in re.finditer(r"\b(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?)\b", texto):
         try:
-            return _parse_br_number(m.group(1))
+            candidatos.append(_parse_br_number(m.group(1)))
         except ValueError:
             pass
+
     # "350 mil" / "350mil"
-    m = re.search(r"(\d[\d.,]*)\s*mil\b", texto)
-    if m:
+    for m in re.finditer(r"(\d[\d.,]*)\s*mil\b", texto):
         try:
             base = float(m.group(1).replace(".", "").replace(",", "."))
-            return base * 1000
+            candidatos.append(base * 1000)
         except ValueError:
             pass
+
     # "31k" / "31 k" / "50k" — abreviação comum no WhatsApp
-    m = re.search(r"(\d[\d.,]*)\s*k\b", texto)
-    if m:
+    for m in re.finditer(r"(\d[\d.,]*)\s*k\b", texto):
         try:
             base = float(m.group(1).replace(".", "").replace(",", "."))
-            return base * 1000
+            candidatos.append(base * 1000)
         except ValueError:
             pass
+
     # número solto com 4+ dígitos (ex: "350000")
-    m = re.search(r"\b(\d{4,})\b", texto)
-    if m:
-        return float(m.group(1))
-    # número curto (ex: "320") — usa proposta_atual como âncora
-    m = re.search(r"\b(\d{2,3})\b", texto)
-    if m:
+    for m in re.finditer(r"\b(\d{4,})\b", texto):
+        candidatos.append(float(m.group(1)))
+
+    # número curto (ex: "43", "320") — SEMPRE processado junto com os demais
+    # para participar do pool de max(), não só como fallback de último recurso.
+    for m in re.finditer(r"\b(\d{2,3})\b", texto):
         val = float(m.group(1))
         if proposta_atual > 0 and val < proposta_atual * 0.01:
             # "320" com proposta de 200k → 320 < 2.000 → interpreta como 320.000
             val = val * 1000
         if val > 0:
-            return val
-    return 0.0
+            candidatos.append(val)
+
+    # Retorna o MAIOR valor encontrado em qualquer formato
+    return max(candidatos) if candidatos else 0.0
 
 
 def _parse_sequencia(card: dict) -> list[float]:
@@ -367,6 +380,42 @@ def _get_next_proposal(card: dict, lead_value: float = 0.0) -> dict:
     # Se não → retornar o máximo disponível da sequência.
     if lead_value > 0:
         max_sequencia = max(v for _, v in candidatos) if candidatos else 0.0
+
+        # GUARDA DE SANIDADE (fix 2026-05-15):
+        # Nunca aceitar automaticamente um valor MENOR OU IGUAL à última proposta.
+        # Isso evita aceitar valores incrementais ("quero mais 17 mil"), números
+        # mencionados como referência ("a DM ofereceu 17 mil a mais"), ou qualquer
+        # número extraído de mensagem ambígua que seja inferior ao já ofertado.
+        # Nesses casos, escalamos normalmente como MELHORAR_VALOR.
+        if lead_value <= ultima_proposta:
+            logger.warning(
+                "_get_next_proposal: BLOQUEIO — lead_value=%.0f ≤ ultima_proposta=%.0f "
+                "(valor possivelmente incremental ou ambíguo). Escalando normalmente.",
+                lead_value, ultima_proposta,
+            )
+            # Recai para escalada normal (regra dos 27%)
+            pct_atual = (ultima_proposta / credito * 100) if credito > 0 else 100.0
+            is_max_jump = pct_atual < 27.0
+            if is_max_jump:
+                novo_i, nova = max(candidatos, key=lambda x: x[1])
+                viavel = any(v > nova for v in sequencia)
+                return {
+                    "nova_proposta": nova,
+                    "indice": novo_i + 1,
+                    "viavel": viavel,
+                    "pode_escalar": True,
+                    "is_max_jump": True,
+                }
+            novo_i, nova = candidatos[0]
+            viavel = len(candidatos) > 1
+            return {
+                "nova_proposta": nova,
+                "indice": novo_i + 1,
+                "viavel": viavel,
+                "pode_escalar": True,
+                "is_max_jump": False,
+            }
+
         if lead_value <= max_sequencia:
             # Conseguimos pagar o valor pedido → aceitar o valor do lead diretamente
             logger.info(
@@ -703,7 +752,15 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
     # Guarda: aceitação condicional com valor ("eu fecho se você me der X") → CONTRA_PROPOSTA
     if intent == Intent.ACEITAR and _message_has_value(mensagem):
         _texto = mensagem.lower()
-        _condicionais = ["se ", "se você", "caso ", "desde que", "se me ", "se der", "se oferecer"]
+        # Inclui padrões sem palavra condicional explícita mas que indicam valor condicionante.
+        # Ex: "aceito por R$ 43.000" — o "por" sinaliza que o aceite é condicionado ao valor.
+        # Correção 2026-05-15: antes só verificava condicionais tipo "se/caso/desde que",
+        # deixando "aceito por R$ X" passar como ACEITAR incondicional.
+        _condicionais = [
+            "se ", "se você", "caso ", "desde que", "se me ", "se der", "se oferecer",
+            " por r$", " por r\x24", "aceito por", "fecho por", "topo por",
+            "a partir de", "pelo menos", "no mínimo", "mínimo de",
+        ]
         if any(c in _texto for c in _condicionais):
             intent = Intent.CONTRA_PROPOSTA
             # cai nos blocos de CONTRA_PROPOSTA abaixo
@@ -915,6 +972,45 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
 
     # Contraproposta do lead dentro do nosso alcance → aceitar o valor dele diretamente
     if prox.get("aceitar_contraproposta"):
+        import random as _rand
+        # Segunda camada de segurança (fix 2026-05-15):
+        # Nunca confirmar aceite se nova_proposta ≤ proposta atual — indica extração errada.
+        _proposta_atual_sanity = _parse_currency_value(card.get("Proposta Realizada") or "0")
+        if prox["nova_proposta"] <= _proposta_atual_sanity:
+            logger.error(
+                "_build_result: BLOQUEIO CRÍTICO — aceitar_contraproposta com "
+                "nova_proposta=%.0f ≤ proposta_atual=%.0f. "
+                "Valor extraído provavelmente está errado. Escalando normalmente.",
+                prox["nova_proposta"], _proposta_atual_sanity,
+            )
+            # Força escalada normal para o próximo step acima da proposta atual
+            prox_escalada = _get_next_proposal(card, lead_value=0.0)
+            if prox_escalada.get("pode_escalar"):
+                nova_fmt_esc = _fmt_currency(prox_escalada["nova_proposta"])
+                nome_curto_esc = get_name(card).split()[0] if get_name(card) else ""
+                import random as _rand2
+                _opts = [
+                    f"Entendo, {nome_curto_esc}! Deixa eu ver o que consigo fazer...\n\n"
+                    f"Consigo chegar a *{nova_fmt_esc}*. O que acha?",
+                    f"Vou buscar o melhor valor pra você. Consigo *{nova_fmt_esc}*. Topamos?",
+                ]
+                return NegotiationResult(
+                    intent=intent,
+                    response_message=_rand2.choice(_opts),
+                    next_stage=Stage.EM_NEGOCIACAO,
+                    extra_fields={
+                        "Proposta Realizada": f"{prox_escalada['nova_proposta']:.2f}",
+                        "Indice da Proposta": str(prox_escalada["indice"]),
+                        "Situacao Negociacao": intent.value,
+                    },
+                )
+            # Sem mais propostas → mantém em negociação sem alterar proposta
+            return NegotiationResult(
+                intent=intent,
+                response_message=ai_response,
+                next_stage=Stage.EM_NEGOCIACAO,
+                extra_fields={"Situacao Negociacao": intent.value},
+            )
         import random as _rand
         _opcoes_aceite_cp = [
             f"Fechado, {nome_curto}! *{nova_fmt}* combinado. 🤝 "
@@ -1285,7 +1381,7 @@ def _count_followups_from_history(history: list) -> int:
     return max(0, sum(1 for t in history if t.get("role") == "assistant") - 1)
 
 
-async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) -> None:
+async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list, proposta_aceita: str | None = None) -> None:
     """
     Disparado imediatamente após o lead aceitar a proposta.
     Esta é a ÚNICA mensagem enviada ao lead no aceite — a IA fica em silêncio
@@ -1295,10 +1391,16 @@ async def _iniciar_coleta_dados_contrato(card: dict, phone: str, history: list) 
     Dois conjuntos de dados conforme titularidade:
       PF  → CPF (padrão)
       PJ  → CNPJ (quando campo "Tipo Pessoa" = "PJ" / "CNPJ")
+
+    proposta_aceita: valor negociado nesta sessão (str com o número ou formatado).
+                     Se None, usa card.get("Proposta Realizada") como fallback.
+                     Passar sempre para evitar ler valor stale do FARO antes do update_card.
     """
     nome     = get_name(card).split()[0] if get_name(card) else "você"
     card_id  = card.get("id", "")
-    proposta = card.get("Proposta Realizada") or "o valor combinado"
+    # Usa o valor passado explicitamente — evita ler o valor stale do card
+    # (card_fresh é carregado antes do update_card que grava a nova proposta)
+    proposta = proposta_aceita or card.get("Proposta Realizada") or "o valor combinado"
     adm      = get_adm(card)
 
     # Limpa o guard para este lead — ele aceitou, pode receber novas mensagens
@@ -1379,7 +1481,7 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
 
     logger.info(
         "Negociador: card=%s | stage=%s... | msg='%s'",
-        card_id[:8], current_stage_id[:8], mensagem[:60]
+        card_id[:8], current_stage_id[:8], mensagem[:200]
     )
 
     if current_stage_id not in ACTIVE_STAGES and current_stage_id not in SUPPORT_STAGES:
@@ -1540,8 +1642,14 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
                         logger.warning("Negociador: erro ao salvar jornada card %s: %s", card_id[:8], _je)
 
                     # Inicia coleta de dados para contrato (nome, endereço, estado civil etc.)
+                    # Passa a proposta negociada nesta sessão (extra_fields tem prioridade sobre
+                    # card_fresh, que pode ter valor stale antes do update_card ser gravado no FARO)
+                    _proposta_negociada = (
+                        (result.extra_fields or {}).get("Proposta Realizada")
+                        or card_fresh.get("Proposta Realizada")
+                    )
                     import asyncio as _asyncio
-                    _asyncio.create_task(_iniciar_coleta_dados_contrato(card_fresh, phone, history))
+                    _asyncio.create_task(_iniciar_coleta_dados_contrato(card_fresh, phone, history, proposta_aceita=_proposta_negociada))
 
         except FaroError as e:
             logger.error("Negociador: erro ao atualizar card %s: %s", card_id[:8], e)

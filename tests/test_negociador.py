@@ -8,6 +8,12 @@ Correções aplicadas (2026-05-08):
   - test_acima_sequencia_razoavel_faz_handoff: cenário corrigido (lead pede 380k = 38% de 1M,
     acima do teto de 32% e abaixo do absurdo de 40%)
   - test_escala_normal / test_salta_para_max: fixtures corrigidas com campo certo
+
+Correções aplicadas (2026-05-15) — Bug lead 1c55c3d4:
+  - _extract_lead_value agora retorna o MAIOR valor encontrado (não o primeiro)
+  - _get_next_proposal bloqueia aceite quando lead_value ≤ ultima_proposta
+  - Novos testes: test_extract_retorna_maior_valor, test_nao_aceita_valor_abaixo_proposta_atual,
+    test_nao_aceita_valor_incremental_ambiguo
 """
 import sys, os, json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -251,3 +257,121 @@ class TestClassifyWithAI:
         assert result.intent == Intent.MELHORAR_VALOR
         assert result.extra_fields is not None
         assert float(result.extra_fields.get("Proposta Realizada", 0)) > 160_000
+
+
+# ---------------------------------------------------------------------------
+# Testes dos fixes do bug lead 1c55c3d4 (2026-05-15)
+# ---------------------------------------------------------------------------
+
+class TestExtractLeadValueMaximo:
+    """
+    Fix #1: _extract_lead_value deve retornar o MAIOR valor, não o primeiro.
+    Cenário do bug: mensagem continha "17 mil" antes de "43" → retornava 17000.
+    Correto: retornar max([17000, 43000]) = 43000.
+    """
+
+    def test_retorna_maior_valor_quando_ha_dois_numeros(self):
+        # "17 mil a mais além dos 43" → deve retornar 43000, não 17000
+        msg = "Desculpa, mais que o dobro, quero 17 mil a mais Desculpa, mas a DM como ofereceu 43, tá bom?"
+        val = _extract_lead_value(msg, proposta_atual=26000)
+        assert val == 43_000, f"esperado 43000, got {val}"
+
+    def test_retorna_maior_quando_r_cifrao_e_numero_solto(self):
+        # "R$ 36.000... mais 43" → deve retornar 43000 (maior)
+        msg = "me ofereça R$ 36.000 ou melhor ainda uns 43 mil"
+        val = _extract_lead_value(msg, proposta_atual=26000)
+        assert val == 43_000
+
+    def test_mensagem_simples_43_mil(self):
+        val = _extract_lead_value("aceito por 43 mil", proposta_atual=26000)
+        assert val == 43_000
+
+    def test_mensagem_com_apenas_17_retorna_17000(self):
+        # Sem concorrência, "17 mil" deve retornar 17000
+        val = _extract_lead_value("quero 17 mil", proposta_atual=26000)
+        assert val == 17_000
+
+    def test_mensagem_r_cifrao_43000(self):
+        val = _extract_lead_value("aceito por R$ 43.000", proposta_atual=26000)
+        assert val == 43_000
+
+    def test_cenario_exato_do_bug(self):
+        """
+        Reproduz o cenário do lead 1c55c3d4:
+        Áudio transcrito (125 chars) + texto concatenados pelo debounce.
+        A transcrição continha '17 mil' antes do '43'.
+        Com o fix, deve retornar 43000 (o maior valor).
+        """
+        msg_combinada = (
+            "Desculpa, mas a DM como ofereceu 43, tá bom? Muito obrigado. "
+            "Mais que o dobro, quero 17 mil a mais "
+            "Desculpa, mas a DM como ofereceu 43, tá bom? Muito obrigado."
+        )
+        val = _extract_lead_value(msg_combinada, proposta_atual=26000)
+        assert val == 43_000, (
+            f"Fix regressão: esperado 43000 (maior valor na msg), got {val}. "
+            f"Cenário do bug lead 1c55c3d4."
+        )
+
+
+class TestGetNextProposalGuardaValorAbaixo:
+    """
+    Fix #2: _get_next_proposal não deve aceitar lead_value ≤ ultima_proposta.
+    Evita que valores incrementais ("mais 17 mil") sejam registrados como proposta.
+    """
+
+    def test_nao_aceita_lead_value_abaixo_da_proposta_atual(self):
+        # Card com proposta=26000; lead_value=17000 (< 26000) → NÃO deve aceitar
+        c = card_base(**{
+            "Crédito": "114831",
+            "Proposta Realizada": "26000",
+            "Classes de Proposta": "26000,31000,34000,36000",
+            "Indice da Proposta": "1",
+        })
+        r = _get_next_proposal(c, lead_value=17_000)
+        assert r.get("aceitar_contraproposta") is not True, (
+            "Bug regressão: aceitar_contraproposta=True com lead_value=17000 < proposta_atual=26000"
+        )
+        # Deve ter escalado normalmente (não aceite automático)
+        assert r.get("nova_proposta", 0) >= 26_000
+
+    def test_nao_aceita_lead_value_igual_a_proposta_atual(self):
+        # lead_value == ultima_proposta → também não deve aceitar automaticamente
+        c = card_base(**{
+            "Crédito": "114831",
+            "Proposta Realizada": "26000",
+            "Classes de Proposta": "26000,31000,34000,36000",
+        })
+        r = _get_next_proposal(c, lead_value=26_000)
+        assert r.get("aceitar_contraproposta") is not True
+
+    def test_aceita_lead_value_dentro_da_sequencia_e_acima_do_atual(self):
+        # lead_value=31000 > ultima_proposta=26000 E ≤ max_seq=36000 → deve aceitar
+        c = card_base(**{
+            "Crédito": "114831",
+            "Proposta Realizada": "26000",
+            "Classes de Proposta": "26000,31000,34000,36000",
+        })
+        r = _get_next_proposal(c, lead_value=31_000)
+        assert r.get("aceitar_contraproposta") is True
+        assert r.get("nova_proposta") == 31_000
+
+    def test_cenario_exato_do_bug_17000_nao_aceito(self):
+        """
+        Reproduz _get_next_proposal com os valores reais do lead 1c55c3d4.
+        Proposta=26000, sequência=26000,31000,34000,36000, lead_value=17000.
+        Com o fix, NÃO deve gerar aceite automático.
+        """
+        c = card_base(**{
+            "Crédito": "114831",
+            "Proposta Realizada": "26000",
+            "Classes de Proposta": "26000,31000,34000,36000",
+            "Indice da Proposta": "1",
+        })
+        r = _get_next_proposal(c, lead_value=17_000)
+        assert r.get("aceitar_contraproposta") is not True, (
+            "Regressão crítica: sistema aceitou R$ 17.000 como proposta sendo proposta_atual=R$ 26.000"
+        )
+        nova = r.get("nova_proposta", 0)
+        assert nova >= 26_000, f"Nova proposta {nova} deve ser ≥ 26000"
+
