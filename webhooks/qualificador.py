@@ -756,7 +756,7 @@ async def handle_qualification(card: dict, msg) -> None:
             return
 
         # ── Buffer de 30s: aguarda possíveis imagens adicionais do mesmo lead ──
-        from services.session_store import push_media_buffer, pop_media_buffer, media_buffer_ttl
+        from services.session_store import push_media_buffer, pop_media_buffer, media_buffer_ttl, acquire_media_lock, release_media_lock
         from services.pdf_extractor import download_pdf_bytes
 
         # Baixa bytes imediatamente — URLs do Wasabi expiram em ~15-20min.
@@ -780,6 +780,13 @@ async def handle_qualification(card: dict, msg) -> None:
         )
 
         if buf_size == 1:
+            # ── Adquire lock de mídia: bloqueia agentes de texto durante o processamento ──
+            # TTL = 130s (cobre buffer 30s + 3 retries Gemini + margem).
+            # Imagens adicionais (#2+) chegam depois e NÃO chamam acquire — a task
+            # principal já segura o lock por elas.
+            await acquire_media_lock(phone)
+            logger.info("Qualificador: card %s — media_lock adquirido para %s", card_id[:8], phone[-6:])
+
             # Marca extrato como pendente no Redis — watchdog monitora esta key
             try:
                 from services.session_store import get_redis
@@ -803,6 +810,7 @@ async def handle_qualification(card: dict, msg) -> None:
                 lote = [entry]
         else:
             # Imagem adicional chegou durante a janela; a task original vai processar tudo
+            # NÃO libera o lock aqui — a task principal (buf_size==1) é dona do lock
             logger.info(
                 "Qualificador: card %s — imagem adicional (#%d) adicionada ao buffer; task original processará.",
                 card_id[:8], buf_size,
@@ -814,175 +822,183 @@ async def handle_qualification(card: dict, msg) -> None:
             card_id[:8], len(lote),
         )
 
-        # Analisa cada imagem em paralelo
-        async def _safe_analyze(e: dict) -> tuple[dict, ExtratoAnalise | None]:
-            # Prefere bytes pré-baixados (imunes a expiração de URL Wasabi)
-            import base64 as _b64
-            b64 = e.get("pdf_bytes_b64")
-            pre_bytes: bytes | None = _b64.b64decode(b64) if b64 else None
+        # ── try/finally garante release do media_lock em todos os caminhos de saída ──
+        try:
+            # Analisa cada imagem em paralelo
+            async def _safe_analyze(e: dict) -> tuple[dict, ExtratoAnalise | None]:
+                # Prefere bytes pré-baixados (imunes a expiração de URL Wasabi)
+                import base64 as _b64
+                b64 = e.get("pdf_bytes_b64")
+                pre_bytes: bytes | None = _b64.b64decode(b64) if b64 else None
 
-            last_exc: Exception | None = None
-            for attempt in range(1, 4):  # 3 tentativas: 0s, 15s, 45s
-                try:
-                    return e, await _analyze_extrato(e["url"], pdf_bytes=pre_bytes)
-                except Exception as exc:
-                    last_exc = exc
-                    if attempt < 3:
-                        wait = 15 * attempt
-                        logger.warning(
-                            "Qualificador: tentativa %d/3 falhou para card %s — retry em %ds: %s",
-                            attempt, card_id[:8], wait, exc,
-                        )
-                        await asyncio.sleep(wait)
-                    else:
-                        logger.error(
-                            "Qualificador: 3 tentativas esgotadas para card %s (%s): %s",
-                            card_id[:8], nome, exc,
-                        )
-                        # Alerta equipe — lead enviou extrato e sistema não conseguiu ler
-                        try:
-                            from services.whapi import notify_team
-                            from services.slack import slack_alert
-                            aviso = (
-                                f"⚠️ *Falha na leitura de extrato*\n"
-                                f"Lead: *{nome}* (`{phone[-4:]}`)\n"
-                                f"Card: `{card_id[:8]}`\n"
-                                f"Erro após 3 tentativas: `{exc}`\n"
-                                f"Ação: verificar e qualificar manualmente."
+                last_exc: Exception | None = None
+                for attempt in range(1, 4):  # 3 tentativas: 0s, 15s, 45s
+                    try:
+                        return e, await _analyze_extrato(e["url"], pdf_bytes=pre_bytes)
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < 3:
+                            wait = 15 * attempt
+                            logger.warning(
+                                "Qualificador: tentativa %d/3 falhou para card %s — retry em %ds: %s",
+                                attempt, card_id[:8], wait, exc,
                             )
-                            asyncio.ensure_future(notify_team(aviso))
-                            asyncio.ensure_future(slack_alert(aviso, level="error"))
-                        except Exception:
-                            pass
-            return e, None
+                            await asyncio.sleep(wait)
+                        else:
+                            logger.error(
+                                "Qualificador: 3 tentativas esgotadas para card %s (%s): %s",
+                                card_id[:8], nome, exc,
+                            )
+                            # Alerta equipe — lead enviou extrato e sistema não conseguiu ler
+                            try:
+                                from services.whapi import notify_team
+                                from services.slack import slack_alert
+                                aviso = (
+                                    f"⚠️ *Falha na leitura de extrato*\n"
+                                    f"Lead: *{nome}* (`{phone[-4:]}`)\n"
+                                    f"Card: `{card_id[:8]}`\n"
+                                    f"Erro após 3 tentativas: `{exc}`\n"
+                                    f"Ação: verificar e qualificar manualmente."
+                                )
+                                asyncio.ensure_future(notify_team(aviso))
+                                asyncio.ensure_future(slack_alert(aviso, level="error"))
+                            except Exception:
+                                pass
+                return e, None
 
-        resultados = await asyncio.gather(*[_safe_analyze(e) for e in lote])
+            resultados = await asyncio.gather(*[_safe_analyze(e) for e in lote])
 
-        # Agrupa por cota (adm + crédito similar = mesma cota, multi-página)
-        grupos: list[list[tuple[dict, ExtratoAnalise]]] = []
-        for entry_r, analise_r in resultados:
-            if analise_r is None or analise_r.resultado == ExtratoResultado.EXTRATO_INCORRETO:
-                continue  # trata incorretos separado abaixo
-            colocado = False
-            for grupo in grupos:
-                ref_entry, ref_analise = grupo[0]
-                mesma_adm = (
-                    (analise_r.administradora or "").lower() ==
-                    (ref_analise.administradora or "").lower()
-                    and (analise_r.administradora or "") != ""
-                )
-                credito_similar = (
-                    ref_analise.valor_credito > 0
-                    and abs(analise_r.valor_credito - ref_analise.valor_credito)
-                    / ref_analise.valor_credito < 0.05  # 5% de tolerância
-                ) if ref_analise.valor_credito > 0 else analise_r.valor_credito == 0
-                mesma_cota_grupo = (
-                    analise_r.grupo and ref_analise.grupo
-                    and analise_r.grupo == ref_analise.grupo
-                    and analise_r.cota and ref_analise.cota
-                    and analise_r.cota == ref_analise.cota
-                )
-                if mesma_cota_grupo or (mesma_adm and credito_similar):
-                    grupo.append((entry_r, analise_r))
-                    colocado = True
-                    break
-            if not colocado:
-                grupos.append([(entry_r, analise_r)])
+            # Agrupa por cota (adm + crédito similar = mesma cota, multi-página)
+            grupos: list[list[tuple[dict, ExtratoAnalise]]] = []
+            for entry_r, analise_r in resultados:
+                if analise_r is None or analise_r.resultado == ExtratoResultado.EXTRATO_INCORRETO:
+                    continue  # trata incorretos separado abaixo
+                colocado = False
+                for grupo in grupos:
+                    ref_entry, ref_analise = grupo[0]
+                    mesma_adm = (
+                        (analise_r.administradora or "").lower() ==
+                        (ref_analise.administradora or "").lower()
+                        and (analise_r.administradora or "") != ""
+                    )
+                    credito_similar = (
+                        ref_analise.valor_credito > 0
+                        and abs(analise_r.valor_credito - ref_analise.valor_credito)
+                        / ref_analise.valor_credito < 0.05  # 5% de tolerância
+                    ) if ref_analise.valor_credito > 0 else analise_r.valor_credito == 0
+                    mesma_cota_grupo = (
+                        analise_r.grupo and ref_analise.grupo
+                        and analise_r.grupo == ref_analise.grupo
+                        and analise_r.cota and ref_analise.cota
+                        and analise_r.cota == ref_analise.cota
+                    )
+                    if mesma_cota_grupo or (mesma_adm and credito_similar):
+                        grupo.append((entry_r, analise_r))
+                        colocado = True
+                        break
+                if not colocado:
+                    grupos.append([(entry_r, analise_r)])
 
-        # Incorretos / sem URL — conta erros
-        incorretos = [
-            (e, a) for e, a in resultados
-            if a is None or a.resultado == ExtratoResultado.EXTRATO_INCORRETO
-        ]
-
-        total_cotas = len(grupos)
-        logger.info(
-            "Qualificador: card %s — lote=%d imagens | %d cota(s) distinta(s) | %d incorreta(s)",
-            card_id[:8], len(lote), total_cotas, len(incorretos),
-        )
-
-        # Se nenhuma cota válida, trata como extrato incorreto
-        if total_cotas == 0:
-            erros = int(journey.get("extrato_incorreto_count", 0)) + len(lote)
-            journey["extrato_incorreto_count"] = erros
-            # Detecta se todos os incorretos são "nao-contemplada" (demonstrativo sem contemplação)
-            motivos_incorretos = [
-                (a.tipo_contemplacao or "") for _, a in incorretos if a is not None
+            # Incorretos / sem URL — conta erros
+            incorretos = [
+                (e, a) for e, a in resultados
+                if a is None or a.resultado == ExtratoResultado.EXTRATO_INCORRETO
             ]
-            motivo_predominante = "nao-contemplada" if motivos_incorretos and all(
-                "nao-contemplada" in m for m in motivos_incorretos
-            ) else ""
-            history = history_append(history, "user", "[Enviou documento(s) — não é extrato ou ilegível]")
-            await _handle_extrato_incorreto(
-                card, card_id, phone, nome, history, journey, erros,
-                motivo=motivo_predominante,
-            )
-            return
 
-        # Processa cada cota distinta
-        for idx, grupo in enumerate(grupos):
-            # Mescla dados de múltiplas páginas da mesma cota (pega a análise mais completa)
-            analise = max(
-                [a for _, a in grupo],
-                key=lambda a: sum([
-                    bool(a.administradora), bool(a.valor_credito), bool(a.valor_pago),
-                    bool(a.parcelas_pagas), bool(a.tipo_contemplacao), bool(a.grupo), bool(a.cota),
-                ]),
+            total_cotas = len(grupos)
+            logger.info(
+                "Qualificador: card %s — lote=%d imagens | %d cota(s) distinta(s) | %d incorreta(s)",
+                card_id[:8], len(lote), total_cotas, len(incorretos),
             )
-            analise_url = grupo[0][0]["url"]  # URL da imagem mais completa (primeira do grupo)
 
-            is_first = idx == 0
-            if is_first:
-                target_card_id = card_id
-                target_card    = card
-            else:
-                # Cota adicional → cria novo card no FARO copiando dados do lead
-                try:
-                    async with FaroClient() as faro_new:
-                        novo_card = await faro_new.create_card(
-                            title=nome,
-                            stage_id=Stage.PRIMEIRA_ATIVACAO,
-                            fields={
-                                "Telefone":        phone,
-                                "Nome do contato": nome,
-                                "Fonte":           get_fonte(card) or "",
-                                "Adm":             analise.administradora or adm,
-                            },
+            # Se nenhuma cota válida, trata como extrato incorreto
+            if total_cotas == 0:
+                erros = int(journey.get("extrato_incorreto_count", 0)) + len(lote)
+                journey["extrato_incorreto_count"] = erros
+                # Detecta se todos os incorretos são "nao-contemplada" (demonstrativo sem contemplação)
+                motivos_incorretos = [
+                    (a.tipo_contemplacao or "") for _, a in incorretos if a is not None
+                ]
+                motivo_predominante = "nao-contemplada" if motivos_incorretos and all(
+                    "nao-contemplada" in m for m in motivos_incorretos
+                ) else ""
+                history = history_append(history, "user", "[Enviou documento(s) — não é extrato ou ilegível]")
+                await _handle_extrato_incorreto(
+                    card, card_id, phone, nome, history, journey, erros,
+                    motivo=motivo_predominante,
+                )
+                return
+
+            # Processa cada cota distinta
+            for idx, grupo in enumerate(grupos):
+                # Mescla dados de múltiplas páginas da mesma cota (pega a análise mais completa)
+                analise = max(
+                    [a for _, a in grupo],
+                    key=lambda a: sum([
+                        bool(a.administradora), bool(a.valor_credito), bool(a.valor_pago),
+                        bool(a.parcelas_pagas), bool(a.tipo_contemplacao), bool(a.grupo), bool(a.cota),
+                    ]),
+                )
+                analise_url = grupo[0][0]["url"]  # URL da imagem mais completa (primeira do grupo)
+
+                is_first = idx == 0
+                if is_first:
+                    target_card_id = card_id
+                    target_card    = card
+                else:
+                    # Cota adicional → cria novo card no FARO copiando dados do lead
+                    try:
+                        async with FaroClient() as faro_new:
+                            novo_card = await faro_new.create_card(
+                                title=nome,
+                                stage_id=Stage.PRIMEIRA_ATIVACAO,
+                                fields={
+                                    "Telefone":        phone,
+                                    "Nome do contato": nome,
+                                    "Fonte":           get_fonte(card) or "",
+                                    "Adm":             analise.administradora or adm,
+                                },
+                            )
+                        target_card_id = novo_card["id"]
+                        target_card    = novo_card
+                        logger.info(
+                            "Qualificador: cota adicional #%d → novo card %s criado para %s",
+                            idx + 1, target_card_id[:8], nome,
                         )
-                    target_card_id = novo_card["id"]
-                    target_card    = novo_card
-                    logger.info(
-                        "Qualificador: cota adicional #%d → novo card %s criado para %s",
-                        idx + 1, target_card_id[:8], nome,
-                    )
-                    await slack_warning(
-                        f"📋 Multi-cota detectado\n"
-                        f"Lead: *{nome}* | Telefone: `{phone[-6:]}`\n"
-                        f"Cota #{idx + 1}: {analise.administradora or '?'} "
-                        f"| Crédito: R${analise.valor_credito:,.0f}\n"
-                        f"Novo card criado: `{target_card_id[:8]}`",
-                        context={"Lead": nome, "Phone": phone, "Adm": analise.administradora},
-                    )
-                except Exception as e_new:
-                    logger.error(
-                        "Qualificador: falha ao criar card para cota adicional #%d: %s", idx + 1, e_new
-                    )
-                    continue
+                        await slack_warning(
+                            f"📋 Multi-cota detectado\n"
+                            f"Lead: *{nome}* | Telefone: `{phone[-6:]}`\n"
+                            f"Cota #{idx + 1}: {analise.administradora or '?'} "
+                            f"| Crédito: R${analise.valor_credito:,.0f}\n"
+                            f"Novo card criado: `{target_card_id[:8]}`",
+                            context={"Lead": nome, "Phone": phone, "Adm": analise.administradora},
+                        )
+                    except Exception as e_new:
+                        logger.error(
+                            "Qualificador: falha ao criar card para cota adicional #%d: %s", idx + 1, e_new
+                        )
+                        continue
 
-            # Processa esta cota no card alvo
-            await _process_analise(
-                analise=analise,
-                media_url=analise_url,
-                card=target_card,
-                card_id=target_card_id,
-                phone=phone,
-                nome=nome,
-                adm=adm,
-                history=history,
-                journey=journey if is_first else load_journey(target_card),
-                is_extra_cota=not is_first,
-                total_cotas=total_cotas,
-            )
+                # Processa esta cota no card alvo
+                await _process_analise(
+                    analise=analise,
+                    media_url=analise_url,
+                    card=target_card,
+                    card_id=target_card_id,
+                    phone=phone,
+                    nome=nome,
+                    adm=adm,
+                    history=history,
+                    journey=journey if is_first else load_journey(target_card),
+                    is_extra_cota=not is_first,
+                    total_cotas=total_cotas,
+                )
+
+        finally:
+            # Libera o lock independente de sucesso, erro ou return antecipado
+            await release_media_lock(phone)
+            logger.info("Qualificador: card %s — media_lock liberado para %s", card_id[:8], phone[-6:])
+
         return
 
     # ── Caso 3: Link externo (Adobe, Drive, Dropbox, etc.) ───────────────────

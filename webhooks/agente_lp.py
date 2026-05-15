@@ -91,6 +91,21 @@ async def _respond_lp(card: dict, texto: str) -> None:
         logger.warning("Agente LP: card %s sem telefone.", card_id[:8])
         return
 
+    # ── Guarda de mídia em processamento ────────────────────────────────────
+    from services.session_store import is_media_processing
+    if await is_media_processing(phone):
+        logger.info(
+            "Agente LP: card %s — media_lock ativo, silenciando resposta de texto durante análise de extrato.",
+            card_id[:8],
+        )
+        async with FaroClient() as faro:
+            card_fresh = await faro.get_card(card_id)
+        history = await load_history_smart(phone, card_fresh)
+        history = history_append(history, "user", texto)
+        async with FaroClient() as faro:
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+        return
+
     # Busca card fresco + historico num unico FaroClient
     async with FaroClient() as faro:
         card_fresh = await faro.get_card(card_id)
@@ -117,15 +132,52 @@ async def _respond_lp(card: dict, texto: str) -> None:
                 model=SDR_MODEL,
                 fallback_model=SDR_MODEL,
             )
+            # ── Extração robusta de JSON com retry de instrução ──────────────
             raw_clean = re.sub(r"```(?:json)?|```", "", resposta_raw).strip()
             m = re.search(r"\{.*\}", raw_clean, re.DOTALL)
+            parsed_json: dict | None = None
             if m:
-                data = json.loads(m.group())
-                intent = data.get("intent", "OUTRO").upper()
-                texto_resposta = (data.get("response") or "").strip() or _fallback_response(intent, nome)
+                try:
+                    parsed_json = json.loads(m.group())
+                except json.JSONDecodeError:
+                    parsed_json = None
+
+            if parsed_json is None:
+                logger.warning(
+                    "Agente LP: resposta sem JSON válido para card %s — solicitando retry JSON.",
+                    card_id[:8],
+                )
+                retry_prompt = (
+                    "Sua resposta anterior não estava no formato JSON solicitado. "
+                    "Reescreva APENAS o JSON abaixo, sem markdown, sem texto antes ou depois:\n"
+                    '{"intent": "<INTENT>", "response": "<mensagem ao lead>"}\n\n'
+                    f"Resposta anterior: {resposta_raw[:300]}"
+                )
+                try:
+                    async with AIClient() as ai2:
+                        resposta_raw2 = await ai2.complete(
+                            prompt=retry_prompt,
+                            system="Retorne EXCLUSIVAMENTE JSON válido. Sem markdown. Sem texto fora do JSON.",
+                            max_tokens=350,
+                            model=SDR_MODEL,
+                        )
+                    raw2_clean = re.sub(r"```(?:json)?|```", "", resposta_raw2).strip()
+                    m2 = re.search(r"\{.*\}", raw2_clean, re.DOTALL)
+                    if m2:
+                        parsed_json = json.loads(m2.group())
+                except Exception as retry_exc:
+                    logger.error("Agente LP: retry JSON também falhou para card %s: %s", card_id[:8], retry_exc)
+
+            if parsed_json is not None:
+                intent = str(parsed_json.get("intent", "OUTRO")).upper()
+                texto_resposta = (str(parsed_json.get("response") or "")).strip() or _fallback_response(intent, nome)
             else:
-                logger.warning("Agente LP: resposta sem JSON para card %s -- usando texto direto.", card_id[:8])
-                texto_resposta = resposta_raw.strip() or _fallback_response("OUTRO", nome)
+                logger.error(
+                    "Agente LP: JSON não obtido após 2 tentativas para card %s — usando fallback.",
+                    card_id[:8],
+                )
+                texto_resposta = _fallback_response("OUTRO", nome)
+
     except Exception as e:
         logger.error("Agente LP: IA falhou para card %s: %s", card_id[:8], e)
         await slack_error("Falha no Agente SDR LP", exception=e,

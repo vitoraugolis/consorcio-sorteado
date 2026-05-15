@@ -272,6 +272,62 @@ async def media_buffer_ttl(phone: str) -> int:
         return -2
 
 
+# ─── Lock de processamento de mídia ──────────────────────────────────────────
+#
+# Problema: quando o qualificador recebe uma mídia e dorme 30s no buffer,
+# o agente de texto (bazar/lp/listas) pode processar mensagens simultâneas
+# do mesmo lead, gerando respostas incoerentes enquanto o extrato está sendo
+# analisado. O lock impede que agentes de texto respondam durante o processamento.
+#
+# Chave: cs:media_lock:{phone}
+# TTL: _MEDIA_LOCK_TTL segundos — cobre o buffer (30s) + 3 retries Gemini (45s) + margem
+# Protocolo: acquire no início do qualificador, release ao fim (sucesso ou erro).
+# Agentes de texto: verificam com is_media_processing antes de responder; se True,
+#   registram o turno no histórico mas NÃO enviam resposta ao lead.
+
+_MEDIA_LOCK_TTL = 130   # cobre 30s buffer + 3x retry Gemini (0+15+45s) + margem
+
+_MEDIA_LOCK_KEY = "cs:media_lock:{phone}"
+
+
+async def acquire_media_lock(phone: str) -> bool:
+    """
+    Adquire o lock de processamento de mídia para este telefone.
+    Atômico via SET NX — seguro contra race conditions.
+    Retorna True se adquiriu (pode processar), False se outro job já está rodando.
+    """
+    try:
+        r = await get_redis()
+        key = _MEDIA_LOCK_KEY.format(phone=phone)
+        result = await r.set(key, "1", nx=True, ex=_MEDIA_LOCK_TTL)
+        return result is True
+    except Exception as e:
+        logger.warning("Redis acquire_media_lock(%s): %s — fail-open", phone[-6:], e)
+        return True  # fail-open: se Redis cair, não bloqueia
+
+
+async def release_media_lock(phone: str) -> None:
+    """Libera o lock de processamento de mídia."""
+    try:
+        r = await get_redis()
+        await r.delete(_MEDIA_LOCK_KEY.format(phone=phone))
+    except Exception as e:
+        logger.warning("Redis release_media_lock(%s): %s", phone[-6:], e)
+
+
+async def is_media_processing(phone: str) -> bool:
+    """
+    Retorna True se há processamento de mídia em andamento para este telefone.
+    Agentes de texto devem verificar isso antes de responder ao lead.
+    """
+    try:
+        r = await get_redis()
+        return bool(await r.exists(_MEDIA_LOCK_KEY.format(phone=phone)))
+    except Exception as e:
+        logger.warning("Redis is_media_processing(%s): %s — assumindo livre", phone[-6:], e)
+        return False  # fail-open: não bloqueia se Redis cair
+
+
 # ─── Fingerprint de mensagens enviadas pelo bot ──────────────────────────────
 #
 # PROBLEMA RAIZ: o Whapi entrega o webhook from_me ANTES de retornar a resposta
