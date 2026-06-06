@@ -682,8 +682,9 @@ async def notify_team(message: str) -> None:
     _log = logging.getLogger(__name__)
 
     if NOTIFY_GROUP:
-        # Tenta canais em ordem de preferência
-        for _canal_grupo in ("bazar", "lp", "lista"):
+        # Tenta canais em ordem de preferência.
+        # Canal LP (DEADPL-V592K / +55 11 5241-8218) é o número que está no grupo.
+        for _canal_grupo in ("lp", "bazar", "lista"):
             try:
                 async with WhapiClient(canal=_canal_grupo) as w:
                     await w.send_text(NOTIFY_GROUP, message)
