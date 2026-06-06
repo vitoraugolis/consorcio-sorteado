@@ -671,20 +671,29 @@ async def resolve_phone(card: dict, canal: "Canal" = "lp") -> str | None:
 async def notify_team(message: str) -> None:
     """
     Envia notificação para o grupo de alarmes/equipe comercial.
-    Usa canal Bazar (número 8087) para enviar ao grupo.
-    Fallback: envia para NOTIFY_PHONES se grupo não configurado.
+    Tenta canal Bazar primeiro. Se falhar com 401, tenta canal LP.
+    Fallback final: envia para NOTIFY_PHONES.
+
+    ATENÇÃO: Para o grupo funcionar, o número do canal utilizado deve
+    ser participante do grupo no WhatsApp e estar autorizado no Whapi.
     """
     from config import NOTIFY_GROUP, NOTIFY_PHONES
     import logging
     _log = logging.getLogger(__name__)
 
     if NOTIFY_GROUP:
-        try:
-            async with WhapiClient(canal="bazar") as w:
-                await w.send_text(NOTIFY_GROUP, message)
-            return
-        except WhapiError as e:
-            _log.warning("notify_team: falha ao enviar para grupo (%s), tentando NOTIFY_PHONES: %s", NOTIFY_GROUP, e)
+        # Tenta canais em ordem de preferência
+        for _canal_grupo in ("bazar", "lp", "lista"):
+            try:
+                async with WhapiClient(canal=_canal_grupo) as w:
+                    await w.send_text(NOTIFY_GROUP, message)
+                return  # Sucesso — não precisa de fallback
+            except WhapiError as e:
+                _log.warning(
+                    "notify_team: canal '%s' falhou ao enviar para grupo (%s): %s — tentando próximo",
+                    _canal_grupo, NOTIFY_GROUP, e,
+                )
+        _log.error("notify_team: todos os canais falharam para grupo %s — usando NOTIFY_PHONES", NOTIFY_GROUP)
 
     # Fallback: NOTIFY_PHONES
     if NOTIFY_PHONES:

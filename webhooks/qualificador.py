@@ -255,6 +255,15 @@ MSG_ERRO_ANALISE = (
     "em contato em breve! 🙏"
 )
 
+# Mensagem enviada ao lead quando o sistema não consegue ler o extrato (falha técnica de IA)
+MSG_EXTRATO_EM_PRECIFICACAO = (
+    "Olá, {nome}! 📄✅\n\n"
+    "Recebemos o seu extrato e ele foi encaminhado para o nosso time de precificação "
+    "para análise completa.\n\n"
+    "Dentro de *24 horas úteis* traremos uma proposta personalizada para você!\n\n"
+    "Qualquer dúvida, é só chamar. 😊"
+)
+
 MSG_LINK_EXTERNO = (
     "Obrigada por enviar, {nome}! 😊\n\n"
     "Recebi o link, mas infelizmente não consigo acessar documentos em links externos "
@@ -849,16 +858,23 @@ async def handle_qualification(card: dict, msg) -> None:
                                 "Qualificador: 3 tentativas esgotadas para card %s (%s): %s",
                                 card_id[:8], nome, exc,
                             )
-                            # Alerta equipe — lead enviou extrato e sistema não conseguiu ler
+                            # 1. Notifica o lead que o extrato foi recebido e está em análise manual
+                            try:
+                                msg_lead = MSG_EXTRATO_EM_PRECIFICACAO.format(nome=nome)
+                                await _send_message(card, phone, msg_lead)
+                            except Exception as _e_lead:
+                                logger.warning("Qualificador: falha ao notificar lead após erro análise: %s", _e_lead)
+                            # 2. Alerta grupo do time + Slack — lead precisa de qualificação manual
                             try:
                                 from services.whapi import notify_team
                                 from services.slack import slack_alert
                                 aviso = (
-                                    f"⚠️ *Falha na leitura de extrato*\n"
+                                    f"⚠️ *Falha na leitura de extrato — ação necessária*\n"
                                     f"Lead: *{nome}* (`{phone[-4:]}`)\n"
                                     f"Card: `{card_id[:8]}`\n"
                                     f"Erro após 3 tentativas: `{exc}`\n"
-                                    f"Ação: verificar e qualificar manualmente."
+                                    f"✅ Lead notificado: extrato em análise, proposta em 24h úteis.\n"
+                                    f"🔴 Ação: qualificar manualmente e enviar proposta."
                                 )
                                 asyncio.ensure_future(notify_team(aviso))
                                 asyncio.ensure_future(slack_alert(aviso, level="error"))
@@ -913,6 +929,29 @@ async def handle_qualification(card: dict, msg) -> None:
 
             # Se nenhuma cota válida, trata como extrato incorreto
             if total_cotas == 0:
+                # Separa: falha de IA (analise_r is None) vs extrato incorreto real
+                falha_ia = [e for e, a in resultados if a is None]
+                incorretos_reais = [(e, a) for e, a in incorretos if a is not None]
+
+                # Se TODAS as falhas foram de IA → lead já foi notificado no _safe_analyze.
+                # Não pede reenvio (o extrato pode ser válido — só o Gemini falhou).
+                # Move para ON_HOLD para atendimento manual.
+                if falha_ia and not incorretos_reais:
+                    logger.warning(
+                        "Qualificador: card %s — falha de IA em todas análises (%d) — movendo para ON_HOLD.",
+                        card_id[:8], len(falha_ia),
+                    )
+                    async with FaroClient() as faro:
+                        try:
+                            await faro.move_card(card_id, Stage.ON_HOLD)
+                            await faro.update_card(card_id, {
+                                "Motivo dispensa": "Falha técnica na leitura do extrato — aguarda análise manual",
+                            })
+                        except FaroError as e_faro:
+                            logger.error("Qualificador: erro ao mover %s para ON_HOLD (falha IA): %s", card_id[:8], e_faro)
+                        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                    return
+
                 erros = int(journey.get("extrato_incorreto_count", 0)) + len(lote)
                 journey["extrato_incorreto_count"] = erros
                 # Detecta se todos os incorretos são "nao-contemplada" (demonstrativo sem contemplação)
@@ -1219,12 +1258,22 @@ async def _process_analise(
                         )
                     if not is_extra_cota:
                         await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+                # Notifica grupo do time — lead de lance quer proposta mesmo com deságio
+                aviso_lance = (
+                    f"🔔 *Novo lead de LANCE — quer receber proposta*\n"
+                    f"Lead: *{nome}* | Adm: {analise.administradora or adm}\n"
+                    f"Fluxo: {_fonte_card or 'Bazar/Listas'} | Card: `{card_id[:8]}`\n"
+                    f"Crédito: R${analise.valor_credito:,.0f} | Contemplação: Lance\n"
+                    f"Lead demonstrou interesse em receber proposta mesmo com deságio.\n"
+                    f"Ação: avaliar viabilidade e entrar em contato manualmente."
+                )
                 await slack_warning(
                     f"⚠️ Cota de LANCE descartada\n"
                     f"Lead: {nome} | Adm: {analise.administradora or adm} | Card: `{card_id[:8]}`\n"
                     f"Extrato indicou contemplação por lance — movido para Não Qualificado.",
                     context={"Card": card_id[:12], "Telefone": phone, "Adm": adm},
                 )
+                asyncio.ensure_future(notify_team(aviso_lance))
             return
 
         # Leads em ESPERA (fluxo LP retroativa)
