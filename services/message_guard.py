@@ -192,3 +192,47 @@ async def register_activation(phone: str) -> None:
         )
     except Exception as e:
         logger.warning("message_guard register_activation(%s): %s", phone[-4:], e)
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit por canal — garante máximo 1 mensagem a cada 15 min por canal/número
+# Usado pelo reativador para respeitar limite de cadência por canal Whapi.
+# ---------------------------------------------------------------------------
+
+_RATE_TTL_S = 15 * 60  # 15 minutos
+
+
+async def check_reactivation_rate(phone: str, canal: str) -> bool:
+    """
+    Retorna True se este canal já enviou mensagem de reativação para este número
+    nos últimos 15 minutos (bloqueado).
+    Fail-open: se Redis falhar, libera o envio.
+    """
+    try:
+        from services.session_store import get_redis
+        redis = await get_redis()
+        if redis is None:
+            return False
+        return bool(await redis.exists(f"cs:guard:rate:{canal}:{phone}"))
+    except Exception as e:
+        logger.warning("message_guard check_reactivation_rate(%s, %s): %s - liberando", phone[-4:], canal, e)
+        return False
+
+
+async def register_reactivation_rate(phone: str, canal: str) -> None:
+    """
+    Registra disparo de reativação para este canal/número. TTL 15 min.
+    Deve ser chamado imediatamente após envio bem-sucedido.
+    """
+    try:
+        from services.session_store import get_redis
+        redis = await get_redis()
+        if redis is None:
+            return
+        await redis.setex(
+            f"cs:guard:rate:{canal}:{phone}",
+            _RATE_TTL_S,
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+    except Exception as e:
+        logger.warning("message_guard register_reactivation_rate(%s, %s): %s", phone[-4:], canal, e)

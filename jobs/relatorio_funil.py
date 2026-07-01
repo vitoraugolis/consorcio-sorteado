@@ -30,6 +30,11 @@ MANUAL_ADJUSTMENTS = {
     "b_prec": 1,
 }
 
+# Ajuste pontual Listas — reativacao em 10/06/2026 (fluxo estava pausado, hardcoded one-shot)
+# Remover apos o relatorio de 10/06/2026 ser enviado.
+_LISTAS_ATIVACAO_ONESHOT_DATE = "09/06/2026"
+_LISTAS_ATIVACAO_ONESHOT_COUNT = 22
+
 
 def _is_date(val, iso, br):
     if not val: return False
@@ -404,6 +409,14 @@ async def run_relatorio_funil(data_alvo=None):
     ml = _calcular(cards, "listas", data_iso, data_br)
     mb = _calcular(cards, "bazar",  data_iso, data_br)
     mp = _calcular(cards, "lp",     data_iso, data_br)
+
+    # Ajuste one-shot: injeta ativacoes de Listas para o dia de reativacao (10/06/2026)
+    if data_br == _LISTAS_ATIVACAO_ONESHOT_DATE:
+        ml["l_atv1"] = ml.get("l_atv1", 0) + _LISTAS_ATIVACAO_ONESHOT_COUNT
+        logger.info(
+            "relatorio_funil: one-shot aplicado — +%d l_atv1 para %s",
+            _LISTAS_ATIVACAO_ONESHOT_COUNT, data_br,
+        )
 
     html = _build_html_relatorio(
         "Relatorio de Funil — Consorcio Sorteado",

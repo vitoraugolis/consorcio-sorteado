@@ -25,6 +25,7 @@ from config import (
     LP_JITTER_MIN_S, LP_JITTER_MAX_S,
     BAZAR_WINDOW_START, BAZAR_WINDOW_END,
 )
+import os as _os
 from services.faro import FaroClient, FaroError
 from services.whapi import WhapiClient
 from services.slack import slack_error
@@ -343,6 +344,20 @@ async def run_fila_ativacao():
             # Health check antes de cada disparo qualificado — canal correto por fonte
             if qualificado:
                 if fonte == "lp":
+                    # Respeita flag granular LP_ATIVACAO_ENABLED=false
+                    if os.getenv("LP_ATIVACAO_ENABLED", "true").lower() == "false":
+                        logger.info(
+                            "Fila: LP_ATIVACAO_ENABLED=false — pulando card %s (lp), "
+                            "devolvendo ao final da fila.",
+                            card["id"][:8],
+                        )
+                        r = _get_redis()
+                        try:
+                            await r.rpush(REDIS_QUEUE_KEY, json.dumps(item, ensure_ascii=False))
+                        finally:
+                            await r.aclose()
+                        await asyncio.sleep(60)
+                        continue
                     canal_ok = await _check_whapi_lp_health()
                 else:
                     # Respeita flag granular BAZAR_ATIVACAO_ENABLED=false

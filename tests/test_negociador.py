@@ -6,7 +6,7 @@ Correções aplicadas (2026-05-08):
   - Campo correto para sequência de propostas: "Classes de Proposta" (não "Sequencia_Proposta")
   - _classify_with_ai usa complete_with_history() — mock atualizado
   - test_acima_sequencia_razoavel_faz_handoff: cenário corrigido (lead pede 380k = 38% de 1M,
-    acima do teto de 32% e abaixo do absurdo de 40%)
+    acima do teto de 30% e abaixo do absurdo de 40%)
   - test_escala_normal / test_salta_para_max: fixtures corrigidas com campo certo
 
 Correções aplicadas (2026-05-15) — Bug lead 1c55c3d4:
@@ -14,6 +14,9 @@ Correções aplicadas (2026-05-15) — Bug lead 1c55c3d4:
   - _get_next_proposal bloqueia aceite quando lead_value ≤ ultima_proposta
   - Novos testes: test_extract_retorna_maior_valor, test_nao_aceita_valor_abaixo_proposta_atual,
     test_nao_aceita_valor_incremental_ambiguo
+
+Ajuste 2026-06-02:
+  - Teto máximo reduzido de 32% para 30% — atualizado em todos os cenários
 """
 import sys, os, json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -113,13 +116,11 @@ class TestBuildResultSimples:
 
     def test_aceitar_condicional_acima_sequencia_escala(self):
         # "aceito se me der 250k" com sequência máxima 190k → CONTRA_PROPOSTA real,
-        # 250k > max_seq=190k mas 250k < teto=32%*200k=64k... wait, crédito=200k
-        # teto=32%*200k=64k < 250k → não, teto > crédito faz sentido em R$
-        # crédito=500k, teto=160k, seq=[100k,120k], lead pede 200k > teto → handoff
+        # crédito=500k, teto=30%=150k, seq=[100k,120k], lead pede 200k > teto → handoff
         c = card_base(**{"Crédito": "500000", "Proposta Realizada": "100000"})
         c["Classes de Proposta"] = "100000,120000"
         r = _build_result(Intent.ACEITAR, "Ótimo!", c, "aceito se você me der 200 mil")
-        # 200k > teto (32%*500k=160k) → handoff comercial
+        # 200k > teto (30%*500k=150k) → handoff comercial
         assert r.notify_team is True
 
     def test_agendar_move_para_finalizacao(self):
@@ -191,15 +192,15 @@ class TestBuildResultContraproposta:
         assert r.delayed_followup_seconds > 0
 
     def test_acima_teto_razoavel_faz_handoff(self):
-        # credito=1M, teto=32%=320k, absurdo=40%=400k
-        # lead pede 380k = 38% → acima do teto (32%) mas abaixo do absurdo (40%) → handoff
+        # credito=1M, teto=30%=300k, absurdo=40%=400k
+        # lead pede 380k = 38% → acima do teto (30%) mas abaixo do absurdo (40%) → handoff
         c = card_base(**{"Crédito": "1000000", "Proposta Realizada": "160000"})
         c["Classes de Proposta"] = "160000,170000"
         r = _build_result(Intent.CONTRA_PROPOSTA, "Vou ver", c, "aceito por 380 mil")
         assert r.notify_team is True
 
     def test_dentro_teto_nao_faz_handoff(self):
-        # credito=1M, teto=32%=320k
+        # credito=1M, teto=30%=300k
         # lead pede 250k = 25% → dentro do teto → resposta do diretor, sem handoff
         c = card_base(**{"Crédito": "1000000", "Proposta Realizada": "160000"})
         c["Classes de Proposta"] = "160000,170000"

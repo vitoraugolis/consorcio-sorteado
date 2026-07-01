@@ -21,14 +21,12 @@ from config import Stage, TERMINAL_STAGES
 from services.faro import FaroClient, FaroError, is_lista, get_name, get_canal, history_append
 from services.transcriber import transcribe_audio
 from services.session_store import load_history_smart, save_history_smart
-from webhooks.negociador import handle_message
 from webhooks.qualificador import handle_qualification, QUALIFICATION_STAGES
-from webhooks.agente_contrato import handle_dados_pessoais, handle_extrato_recebido
-from webhooks import debounce
 import webhooks.agente_listas as agente_listas
 import webhooks.agente_bazar as agente_bazar
 import webhooks.agente_lp as agente_lp
 import webhooks.agente_lp_lance as agente_lp_lance
+import webhooks.debounce as debounce
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +84,12 @@ def _describe_media(msg: "IncomingMessage") -> str:
 
 # ---------------------------------------------------------------------------
 # Mapeamento oficial de responsabilidades por stage
-# Atualizado conforme definição do produto (2026-05-08)
+# Atualizado: 2026-06-21 — negociação e assinaturas desativadas por decisão do cliente.
+# Último processo automático: PRECIFICAÇÃO.
+# A partir daí, agentes comerciais humanos assumem 100%.
 # ---------------------------------------------------------------------------
 
-# FASES DE AÇÃO — sistema age e move automaticamente (jobs, não agentes de chat)
-# Listas, Bazar, LP: ativação via job. Precificação: proposta automática.
+# FASES DE AÇÃO — sistema age via jobs (sem resposta a mensagens do lead)
 ACTION_STAGES = frozenset({
     Stage.LISTAS,
     Stage.BAZAR,
@@ -99,7 +98,7 @@ ACTION_STAGES = frozenset({
 })
 
 # FASES DO AGENTE DE QUALIFICAÇÃO
-# Responde mensagens e extratos. Sabe que o lead está nessas fases e age de forma personalizada.
+# Responde mensagens e extratos. Sabe em qual fase está e age de forma personalizada.
 QUALIFICATION_AGENT_STAGES = frozenset({
     Stage.PRIMEIRA_ATIVACAO,
     Stage.SEGUNDA_ATIVACAO,
@@ -112,25 +111,16 @@ QUALIFICATION_AGENT_STAGES = frozenset({
     Stage.NAO_QUALIFICADO,
 })
 
-# FASES DO AGENTE DE NEGOCIAÇÃO
-# Proposta enviada — negocia, faz follow-up, lida com objeções.
-NEGOTIATION_AGENT_STAGES = frozenset({
-    Stage.EM_NEGOCIACAO,
-    Stage.NEG_CONGELADA,
-    Stage.ON_HOLD,
-})
-
-# FASES DO AGENTE DE CONTRATOS
-# Aceite confirmado — coleta dados, acompanha assinatura.
-CONTRACT_AGENT_STAGES = frozenset({
-    Stage.ACEITO,
-    Stage.ASSINATURA,
-})
-
-# FASES DE SILÊNCIO — nenhum agente responde mensagens do lead
+# FASES DE SILÊNCIO — nenhum agente de IA responde mensagens do lead
+# Inclui todos os stages pós-precificação: agentes comerciais humanos assumem
 SILENCE_STAGES = frozenset({
-    Stage.FINALIZACAO_COMERCIAL,  # equipe humana assumiu
-    Stage.SUCESSO,                # negócio fechado
+    Stage.EM_NEGOCIACAO,        # comercial negocia
+    Stage.NEG_CONGELADA,        # comercial acompanha
+    Stage.ON_HOLD,              # aguardando comercial
+    Stage.ACEITO,               # comercial coleta dados e fecha
+    Stage.ASSINATURA,           # comercial acompanha ZapSign
+    Stage.FINALIZACAO_COMERCIAL,# equipe humana assumiu
+    Stage.SUCESSO,              # negócio fechado
     Stage.PERDIDO,
     Stage.TESTES,
     Stage.LIXO,
@@ -139,21 +129,24 @@ SILENCE_STAGES = frozenset({
     Stage.PROBLEMA_CONTATO,
 }) | TERMINAL_STAGES
 
-# Compat: HANDLED_STAGES e ACTIVATION_STAGES mantidos para uso interno legado
-HANDLED_STAGES = NEGOTIATION_AGENT_STAGES | {Stage.PRECIFICACAO, Stage.FINALIZACAO_COMERCIAL}
+# Compat: mantidos para uso interno legado
+HANDLED_STAGES = frozenset({Stage.PRECIFICACAO, Stage.FINALIZACAO_COMERCIAL})
 ACTIVATION_STAGES = {
     Stage.PRIMEIRA_ATIVACAO, Stage.SEGUNDA_ATIVACAO,
     Stage.TERCEIRA_ATIVACAO, Stage.QUARTA_ATIVACAO,
 }
 
-# Se a proposta já foi enviada (Proposta Realizada preenchida), o negociador
-# assume independente da stage — evita que agente_bazar encerre prematuramente
-def _proposta_ja_enviada(card: dict) -> bool:
-    p = str(card.get("Proposta Realizada") or "").strip()
-    try:
-        return float(p.replace("R$","").replace(".","").replace(",",".").strip()) > 0
-    except (ValueError, TypeError):
-        return False
+# NEGOTIATION_AGENT_STAGES e CONTRACT_AGENT_STAGES mantidos para referência,
+# mas não são mais usados no roteamento — IA desativada nessas fases
+NEGOTIATION_AGENT_STAGES = frozenset({
+    Stage.EM_NEGOCIACAO,
+    Stage.NEG_CONGELADA,
+    Stage.ON_HOLD,
+})
+CONTRACT_AGENT_STAGES = frozenset({
+    Stage.ACEITO,
+    Stage.ASSINATURA,
+})
 
 
 def parse_whapi_payload(payload: dict, whapi_token: Optional[str] = None) -> list[IncomingMessage]:
@@ -258,14 +251,17 @@ def _canal_hint_from_token(whapi_token: Optional[str]) -> str:
 
 # ---------------------------------------------------------------------------
 # Stages que NÃO devem ser sobrescritos pelo handoff automático.
-# Nesses casos apenas registramos o turno no histórico, sem mover o card.
+# Pós-precificação: comercial já está no controle — apenas registra turno.
 # ---------------------------------------------------------------------------
 _HANDOFF_SKIP_STAGES: frozenset = frozenset({
-    Stage.FINALIZACAO_COMERCIAL,  # já está com comercial — só registra turno
+    Stage.EM_NEGOCIACAO,          # comercial negocia
+    Stage.NEG_CONGELADA,          # comercial acompanha
+    Stage.ON_HOLD,                # aguardando comercial
+    Stage.ACEITO,                 # comercial coletando dados
+    Stage.ASSINATURA,             # assinatura em andamento
+    Stage.FINALIZACAO_COMERCIAL,  # já está com comercial
     Stage.SUCESSO,                # negócio fechado
-    Stage.ACEITO,                 # aceite confirmado — aguardando coleta de dados
-    Stage.ASSINATURA,             # em processo de assinatura — não interromper
-}) | TERMINAL_STAGES             # PERDIDO, NAO_QUALIFICADO, FLUXO_CADENCIA, etc.
+}) | TERMINAL_STAGES
 
 
 def _build_handoff_description(nome: str, history: list[dict], ultima_msg: str) -> str:
@@ -558,10 +554,12 @@ async def route_message(msg: IncomingMessage) -> None:
     logger.info("Router: %s (%s) | stage=%s...", nome, card_id[:8], current_stage[:8])
 
     # ── FASES DE SILÊNCIO ─────────────────────────────────────────────────────
-    # Nenhum agente responde. Inclui: FINALIZACAO_COMERCIAL, SUCESSO, PERDIDO,
-    # TESTES, LIXO, FLUXO_CADENCIA, DISPENSADOS, PROBLEMA_CONTATO e terminais.
+    # Nenhum agente de IA responde. Inclui todos os stages pós-precificação:
+    # EM_NEGOCIACAO, NEG_CONGELADA, ON_HOLD, ACEITO, ASSINATURA,
+    # FINALIZACAO_COMERCIAL, SUCESSO, PERDIDO, TESTES, LIXO, etc.
+    # Agentes comerciais humanos são responsáveis a partir de PRECIFICACAO.
     if current_stage in SILENCE_STAGES:
-        logger.info("Router: %s em stage de silêncio (%s) — mensagem ignorada.", nome, current_stage[:8])
+        logger.info("Router: %s em stage de silêncio (%s) — mensagem ignorada (comercial assume).", nome, current_stage[:8])
         return
 
     # ── WATCHDOG: marca mensagem como pendente de resposta ───────────────────
@@ -574,16 +572,6 @@ async def route_message(msg: IncomingMessage) -> None:
             asyncio.ensure_future(mark_message_pending(phone, card_id, nome, descricao))
         except Exception:
             pass
-
-    # ── OVERRIDE: proposta já enviada → negociador assume ────────────────────
-    # Se a proposta foi enviada, o negociador assume independente da stage atual.
-    # Protege leads que ficaram em stages intermediários após envio da proposta.
-    if _proposta_ja_enviada(card) and msg.is_processable:
-        async def _dispatch_neg(c: dict, texto: str) -> None:
-            await handle_message(card=c, mensagem=texto, current_stage_id=current_stage)
-        debounce.schedule(phone=msg.phone, text=msg.text, card=card,
-                          dispatch=_dispatch_neg)
-        return
 
     # ── FASES DO AGENTE DE QUALIFICAÇÃO ──────────────────────────────────────
     # Primeira → Quarta Ativação, Espera, Em Contato, LP Lance,
@@ -648,34 +636,6 @@ async def route_message(msg: IncomingMessage) -> None:
             _dispatch = agente_lp.handle_message if "lp" in _fonte or "site" in _fonte else agente_bazar.handle_message
             debounce.schedule(phone=msg.phone, text=msg.text, card=card,
                               dispatch=_dispatch)
-        return
-
-    # ── FASES DO AGENTE DE CONTRATOS ─────────────────────────────────────────
-    # ACEITO + ASSINATURA: coleta dados, acompanha assinatura ZapSign.
-    if current_stage in CONTRACT_AGENT_STAGES:
-        if current_stage == Stage.ACEITO:
-            # ACEITO: coleta dados pessoais para contrato
-            if msg.is_processable:
-                debounce.schedule(phone=msg.phone, text=msg.text, card=card,
-                                  dispatch=handle_dados_pessoais)
-            return
-        # ASSINATURA: texto → agente_contrato; mídia → qualificador (ex: reenvio de extrato)
-        if msg.is_media_message:
-            asyncio.create_task(handle_extrato_recebido(card, msg))
-        elif msg.is_processable:
-            debounce.schedule(phone=msg.phone, text=msg.text, card=card,
-                              dispatch=handle_dados_pessoais)
-        return
-
-    # ── FASES DO AGENTE DE NEGOCIAÇÃO ────────────────────────────────────────
-    # EM_NEGOCIACAO, NEG_CONGELADA, ON_HOLD: negociador responde com autonomia total.
-    if current_stage in NEGOTIATION_AGENT_STAGES:
-        if not msg.is_processable:
-            return
-        async def _dispatch_negociador(c: dict, texto: str) -> None:
-            await handle_message(card=c, mensagem=texto, current_stage_id=current_stage)
-        debounce.schedule(phone=msg.phone, text=msg.text, card=card,
-                          dispatch=_dispatch_negociador)
         return
 
     logger.info("Router: stage %s não mapeado para %s — sem ação.", current_stage[:8], nome)

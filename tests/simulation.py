@@ -556,8 +556,8 @@ async def test_06_negociador_recusa(r: ScenarioRunner) -> None:
         phone="5511900000006",
     )
     # Proposta no teto da sequência → pode_escalar=False → RECUSAR resulta em PERDIDO
-    card["Proposta Realizada"] = "32000"
-    card["Sequencia_Proposta"] = "25000,28000,30000,32000"
+    card["Proposta Realizada"] = "30000"
+    card["Sequencia_Proposta"] = "25000,28000,30000"
 
     send_text_mock = AsyncMock(return_value={"sent": True})
     move_mock      = AsyncMock(return_value={"success": True})
@@ -1747,7 +1747,7 @@ async def test_26_negociador_melhorar_27pct(r: ScenarioRunner) -> None:
     from config import Stage
     from webhooks.negociador import handle_message, _get_next_proposal
 
-    # Crédito R$ 100.000 | Proposta atual R$ 20.000 (20% < 27%) → deve saltar para 32.000
+    # Crédito R$ 100.000 | Proposta atual R$ 20.000 (20% < 27%) → deve saltar para 30.000
     card = make_card(
         card_id="neg-27pct-001",
         stage_id=Stage.EM_NEGOCIACAO,
@@ -1756,11 +1756,11 @@ async def test_26_negociador_melhorar_27pct(r: ScenarioRunner) -> None:
     )
     card["Crédito"]            = "100000"
     card["Proposta Realizada"] = "20000"
-    card["Sequencia_Proposta"] = "20000,25000,32000"
+    card["Sequencia_Proposta"] = "20000,25000,30000"
 
     prox = _get_next_proposal(card)
     r.assert_true(prox["is_max_jump"], "Regra 27%: proposta < 27% do crédito aciona salto máximo")
-    r.assert_equal(32000.0, prox["nova_proposta"], "Salta direto para 32.000 (máximo da sequência)")
+    r.assert_equal(30000.0, prox["nova_proposta"], "Salta direto para 30.000 (máximo da sequência)")
 
     send_text_mock = AsyncMock(return_value={"sent": True})
     move_mock      = AsyncMock(return_value={"success": True})
@@ -1793,7 +1793,7 @@ async def test_26_negociador_melhorar_27pct(r: ScenarioRunner) -> None:
         await handle_message(card=card, mensagem="Tá muito baixo esse valor, não compensa.", current_stage_id=Stage.EM_NEGOCIACAO)
 
     r.assert_called(send_text_mock, "Nova proposta enviada ao lead")
-    r.assert_called_with_contains(update_mock, "32000", "Proposta máxima (R$ 32.000) salva no card")
+    r.assert_called_with_contains(update_mock, "30000", "Proposta máxima (R$ 30.000) salva no card")
 
 
 async def test_27_negociador_melhorar_escalada_normal(r: ScenarioRunner) -> None:
@@ -1805,12 +1805,12 @@ async def test_27_negociador_melhorar_escalada_normal(r: ScenarioRunner) -> None
     card = make_card(card_id="neg-esc-001", stage_id=Stage.EM_NEGOCIACAO, phone="5511900000027")
     card["Crédito"]            = "100000"
     card["Proposta Realizada"] = "28000"
-    card["Sequencia_Proposta"] = "28000,30000,32000"
+    card["Sequencia_Proposta"] = "28000,30000"
 
     prox = _get_next_proposal(card)
     r.assert_true(not prox["is_max_jump"], "Escalada normal: não usa regra dos 27%")
     r.assert_equal(30000.0, prox["nova_proposta"], "Próximo valor na sequência: R$ 30.000")
-    r.assert_true(prox["viavel"], "Ainda há valor maior depois (32.000) → viavel=True")
+    r.assert_true(not prox["viavel"], "30.000 é o máximo da sequência → viavel=False")
 
 
 async def test_28_negociador_contraproposta_sequencia(r: ScenarioRunner) -> None:
@@ -1828,7 +1828,7 @@ async def test_28_negociador_contraproposta_sequencia(r: ScenarioRunner) -> None
     )
     card["Crédito"]            = "100000"
     card["Proposta Realizada"] = "28000"
-    card["Sequencia_Proposta"] = "25000,28000,30000,32000"
+    card["Sequencia_Proposta"] = "25000,28000,30000"
 
     send_text_mock = AsyncMock(return_value={"sent": True})
     move_mock      = AsyncMock(return_value={"success": True})
@@ -1880,7 +1880,7 @@ async def test_29_negociador_contraproposta_absurda(r: ScenarioRunner) -> None:
     )
     card["Crédito"]            = "100000"
     card["Proposta Realizada"] = "28000"
-    card["Sequencia_Proposta"] = "28000,30000,32000"
+    card["Sequencia_Proposta"] = "28000,30000"
 
     send_text_mock = AsyncMock(return_value={"sent": True})
     move_mock      = AsyncMock(return_value={"success": True})
@@ -1924,11 +1924,11 @@ async def test_29_negociador_contraproposta_absurda(r: ScenarioRunner) -> None:
 
 
 async def test_30_negociador_contraproposta_acima_teto(r: ScenarioRunner) -> None:
-    """CONTRA_PROPOSTA razoável mas acima do teto (32-40%) → handoff ao consultor."""
+    """CONTRA_PROPOSTA razoável mas acima do teto (30-40%) → handoff ao consultor."""
     from config import Stage
     from webhooks.negociador import handle_message
 
-    # Crédito R$ 100.000 | Sequência máxima = 32.000 | Lead pede 35.000 (35%, razoável mas acima)
+    # Crédito R$ 100.000 | Sequência máxima = 30.000 | Lead pede 35.000 (35%, razoável mas acima)
     card = make_card(
         card_id="neg-teto-001",
         stage_id=Stage.EM_NEGOCIACAO,
@@ -1936,8 +1936,8 @@ async def test_30_negociador_contraproposta_acima_teto(r: ScenarioRunner) -> Non
         credito="100000",
     )
     card["Crédito"]            = "100000"
-    card["Proposta Realizada"] = "30000"
-    card["Sequencia_Proposta"] = "25000,30000,32000"
+    card["Proposta Realizada"] = "27000"
+    card["Sequencia_Proposta"] = "25000,27000,30000"
     card["Responsáveis"]       = ""  # sem responsável → usa NOTIFY_PHONES
 
     send_text_mock = AsyncMock(return_value={"sent": True})
@@ -2559,8 +2559,8 @@ async def test_44_motor_precificacao_regras(r: ScenarioRunner) -> None:
     # Caso 2: proposta já no teto → não escala
     card_teto = make_card()
     card_teto["Crédito"] = "100000"
-    card_teto["Proposta Realizada"] = "32000"
-    card_teto["Sequencia_Proposta"] = "25000,28000,32000"
+    card_teto["Proposta Realizada"] = "30000"
+    card_teto["Sequencia_Proposta"] = "25000,28000,30000"
     prox = _get_next_proposal(card_teto)
     r.assert_true(not prox["pode_escalar"], "Proposta já no máximo: pode_escalar=False")
 
@@ -2568,20 +2568,20 @@ async def test_44_motor_precificacao_regras(r: ScenarioRunner) -> None:
     card_27 = make_card()
     card_27["Crédito"] = "100000"
     card_27["Proposta Realizada"] = "20000"  # 20% < 27%
-    card_27["Sequencia_Proposta"] = "20000,25000,30000,32000"
+    card_27["Sequencia_Proposta"] = "20000,25000,30000"
     prox = _get_next_proposal(card_27)
     r.assert_true(prox["is_max_jump"], "Regra 27%: proposta 20% do crédito aciona salto máximo")
-    r.assert_equal(32000.0, prox["nova_proposta"], "Salta para 32.000 (máximo)")
+    r.assert_equal(30000.0, prox["nova_proposta"], "Salta para 30.000 (máximo)")
 
     # Caso 4: escalada normal (proposta >= 27%)
     card_norm = make_card()
     card_norm["Crédito"] = "100000"
     card_norm["Proposta Realizada"] = "28000"  # 28% >= 27%
-    card_norm["Sequencia_Proposta"] = "25000,28000,30000,32000"
+    card_norm["Sequencia_Proposta"] = "25000,28000,30000"
     prox = _get_next_proposal(card_norm)
     r.assert_true(not prox["is_max_jump"], "28% do crédito: escalada normal")
     r.assert_equal(30000.0, prox["nova_proposta"], "Próximo valor: R$ 30.000")
-    r.assert_true(prox["viavel"], "Ainda há R$ 32.000 disponível → viavel=True")
+    r.assert_true(not prox["viavel"], "30.000 é o máximo da sequência → viavel=False")
 
 
 async def test_45_motor_parse_valores(r: ScenarioRunner) -> None:

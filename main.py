@@ -23,12 +23,10 @@ from jobs.reativador import run_reativador
 from jobs.ativacao_listas import run_ativacao_listas_safe
 from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
 from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_leads_safe
-from jobs.follow_up import run_follow_up_safe
-from jobs.contrato import run_contrato_safe
 from jobs.precificacao import run_precificacao_safe
-from jobs.sla_monitor import run_sla_monitor_safe
 from jobs.relatorio_funil import run_relatorio_funil, run_relatorio_retroativo
 from jobs.watchdog_extratos import run_watchdog_extratos
+from jobs.escalador_bazar_lp import run_escalador_bazar_lp_safe
 from webhooks.router import handle_whapi_webhook
 from services.safety_car import run_pipeline_monitor
 
@@ -195,18 +193,12 @@ def setup_scheduler():
     scheduler.add_job(run_reativador, IntervalTrigger(hours=4),
                       id="reativador", name="Reativador de Leads Inativos",
                       max_instances=1, misfire_grace_time=300)
-    scheduler.add_job(run_follow_up_safe, IntervalTrigger(minutes=30),
-                      id="follow_up", name="Follow-up de Propostas",
-                      max_instances=1, misfire_grace_time=120)
-    scheduler.add_job(run_contrato_safe, IntervalTrigger(minutes=30),
-                      id="contrato", name="Geração de Contratos",
-                      max_instances=1, misfire_grace_time=120)
+    # follow_up, contrato, sla_monitor, auditoria_propostas DESATIVADOS
+    # Último processo automático é PRECIFICAÇÃO — a partir daí, agentes comerciais assumem
     scheduler.add_job(run_precificacao_safe, IntervalTrigger(minutes=30),
                       id="precificacao", name="Envio de Propostas",
                       max_instances=1, misfire_grace_time=60)
-    scheduler.add_job(run_sla_monitor_safe, IntervalTrigger(hours=4),
-                      id="sla_monitor", name="Monitor de SLA — Finalização Comercial",
-                      max_instances=1, misfire_grace_time=300)
+    # sla_monitor DESATIVADO — sem negociação não há SLA pós-proposta a monitorar
     # Relatório diário de funil — 08h BRT (11h UTC)
     scheduler.add_job(run_relatorio_funil, CronTrigger(hour=3, minute=0, timezone="UTC"),
                       id="relatorio_funil", name="Relatório Diário de Funil",
@@ -218,6 +210,10 @@ def setup_scheduler():
     scheduler.add_job(run_watchdog_extratos, IntervalTrigger(minutes=5),
                       id="watchdog_extratos", name="Watchdog — Extratos não processados",
                       max_instances=1, misfire_grace_time=60)
+    scheduler.add_job(run_escalador_bazar_lp_safe, IntervalTrigger(minutes=30),
+                      id="escalador_bazar_lp", name="Escalador 3h — Bazar/LP sem resposta",
+                      max_instances=1, misfire_grace_time=120)
+    # auditoria_propostas DESATIVADA — sem negociação não há propostas a auditar
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
 
 
@@ -279,9 +275,11 @@ async def _recover_debounce() -> None:
             stage = card.get("stage_id") or ""
             canal = get_canal(card)
             try:
-                if stage in (Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ASSINATURA):
-                    from webhooks.negociador import handle_message as _neg_handle
-                    await _neg_handle(card, combined, stage)
+                # PRECIFICACAO e estágios pós-precificação: IA não responde mais
+                # Agentes comerciais são responsáveis a partir daqui
+                if stage in (Stage.PRECIFICACAO, Stage.EM_NEGOCIACAO, Stage.ACEITO, Stage.ASSINATURA):
+                    logger.info("Debounce recovery: stage %s pós-precificação para ...%s — descartando (comercial assume)", stage[:8], phone[-6:])
+                    continue
                 elif canal == "lista":
                     from webhooks.agente_listas import handle_message as _lista_handle
                     await _lista_handle(card, combined)
@@ -408,6 +406,49 @@ async def resume_jobs(key: str = ""):
     return {"status": "resumed"}
 
 
+@app.post("/jobs/bazar/pause")
+async def pause_bazar(key: str = ""):
+    """Pausa apenas os disparos de primeira ativação do Bazar (LP continua)."""
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    os.environ["BAZAR_ATIVACAO_ENABLED"] = "false"
+    logger.warning("⏸️  BAZAR_ATIVACAO_ENABLED=false — disparos Bazar pausados via API")
+    return {"status": "paused", "canal": "bazar", "BAZAR_ATIVACAO_ENABLED": "false"}
+
+
+@app.post("/jobs/bazar/resume")
+async def resume_bazar(key: str = ""):
+    """Retoma os disparos de primeira ativação do Bazar."""
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    os.environ["BAZAR_ATIVACAO_ENABLED"] = "true"
+    logger.info("▶️  BAZAR_ATIVACAO_ENABLED=true — disparos Bazar retomados via API")
+    return {"status": "resumed", "canal": "bazar", "BAZAR_ATIVACAO_ENABLED": "true"}
+
+
+@app.post("/jobs/lp/pause")
+async def pause_lp(key: str = ""):
+    """Pausa apenas os disparos de primeira ativação da LP (Bazar continua)."""
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    os.environ["LP_ATIVACAO_ENABLED"] = "false"
+    # Para LP Retroativa se estiver rodando
+    from jobs.ativacao_lp_retroativa import stop as lp_retro_stop, get_status as lp_retro_status
+    retro = lp_retro_stop() if lp_retro_status().get("running") else {"status": "already_stopped"}
+    logger.warning("⏸️  LP_ATIVACAO_ENABLED=false — disparos LP pausados via API")
+    return {"status": "paused", "canal": "lp", "LP_ATIVACAO_ENABLED": "false", "lp_retro": retro}
+
+
+@app.post("/jobs/lp/resume")
+async def resume_lp(key: str = ""):
+    """Retoma os disparos de primeira ativação da LP."""
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    os.environ["LP_ATIVACAO_ENABLED"] = "true"
+    logger.info("▶️  LP_ATIVACAO_ENABLED=true — disparos LP retomados via API")
+    return {"status": "resumed", "canal": "lp", "LP_ATIVACAO_ENABLED": "true"}
+
+
 @app.get("/jobs/run/{job_id}")
 async def run_job_manually(job_id: str, key: str = ""):
     if key != SECRET_KEY:
@@ -417,10 +458,9 @@ async def run_job_manually(job_id: str, key: str = ""):
         "ativacao_listas": run_ativacao_listas_safe,
         "ativacao_bazar": run_ativacao_bazar,
         "ativacao_site": run_ativacao_site,
-        "follow_up": run_follow_up_safe,
-        "contrato": run_contrato_safe,
         "precificacao": run_precificacao_safe,
         "fila_ativacao": run_fila_ativacao,
+        # follow_up, contrato, auditoria_propostas DESATIVADOS
     }
     fn = job_map.get(job_id)
     if not fn:
@@ -571,91 +611,6 @@ async def webhook_whapi(request: Request):
     return JSONResponse(result)
 
 # ---------------------------------------------------------------------------
-# Webhook ZapSign
-# ---------------------------------------------------------------------------
-
-@app.post("/webhook/zapsign")
-async def webhook_zapsign(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Payload inválido")
-
-    logger.info("Webhook ZapSign recebido: %s", str(payload)[:300])
-    doc_token = payload.get("token", "")
-    status = payload.get("status", "")
-    doc_name = payload.get("name", "")
-
-    if status != "signed":
-        return JSONResponse({"status": "ignored", "reason": f"status={status}"})
-    if not doc_token:
-        return JSONResponse({"status": "error", "reason": "missing token"})
-
-    asyncio.create_task(_guarded_task(
-        _handle_zapsign_signed(doc_token, doc_name),
-        f"zapsign signed: {doc_token[:8]}",
-    ))
-    return JSONResponse({"status": "received"})
-
-
-async def _handle_zapsign_signed(doc_token: str, doc_name: str) -> None:
-    from services.faro import FaroClient, FaroError, get_name, get_phone
-    from services.whapi import WhapiClient, WhapiError
-
-    logger.info("ZapSign: processando assinatura token %s...", doc_token[:8])
-    card = None
-    try:
-        async with FaroClient() as faro:
-            cards_assinatura = await faro.get_cards_all_pages(Stage.ASSINATURA)
-            for c in cards_assinatura:
-                if c.get("ZapSign Token", "") == doc_token:
-                    card = c
-                    break
-    except FaroError as e:
-        logger.error("ZapSign: erro ao buscar cards: %s", e)
-        return
-
-    if not card:
-        logger.warning("ZapSign: card não encontrado para token %s...", doc_token[:8])
-        if NOTIFY_PHONES:
-            try:
-                async with WhapiClient(canal="lista") as w:
-                    for phone in NOTIFY_PHONES:
-                        await w.send_text(phone,
-                            f"✅ *Contrato assinado!*\nDocumento: {doc_name}\n"
-                            f"⚠️ Card não encontrado automaticamente — verifique o CRM.")
-            except WhapiError as e:
-                logger.error("ZapSign: falha ao notificar equipe: %s", e)
-        return
-
-    card_id = card.get("id", "")
-    nome = get_name(card)
-    phone = get_phone(card)
-
-    try:
-        async with FaroClient() as faro:
-            await faro.move_card(card_id, Stage.SUCESSO)
-            logger.info("ZapSign: card %s movido para SUCESSO.", card_id[:8])
-    except FaroError as e:
-        logger.error("ZapSign: erro ao mover card %s para SUCESSO: %s", card_id[:8], e)
-
-    mensagem_equipe = (
-        f"🎉 *Contrato assinado com sucesso!*\n\n"
-        f"Cliente: *{nome}*\nTelefone: {phone or 'não informado'}\n"
-        f"Documento: {doc_name}\n\n"
-        f"✅ Card movido para *Sucesso*."
-    )
-    if NOTIFY_PHONES:
-        try:
-            async with WhapiClient(canal="lista") as w:
-                for notify_phone in NOTIFY_PHONES:
-                    await w.send_text(notify_phone, mensagem_equipe)
-        except WhapiError as e:
-            logger.error("ZapSign: falha ao notificar agente: %s", e)
-
-
-
-# ---------------------------------------------------------------------------
 # Webhook FARO (card.entered_stage)
 # ---------------------------------------------------------------------------
 
@@ -685,13 +640,7 @@ async def webhook_faro(request: Request):
         ))
         return JSONResponse({"status": "received", "action": "precificacao"})
 
-    if to_stage_id == Stage.ACEITO:
-        asyncio.create_task(_guarded_task(
-            _faro_trigger_aceito(card_id),
-            f"faro aceito: {card_id[:8]}",
-        ))
-        return JSONResponse({"status": "received", "action": "aceito"})
-
+    # Stage.ACEITO e demais pós-precificação: IA desativada — agentes comerciais assumem
     return JSONResponse({"status": "ignored", "reason": f"to_stage={to_stage_id}"})
 
 
@@ -708,21 +657,6 @@ async def _faro_trigger_precificacao(card_id: str) -> None:
             logger.warning("FARO webhook: card %s nao encontrado.", card_id[:8])
     except Exception as exc:
         logger.error("FARO webhook precificacao erro card %s: %s", card_id[:8], exc)
-
-
-async def _faro_trigger_aceito(card_id: str) -> None:
-    from services.faro import FaroClient
-    from jobs.contrato import process_contrato_card
-    logger.info("FARO webhook: disparando contrato para card %s...", card_id[:8])
-    try:
-        async with FaroClient() as faro:
-            card = await faro.get_card(card_id)
-        if card:
-            await process_contrato_card(card)
-        else:
-            logger.warning("FARO webhook: card %s nao encontrado.", card_id[:8])
-    except Exception as exc:
-        logger.error("FARO webhook contrato erro card %s: %s", card_id[:8], exc)
 
 
 if __name__ == "__main__":
@@ -822,7 +756,6 @@ async def trigger_relatorio_retroativo(key: str = "", datas: list[str] = None):
         raise HTTPException(status_code=401, detail="Chave inválida")
     if not datas:
         raise HTTPException(status_code=400, detail="Lista de datas obrigatória")
-    # Valida formato antes de despachar
     import re as _re
     _DATE_RE = _re.compile(r"^\d{2}/\d{2}/\d{4}$")
     invalidas = [d for d in datas if not _DATE_RE.match(d)]

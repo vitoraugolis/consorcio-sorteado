@@ -33,11 +33,14 @@ _processing: dict[str, asyncio.Lock] = {}
 # Replica a lógica do blueprint Make.com (fluxograma completo)
 # ---------------------------------------------------------------------------
 
-# Cluster A: índices 0-4 para escalada de negociação
-_CLUSTER_A = [0.20, 0.23, 0.27, 0.30, 0.32]
+# Cluster A: índices 0-3 para escalada de negociação (teto máximo: 30%)
+_CLUSTER_A = [0.20, 0.23, 0.27, 0.30]
 
 # Cluster B: Ademicon/Embracon com meses a pagar entre 80-110
 _CLUSTER_B = [0.17, 0.20, 0.23, 0.27, 0.30]
+
+# Cluster C: Caixa — teto máximo 27% (não chegamos a 30%)
+_CLUSTER_C = [0.20, 0.23, 0.27]
 
 # Admins aceitas
 _ADMS_ACEITAS = {
@@ -48,15 +51,65 @@ _ADMS_ACEITAS = {
 # Adms com cluster especial (80-110 meses)
 _ADMS_CLUSTER_B = {"ademicon", "embracon"}
 
+# Adms com teto reduzido (máximo 27%)
+_ADMS_CLUSTER_C = {"caixa"}
+
 def _arredondar_milhar(valor: float) -> float:
     return math.floor(valor / 1000) * 1000
 
+
+# ---------------------------------------------------------------------------
+# Camada 1 — Validação de teto antes do envio
+# ---------------------------------------------------------------------------
+
+def _validar_proposta_contra_teto(
+    proposta: float,
+    credito: float,
+    adm: str,
+    meses_a_pagar: int = 999,
+) -> tuple[bool, float, str]:
+    """
+    Valida se a proposta respeita o teto máximo do cluster da ADM.
+
+    Retorna (válida, teto_valor, motivo_bloqueio).
+    - válida=True  → proposta dentro do permitido
+    - válida=False → proposta excede o teto; motivo_bloqueio descreve o problema
+    """
+    if credito <= 0 or proposta <= 0:
+        return True, 0.0, ""
+
+    cluster = _get_cluster(adm, meses_a_pagar)
+    teto_pct = cluster[-1]                          # último item = máximo do cluster
+    teto_val = _arredondar_milhar(teto_pct * credito)
+    pct_proposta = proposta / credito
+
+    if proposta > teto_val:
+        motivo = (
+            f"Proposta R$ {proposta:,.0f} ({pct_proposta:.1%}) excede o teto do cluster "
+            f"para ADM '{adm}': {teto_pct:.0%} = R$ {teto_val:,.0f}"
+        )
+        return False, teto_val, motivo
+
+    return True, teto_val, ""
+
 def _get_cluster(adm: str, meses_a_pagar: int) -> list:
-    """Retorna o cluster correto baseado na adm e meses a pagar."""
+    """
+    Retorna o cluster correto baseado na adm e meses a pagar.
+
+    Cluster A (padrão): 20%, 23%, 27%, 30% — todas as ADMs
+    Cluster B (Ademicon/Embracon, 80-110 meses): 17%, 20%, 23%, 27%, 30%
+    Cluster C (Caixa): 20%, 23%, 27% — teto máximo 27%
+    """
     adm_lower = adm.lower().strip()
-    adm_match = any(a in adm_lower for a in _ADMS_CLUSTER_B)
-    if adm_match and 80 <= meses_a_pagar <= 110:
+
+    # Cluster B: Ademicon/Embracon com meses específicos
+    if any(a in adm_lower for a in _ADMS_CLUSTER_B) and 80 <= meses_a_pagar <= 110:
         return _CLUSTER_B
+
+    # Cluster C: Caixa — teto 27%
+    if any(a in adm_lower for a in _ADMS_CLUSTER_C):
+        return _CLUSTER_C
+
     return _CLUSTER_A
 
 def _get_indice_por_percentual(percentual_pago: float) -> int | None:
@@ -86,20 +139,25 @@ def calcular_proposta_listas(
     indice_override: int | None = None,
 ) -> tuple[float, int, list]:
     """
-    Calcula proposta para fluxo de Listas.
-    Baseado exclusivamente no crédito × percentual do cluster (não usa valor_pago nem meses).
+    Calcula proposta para todos os fluxos (Listas, Bazar, LP).
+    Baseado exclusivamente no crédito × percentual do cluster.
 
-    Classe A: % pago ≤ 5%  → índice 0 (20%)
-    Classe B: % pago ≤ 15% → índice 1 (23%)
-    Classe C: % pago ≤ 30% → índice 2 (27%)
+    Classe A: % pago ≤ 5%  → índice 0
+    Classe B: % pago ≤ 15% → índice 1
+    Classe C: % pago ≤ 30% → índice 2
     > 30%                  → não compramos (retorna 0.0)
+
+    Cluster por ADM:
+      Cluster A (padrão):            20%, 23%, 27%, 30%
+      Cluster B (Ademicon/Embracon): 17%, 20%, 23%, 27%, 30%
+      Cluster C (Caixa):             20%, 23%, 27%  ← teto máximo 27%
 
     Retorna (proposta, indice_usado, cluster) para permitir escalada posterior.
     """
     if credito <= 0:
         return 0.0, 0, _CLUSTER_A
 
-    cluster = _CLUSTER_A  # Listas sempre usa Cluster A
+    cluster = _get_cluster(adm, meses_a_pagar)
 
     if indice_override is not None:
         indice = max(0, min(indice_override, len(cluster) - 1))
@@ -601,12 +659,65 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
         if not proposta:
             logger.warning("Precificação: card %s sem Proposta Realizada.", card_id[:8])
             return False
-    
-        # ── Envio da proposta — SAFETY CAR ──────────────────────────────────────
-        # Todos os fluxos requerem aprovação manual de Vitor antes do envio.
-        # O sistema calcula e apresenta a proposta no Slack; o envio só ocorre
-        # após resposta: "<card_id[:8]> precificação ok"
-        #
+
+        # ── Camada 1: BLOQUEIO DE TETO — valida proposta contra o cluster da ADM ──
+        # Impede o envio de qualquer proposta (manual ou calculada) que ultrapasse
+        # o percentual máximo permitido para a administradora.
+        _credito_v   = _parse_float(card.get("Crédito") or "0")
+        _meses_v     = int(_parse_float(card.get("Quantidade meses a pagar") or "999") or 999)
+        _proposta_v  = _parse_float(proposta)
+        _adm_v       = get_adm(card)
+        _valida, _teto_v, _motivo_bloqueio = _validar_proposta_contra_teto(
+            _proposta_v, _credito_v, _adm_v, _meses_v
+        )
+        if not _valida:
+            logger.error(
+                "Precificação: BLOQUEIO DE TETO — card %s | %s",
+                card_id[:8], _motivo_bloqueio,
+            )
+            await slack_error(
+                f"🚨 *BLOQUEIO DE TETO* — Proposta acima do cluster!\n\n"
+                f"*Lead:* {nome} | *Card:* `{card_id[:8]}`\n"
+                f"*ADM:* {_adm_v} | *Crédito:* R$ {_credito_v:,.0f}\n"
+                f"*Proposta bloqueada:* R$ {_proposta_v:,.0f} "
+                f"({_proposta_v / _credito_v:.1%} do crédito)\n"
+                f"*Teto permitido:* R$ {_teto_v:,.0f} "
+                f"({_teto_v / _credito_v:.1%} do crédito)\n\n"
+                f"⚠️ Corrija o campo *Proposta Realizada* no FARO e reprocesse o card.",
+                context={"card_id": card_id, "nome": nome, "adm": _adm_v},
+            )
+            return False   # não envia, mantém card em PRECIFICACAO para correção manual
+
+        # ── Camada 2: ALERTA de proposta manual próxima do teto ──────────────────
+        # Quando a proposta veio preenchida do FARO (não calculada agora), alerta se
+        # estiver acima de 90% do teto do cluster — sinal de atenção para revisão.
+        _proposta_original_faro = _parse_float(card.get("Proposta Realizada", "") or "")
+        _foi_manual = (
+            _proposta_original_faro > 0
+            and _proposta_original_faro == _proposta_v   # não foi recalculada nesta execução
+        )
+        if _foi_manual and _credito_v > 0 and _teto_v > 0:
+            _cluster_v   = _get_cluster(_adm_v, _meses_v)
+            _teto_pct_v  = _cluster_v[-1]
+            _pct_manual  = _proposta_v / _credito_v
+            if _pct_manual >= _teto_pct_v * 0.90:
+                logger.warning(
+                    "Precificação: proposta manual próxima do teto — card %s | "
+                    "%.1f%% do crédito (teto=%s%%)",
+                    card_id[:8], _pct_manual * 100, f"{_teto_pct_v:.0%}",
+                )
+                await slack_error(
+                    f"⚠️ *PROPOSTA MANUAL PRÓXIMA DO TETO*\n\n"
+                    f"*Lead:* {nome} | *Card:* `{card_id[:8]}`\n"
+                    f"*ADM:* {_adm_v} | *Crédito:* R$ {_credito_v:,.0f}\n"
+                    f"*Proposta manual:* R$ {_proposta_v:,.0f} "
+                    f"({_pct_manual:.1%} do crédito)\n"
+                    f"*Teto do cluster:* {_teto_pct_v:.0%} = R$ {_teto_v:,.0f}\n\n"
+                    f"ℹ️ Proposta dentro do limite, mas revisão recomendada.",
+                    context={"card_id": card_id, "nome": nome, "adm": _adm_v},
+                )
+
+        # ── Envio da proposta ────────────────────────────────────────────────────
         # SEGURANÇA: Só compramos cotas contempladas por SORTEIO.
         # Bloqueio de lance abaixo — segunda camada de defesa (camada 1 está no qualificador).
         fonte_bazar_lp = not is_lista(card)

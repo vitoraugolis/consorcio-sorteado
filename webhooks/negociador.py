@@ -38,13 +38,14 @@ from services.faro import (
 from services.whapi import WhapiClient, WhapiError, get_whapi_for_card
 from services.session_store import load_history_smart, save_history_smart
 from services.agent_knowledge import get_knowledge_for_agent
+from services.stage_decider import StageDecider, StageDecision, _stage_name as _stage_name
 
 logger = logging.getLogger(__name__)
 
 _GROUP_LINK = "https://chat.whatsapp.com/KwcE6QJHa33Bq0eHH9L9qD?mode=gi_t"
 
 # Limites de precificação
-_TETO_PCT    = 0.32   # 32% do crédito = máximo que o "diretor" autoriza
+_TETO_PCT    = 0.30   # 30% do crédito = máximo que o "diretor" autoriza
 _ABSURDO_PCT = 0.40   # acima de 40% do crédito = proposta indecorosa, bot responde diretamente
 
 
@@ -723,7 +724,7 @@ def _build_director_response(nome: str, teto_val: float, credito_val: float) -> 
     """
     Mensagem enviada após delay simulando consulta ao diretor comercial.
     Usada quando a contraproposta do lead é absurda (> 40% do crédito).
-    Oferece o teto de 32%, reforça segurança e alerta sobre fraudes de mercado.
+    Oferece o teto de 30%, reforça segurança e alerta sobre fraudes de mercado.
     """
     teto_fmt   = _fmt_currency(teto_val)
     credito_fmt = _fmt_currency(credito_val)
@@ -882,12 +883,12 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
         # 1️⃣ Conseguimos cobrir com a sequência → escalada automática
         if max_sequencia > 0 and lead_value <= max_sequencia:
             pass  # cai no bloco de escalada abaixo
-        # 2️⃣ Dentro do nosso teto (≤ 32%) mas sem sequência calculada → responde com o teto
+        # 2️⃣ Dentro do nosso teto (≤ 30%) mas sem sequência calculada → responde com o teto
         elif teto_val > 0 and lead_value <= teto_val:
             delay = _random.randint(35, 65)
             director_msg = _build_director_response(nome, teto_val, credito_val)
             logger.info(
-                "Negociador: CONTRA_PROPOSTA dentro do teto (%.0f%% ≤ 32%%) para %s — "
+                "Negociador: CONTRA_PROPOSTA dentro do teto (%.0f%% ≤ 30%%) para %s — "
                 "resposta do diretor com teto=%.0f em %ds.",
                 (lead_value / credito_val * 100) if credito_val > 0 else 0,
                 card.get("id", "")[:8], teto_val, delay,
@@ -900,7 +901,7 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
                 delayed_followup=director_msg,
                 delayed_followup_seconds=delay,
             )
-        # 3️⃣ Proposta indecorosa (> 40% do crédito) → bot responde com 32% após delay
+        # 3️⃣ Proposta indecorosa (> 40% do crédito) → bot responde com 30% após delay
         elif absurdo_val > 0 and lead_value > absurdo_val:
             delay = _random.randint(35, 65)
             director_msg = _build_director_response(nome, teto_val or lead_value * 0.64, credito_val)
@@ -918,7 +919,7 @@ def _build_result(intent: Intent, ai_response: str, card: dict, mensagem: str = 
                 delayed_followup=director_msg,
                 delayed_followup_seconds=delay,
             )
-        # 4️⃣ Acima do teto mas razoável (32-40%) → handoff ao consultor
+        # 4️⃣ Acima do teto mas razoável (30-40%) → handoff ao consultor
         else:
             notif_msg, notif_phones = _build_contraproposta_notification(card, mensagem)
             return NegotiationResult(
@@ -1528,6 +1529,86 @@ async def handle_message(card: dict, mensagem: str, current_stage_id: str) -> No
 
     async with AIClient() as ai:
         result = await _classify_with_ai(ai, mensagem, card_fresh, stage_nome, history, extra_system=_cross_context)
+
+        # ── StageDecider: árbitro de mudança de fase ───────────────────────────
+        # Para transições críticas (ACEITO, PERDIDO, FINALIZACAO_COMERCIAL),
+        # o resultado do negociador é submetido a uma segunda camada de avaliação.
+        # O StageDecider lê o contexto completo e valida se a mudança é realmente justificada.
+        # Em caso de divergência, prevalece o StageDecider (mais conservador e focado em contexto).
+        _transicoes_criticas = {Stage.ACEITO, Stage.PERDIDO, Stage.FINALIZACAO_COMERCIAL}
+        if result.next_stage in _transicoes_criticas:
+            try:
+                stage_decision: StageDecision = await StageDecider.decide(
+                    mensagem=mensagem,
+                    card=card_fresh,
+                    history=history,
+                    current_stage_id=current_stage_id,
+                    ai_client=ai,
+                )
+                if not stage_decision.should_change:
+                    # StageDecider vetou a mudança — reverter para manter stage atual
+                    logger.warning(
+                        "StageDecider VETOU mudança %s→%s para card %s (negociador queria %s). "
+                        "Reasoning: %s | Evidence: '%s'",
+                        _stage_name(current_stage_id),
+                        _stage_name(result.next_stage),
+                        card_id[:8],
+                        result.intent.value,
+                        stage_decision.reasoning,
+                        stage_decision.evidence,
+                    )
+                    result = NegotiationResult(
+                        intent=result.intent,
+                        response_message=result.response_message,
+                        next_stage=current_stage_id,  # manter
+                        notify_team=False,
+                        extra_fields=result.extra_fields,
+                    )
+                elif stage_decision.next_stage != result.next_stage:
+                    # StageDecider concordou que deve mudar, mas sugere destino diferente
+                    logger.info(
+                        "StageDecider AJUSTOU destino %s→%s (negociador queria %s→%s) para card %s. "
+                        "Reasoning: %s",
+                        _stage_name(current_stage_id),
+                        _stage_name(stage_decision.next_stage),
+                        _stage_name(current_stage_id),
+                        _stage_name(result.next_stage),
+                        card_id[:8],
+                        stage_decision.reasoning,
+                    )
+                    result = NegotiationResult(
+                        intent=result.intent,
+                        response_message=result.response_message,
+                        next_stage=stage_decision.next_stage,
+                        notify_team=result.notify_team,
+                        notify_message=result.notify_message,
+                        notify_phones=result.notify_phones,
+                        extra_fields=result.extra_fields,
+                        lost_reason=result.lost_reason,
+                    )
+                else:
+                    logger.info(
+                        "StageDecider CONFIRMOU mudança %s→%s para card %s. "
+                        "Confidence=%s | Evidence='%s'",
+                        _stage_name(current_stage_id),
+                        _stage_name(result.next_stage),
+                        card_id[:8],
+                        stage_decision.confidence,
+                        stage_decision.evidence[:100],
+                    )
+            except Exception as _sde:
+                # Falha no StageDecider → comportamento conservador: não avança
+                logger.error(
+                    "StageDecider: exceção para card %s — %s. Revertendo mudança de fase por segurança.",
+                    card_id[:8], _sde,
+                )
+                result = NegotiationResult(
+                    intent=result.intent,
+                    response_message=result.response_message,
+                    next_stage=current_stage_id,
+                    notify_team=False,
+                    extra_fields=result.extra_fields,
+                )
 
     logger.info(
         "Negociador: %s (%s) → intent=%s | next_stage=%s",
