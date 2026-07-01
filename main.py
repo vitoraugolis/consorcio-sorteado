@@ -21,6 +21,7 @@ from services.session_store import health_check as redis_health, close_redis
 from services.faro import close_faro_pool
 from jobs.reativador import run_reativador
 from jobs.ativacao_listas import run_ativacao_listas_safe
+from jobs.fila_listas import run_fila_listas_safe
 from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
 from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_leads_safe
 from jobs.precificacao import run_precificacao_safe
@@ -176,10 +177,14 @@ async def _fila_watchdog():
 
 
 def setup_scheduler():
-    # ✅ LISTA ativa — 1 lead a cada 30-35 min (jitter anti-ban, janela 8h-20h BRT)
-    scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30, jitter=300),
-                      id="ativacao_listas", name="Ativação de Listas",
-                      max_instances=1, misfire_grace_time=300)
+    # ✅ FILA LISTAS — substitui ativacao_listas + reativador para leads lista/lp
+    # 1 disparo a cada ~5 min (CICLO_BASE_S=300 ± CICLO_JITTER_S=90)
+    # Prioridade: Listas → 1ª → 2ª → 3ª → 4ª Ativação | gap mínimo 25 min por token
+    scheduler.add_job(run_fila_listas_safe, IntervalTrigger(minutes=5, jitter=90),
+                      id="fila_listas", name="Fila Unificada — Listas + Ativações",
+                      max_instances=1, misfire_grace_time=60)
+    # ⬇️ ativacao_listas DESATIVADO — substituído por fila_listas
+    # scheduler.add_job(run_ativacao_listas_safe, IntervalTrigger(minutes=30, jitter=300), ...)
     # watch_novos_leads: ativo — injeta Bazar/LP novos na fila a cada 5 min
     scheduler.add_job(run_watch_novos_leads_safe, IntervalTrigger(minutes=5),
                       id="watch_novos_leads", name="Watch — Novos Leads Bazar/LP",
@@ -188,10 +193,10 @@ def setup_scheduler():
     # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=30, jitter=120), ...)
     # scheduler.add_job(run_ativacao_bazar, IntervalTrigger(minutes=5), ...)
     # scheduler.add_job(run_ativacao_site, IntervalTrigger(minutes=5), ...)
-    # Reativador pausado — alto impacto, ativar manualmente
+    # Reativador: mantido APENAS para leads Bazar (lista/lp agora gerenciados pela fila_listas)
     # scheduler.add_job(run_reativador, IntervalTrigger(hours=1), ...)
     scheduler.add_job(run_reativador, IntervalTrigger(hours=4),
-                      id="reativador", name="Reativador de Leads Inativos",
+                      id="reativador", name="Reativador de Leads Bazar (Inativos)",
                       max_instances=1, misfire_grace_time=300)
     # follow_up, contrato, sla_monitor, auditoria_propostas DESATIVADOS
     # Último processo automático é PRECIFICAÇÃO — a partir daí, agentes comerciais assumem
@@ -455,7 +460,8 @@ async def run_job_manually(job_id: str, key: str = ""):
         raise HTTPException(status_code=401, detail="Chave inválida")
     job_map = {
         "reativador": run_reativador,
-        "ativacao_listas": run_ativacao_listas_safe,
+        "ativacao_listas": run_ativacao_listas_safe,  # mantido para trigger manual legado
+        "fila_listas": run_fila_listas_safe,
         "ativacao_bazar": run_ativacao_bazar,
         "ativacao_site": run_ativacao_site,
         "precificacao": run_precificacao_safe,
