@@ -95,12 +95,18 @@ async def _whapi_monitor():
             mensagens = []
 
             # Monta lista de canais a checar: cada token individualmente
+            # Labels com channel ID para identificação rápida no grupo de alertas
+            _LISTA_CHANNEL_IDS = [
+                os.getenv("WHAPI_CHANNEL_ID_LISTA_1", "FALCON"),
+                os.getenv("WHAPI_CHANNEL_ID_LISTA_2", "GROOTT"),
+                os.getenv("WHAPI_CHANNEL_ID_LISTA_3", "WOLVRN"),
+                os.getenv("WHAPI_CHANNEL_ID_LISTA_4", "DEADPL"),
+                os.getenv("WHAPI_CHANNEL_ID_LISTA_5", "DAREDL"),
+            ]
             canais_check: list[tuple[str, str]] = []  # (label, token)
-            canais_check.append(("BAZAR (DAREDL)", WHAPI_BAZAR_TOKEN))
-            if WHAPI_LP_TOKEN:
-                canais_check.append(("DEADPL-V592K", WHAPI_LP_TOKEN))
             for i, tok in enumerate(WHAPI_LISTA_TOKENS, 1):
-                label = f"LISTA-{i} (FALCON)" if i == 1 else f"LISTA-{i}"
+                channel_id = (_LISTA_CHANNEL_IDS[i - 1] if i <= len(_LISTA_CHANNEL_IDS) else f"LISTA-{i}").split("-")[0]
+                label = f"LISTA-{i} ({channel_id})"
                 canais_check.append((label, tok))
 
             for label, token in canais_check:
@@ -132,15 +138,12 @@ async def _whapi_monitor():
             # NÃO pausa/retoma scheduler automaticamente — controle manual via JOBS_PAUSED
             # O monitor só notifica, não interfere nos jobs
             if mensagens:
-                # Só notifica BAZAR — FALCON restrito e DEADPL-V592K silenciados
-                alertas_criticos = [m for m in mensagens
-                                    if "FALCON" not in m and "LP" not in m and "LISTA-1" not in m]
-                if alertas_criticos:
-                    alerta = "\n".join(alertas_criticos)
-                    try:
-                        await notify_team(alerta)
-                    except Exception:
-                        pass
+                # Todos os canais são Listas agora — notifica qualquer transição
+                alerta = "\n".join(mensagens)
+                try:
+                    await notify_team(alerta)
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error("Whapi monitor: erro inesperado: %s", e)
