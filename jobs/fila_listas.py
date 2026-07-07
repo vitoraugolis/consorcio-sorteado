@@ -455,7 +455,25 @@ async def _send_followup(card: dict, from_stage: str, whapi_token: str) -> bool:
             await w.send_buttons(phone, text, msg_data["buttons"])
             sent = True
         except WhapiError as e:
-            logger.error("Fila Listas: WhapiError follow-up %s: %s", card_id[:8], e)
+            # Fallback para texto simples quando botões retornam 401 ou 404
+            # 401 = "need channel authorization" (número não aceita interativos)
+            # 404 = endpoint de botões indisponível no plano/canal
+            is_fallback_error = (
+                (e.status_code == 401 and "channel authorization" in str(e).lower()) or
+                (e.status_code == 404 and "not found" in str(e).lower())
+            )
+            if is_fallback_error:
+                logger.warning(
+                    "Fila Listas: botões recusados (HTTP %s) para follow-up %s — fallback texto simples",
+                    e.status_code, card_id[:8],
+                )
+                try:
+                    await w.send_text(phone, text)
+                    sent = True
+                except WhapiError as e2:
+                    logger.error("Fila Listas: fallback texto follow-up falhou %s: %s", card_id[:8], e2)
+            else:
+                logger.error("Fila Listas: WhapiError follow-up %s: %s", card_id[:8], e)
 
     if sent:
         async with FaroClient() as faro:

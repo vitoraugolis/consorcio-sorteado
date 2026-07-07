@@ -788,6 +788,44 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
                 await save_journey(faro, card_id, journey)
             except Exception as e:
                 logger.warning("Precificação: erro ao salvar histórico/jornada %s: %s", card_id[:8], e)
+
+            # ── Mensagem SDR ao lead: informa que consultor entrará em contato ──
+            try:
+                _sdr_msg = (
+                    "Um de nossos consultores entrará em contato em breve para "
+                    "esclarecer qualquer dúvida e acompanhar a negociação. 😊"
+                )
+                async with get_whapi_for_card(card) as _w:
+                    await asyncio.sleep(2)
+                    await _w.send_text(phone, _sdr_msg)
+                logger.info("Precificação: mensagem SDR enviada para card %s", card_id[:8])
+            except WhapiError as e:
+                logger.warning("Precificação: falha ao enviar mensagem SDR para %s: %s", card_id[:8], e)
+
+            # ── Notificação no grupo Alarmes Sistemas CS ──────────────────────
+            try:
+                from services.whapi import notify_team as _notify_team
+                _adm_notif   = get_adm(card)
+                _nome_notif  = nome
+                _phone_notif = phone
+                _prop_notif  = _fmt_currency(card.get("Proposta Realizada", ""))
+                _cred_notif  = _fmt_currency(str(card.get("Crédito", "")))
+                _canal_notif = "Listas" if is_lista(card) else "Bazar/LP"
+                _notif_msg = (
+                    f"🎯 *Nova proposta enviada!*\n\n"
+                    f"👤 *Nome:* {_nome_notif}\n"
+                    f"📱 *Telefone:* {_phone_notif}\n"
+                    f"🏦 *Administradora:* {_adm_notif}\n"
+                    f"💰 *Proposta:* {_prop_notif}\n"
+                    f"📊 *Crédito:* {_cred_notif}\n"
+                    f"🔀 *Canal:* {_canal_notif}\n"
+                    f"🆔 *Card:* `{card_id[:8]}`"
+                )
+                await _notify_team(_notif_msg)
+                logger.info("Precificação: grupo notificado para card %s", card_id[:8])
+            except Exception as e:
+                logger.warning("Precificação: falha ao notificar grupo para %s: %s", card_id[:8], e)
+
             logger.info("Precificação: proposta enviada para card %s", card_id[:8])
         else:
             # Rollback — devolve para PRECIFICACAO
@@ -845,9 +883,11 @@ async def run_precificacao() -> None:
 
 
 async def send_proposal_now(card: dict) -> None:
-    """Dispara proposta imediatamente para um card específico."""
-    if not _is_within_send_window():
-        return
+    """
+    Dispara proposta imediatamente para um card específico.
+    Chamado de forma reativa (lead demonstrou interesse) — sem guard de janela,
+    pois o lead acabou de responder e espera a proposta agora.
+    """
     try:
         async with FaroClient() as faro:
             fresh = await faro.get_card(card.get("id", ""))

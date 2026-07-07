@@ -133,9 +133,14 @@ async def _handle_intent(
             except FaroError as e:
                 logger.error("Erro ao mover %s para PRECIFICACAO: %s", card_id[:8], e)
                 return
-        # Listas: proposta enviada pelo job de precificação quando
-        # a equipe preencher "Proposta Realizada" no FARO.
-        logger.info("Agente Listas: card %s → PRECIFICACAO (aguarda proposta manual)", card_id[:8])
+
+        logger.info("Agente Listas: card %s → PRECIFICACAO — disparando proposta automática", card_id[:8])
+
+        # Dispara proposta imediatamente (calcula, envia imagem + texto, move para EM_NEGOCIACAO)
+        # send_proposal_now() busca o card fresco do FARO antes de enviar
+        import asyncio as _asyncio
+        from jobs.precificacao import send_proposal_now as _send_proposal_now
+        _asyncio.create_task(_send_proposal_now(card))
     elif intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
         motivo = (
             "COTA_VENDIDA — lead informou que a cota já foi vendida"

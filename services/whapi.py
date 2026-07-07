@@ -35,19 +35,28 @@ Canal = Literal["lista", "bazar", "lp"]
 # ---------------------------------------------------------------------------
 
 def _build_bazar_pool() -> list[str]:
-    """Retorna pool Bazar; usa lista como fallback se token Bazar não configurado."""
+    """Retorna pool Bazar. Se WHAPI_TOKEN_BAZAR não configurado, usa pool de Listas como fallback."""
     if WHAPI_BAZAR_TOKEN:
         return [WHAPI_BAZAR_TOKEN]
     if WHAPI_LISTA_TOKENS:
-        return WHAPI_LISTA_TOKENS  # fallback silencioso (aviso já emitido no config.py)
+        logger.info(
+            "WHAPI_TOKEN_BAZAR não configurado — usando pool de Listas como fallback para Bazar."
+        )
+        return WHAPI_LISTA_TOKENS
+    logger.warning("WHAPI_TOKEN_BAZAR não configurado e pool de Listas vazio — leads Bazar sem canal!")
     return []
 
 
 def _build_lp_pool() -> list[str]:
-    """Retorna pool LP (DEADPL-V592K). Sem fallback — token LP é obrigatório."""
+    """Retorna pool LP. Se WHAPI_TOKEN_LP não configurado, usa pool de Listas como fallback."""
     if WHAPI_LP_TOKEN:
         return [WHAPI_LP_TOKEN]
-    logger.warning("WHAPI_TOKEN_LP não configurado — leads LP sem canal de envio!")
+    if WHAPI_LISTA_TOKENS:
+        logger.info(
+            "WHAPI_TOKEN_LP não configurado — usando pool de Listas como fallback para LP."
+        )
+        return WHAPI_LISTA_TOKENS
+    logger.warning("WHAPI_TOKEN_LP não configurado e pool de Listas vazio — leads LP sem canal!")
     return []
 
 
@@ -671,20 +680,20 @@ async def resolve_phone(card: dict, canal: "Canal" = "lp") -> str | None:
 async def notify_team(message: str) -> None:
     """
     Envia notificação para o grupo de alarmes/equipe comercial.
-    Tenta canal Bazar primeiro. Se falhar com 401, tenta canal LP.
-    Fallback final: envia para NOTIFY_PHONES.
+    Tenta canal lista (inclui DEADPL-V592K que está no grupo) primeiro.
+    Fallback: bazar. Fallback final: NOTIFY_PHONES individuais.
 
     ATENÇÃO: Para o grupo funcionar, o número do canal utilizado deve
     ser participante do grupo no WhatsApp e estar autorizado no Whapi.
+    O DEADPL-V592K foi movido para o pool de Listas (LISTA_4).
     """
     from config import NOTIFY_GROUP, NOTIFY_PHONES
     import logging
     _log = logging.getLogger(__name__)
 
     if NOTIFY_GROUP:
-        # Tenta canais em ordem de preferência.
-        # Canal LP (DEADPL-V592K / +55 11 5241-8218) é o número que está no grupo.
-        for _canal_grupo in ("lp", "bazar", "lista"):
+        # DEADPL-V592K (número no grupo) agora é LISTA_4 — tenta lista primeiro
+        for _canal_grupo in ("lista", "bazar"):
             try:
                 async with WhapiClient(canal=_canal_grupo) as w:
                     await w.send_text(NOTIFY_GROUP, message)
