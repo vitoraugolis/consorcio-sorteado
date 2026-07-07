@@ -236,20 +236,102 @@ def _passou_cutoff(card: dict) -> bool:
 
 async def _pick_lista_token_with_gap() -> tuple[str, int] | None:
     """
-    Seleciona o próximo token do pool lista que respeita o gap mínimo de TOKEN_GAP_MIN_S.
-    Retorna (token, idx_no_pool) ou None se nenhum token está disponível ainda.
-    Estratégia: round-robin começando pelo token há mais tempo ocioso.
+    Seleciona o próximo token do pool lista que respeita o gap mínimo de TOKEN_GAP_MIN_S
+    E está online (health_check com cache Redis de 3 min).
+
+    Estratégia:
+    1. Faz health_check em paralelo em todos os tokens do pool (cache 3 min)
+    2. Filtra tokens offline
+    3. Entre os tokens online + respeitando gap, escolhe o mais ocioso
+    4. Se todos offline → loga erro crítico, retorna None
+    5. Se todos em cooldown → loga info, retorna None
     """
     pool = WHAPI_LISTA_TOKENS
     if not pool:
         return None
 
+    # ── Passo 1: health_check em paralelo com cache Redis (TTL 3 min) ──────
+    _HEALTH_CACHE_PREFIX = "cs:fila_listas:health:"
+    _HEALTH_CACHE_TTL    = 180  # segundos — reusa resultado por 3 min
+
+    async def _check_token_health(token: str) -> tuple[str, bool]:
+        """Retorna (token, online). Usa cache Redis; só checa API se cache expirado."""
+        suffix = token[-8:]
+        cache_key = f"{_HEALTH_CACHE_PREFIX}{suffix}"
+        try:
+            r = await get_redis()
+            cached = await r.get(cache_key)
+            if cached is not None:
+                return token, cached == b"1" or cached == "1"
+        except Exception:
+            pass  # Redis indisponível → assume online (não bloqueia disparo)
+
+        # Cache expirado ou ausente — checa a API com timeout curto
+        try:
+            from services.whapi import WhapiClient
+            async with WhapiClient(token=token) as w:
+                # Timeout reduzido para não atrasar o ciclo
+                import httpx as _httpx
+                w._client.timeout = _httpx.Timeout(4.0)
+                online, status_text = await w.health_check()
+        except Exception as e:
+            logger.warning("Fila Listas: health_check token ...%s falhou: %s — assumindo offline", suffix, e)
+            online = False
+            status_text = "ERRO"
+
+        # Grava no cache (1 = online, 0 = offline)
+        try:
+            r = await get_redis()
+            await r.set(cache_key, "1" if online else "0", ex=_HEALTH_CACHE_TTL)
+        except Exception:
+            pass
+
+        if not online:
+            logger.warning(
+                "Fila Listas: token ...%s OFFLINE (status=%s) — excluído da seleção neste ciclo",
+                suffix, status_text,
+            )
+        return token, online
+
+    # Checa todos em paralelo
+    health_results = await asyncio.gather(*[_check_token_health(t) for t in pool])
+    tokens_online = {token for token, online in health_results if online}
+
+    if not tokens_online:
+        logger.error(
+            "Fila Listas: TODOS os %d tokens offline — nenhum disparo possível. "
+            "Verifique os canais no painel Whapi.",
+            len(pool),
+        )
+        # Alerta no grupo (fora do asyncio.gather para não bloquear o monitor)
+        try:
+            from services.whapi import notify_team as _notify_team
+            asyncio.create_task(_notify_team(
+                f"🚨 *Fila Listas PARADA*\n\n"
+                f"Todos os {len(pool)} tokens Whapi estão offline.\n"
+                f"Nenhum disparo será feito até que pelo menos 1 canal reconecte.\n\n"
+                f"Verifique o painel Whapi e reconecte os canais."
+            ))
+        except Exception:
+            pass
+        return None
+
+    offline_count = len(pool) - len(tokens_online)
+    if offline_count > 0:
+        logger.info(
+            "Fila Listas: %d/%d tokens online — %d offline ignorados neste ciclo",
+            len(tokens_online), len(pool), offline_count,
+        )
+
+    # ── Passo 2: entre tokens online, escolhe o mais ocioso com gap respeitado ──
     now = time.time()
     best_token = None
     best_idx = -1
     best_idle = -1.0
 
     for idx, token in enumerate(pool):
+        if token not in tokens_online:
+            continue  # pula tokens offline
         suffix = token[-8:]
         last = await _get_token_last_used(suffix)
         idle = now - last
@@ -259,16 +341,18 @@ async def _pick_lista_token_with_gap() -> tuple[str, int] | None:
             best_idx = idx
 
     if best_token is None:
-        # Todos os tokens ainda no cooldown — calcula quanto falta para o próximo
+        # Tokens online existem mas todos em cooldown
         min_wait = TOKEN_GAP_MIN_S + 1
         for token in pool:
+            if token not in tokens_online:
+                continue
             last = await _get_token_last_used(token[-8:])
             wait = TOKEN_GAP_MIN_S - (now - last)
             if wait < min_wait:
                 min_wait = wait
         logger.info(
-            "Fila Listas: todos os %d tokens em cooldown — próximo disponível em ~%ds",
-            len(pool), max(0, int(min_wait))
+            "Fila Listas: %d token(s) online mas todos em cooldown — próximo disponível em ~%ds",
+            len(tokens_online), max(0, int(min_wait))
         )
         return None
 
@@ -547,6 +631,13 @@ async def run_ciclo_fila_listas() -> bool:
 
             if success:
                 await _set_token_last_used(token[-8:])
+                # Confirma token online no cache de health (evita check desnecessário
+                # na próxima execução quando o token acabou de disparar com sucesso)
+                try:
+                    r = await get_redis()
+                    await r.set(f"cs:fila_listas:health:{token[-8:]}", "1", ex=180)
+                except Exception:
+                    pass
 
             return success
         finally:
