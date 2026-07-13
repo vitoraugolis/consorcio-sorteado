@@ -363,19 +363,37 @@ async def _fetch_candidate(faro: FaroClient) -> tuple[dict, str] | None:
     for stage_id in PRIORITY_STAGES:
 
         if stage_id == Stage.LISTAS:
-            # Etapa inicial — pega primeiro card disponível sem filtro de cutoff
-            # Campo "Data de primeira ativação" ignorado para este estágio (07/2026)
+            # Etapa inicial — busca em lotes, para no primeiro card com telefone válido
+            # Campo "Data de primeira ativação" ignorado (07/2026)
+            # Pula cards já disparados hoje via mutex listas_sent
             try:
-                cards = await faro.get_cards_all_pages(stage_id=stage_id, page_size=50)
+                r = await get_redis()
+                offset = 0
+                candidato = None
+                while True:
+                    batch = await faro.get_cards_from_stage(stage_id=stage_id, limit=50, offset=offset)
+                    if not batch:
+                        break
+                    batch = filter_test_cards(batch) if TEST_MODE else batch
+                    for c in batch:
+                        phone_raw = c.get("Telefone") or c.get("Telefone alternativo") or ""
+                        phone_digits = "".join(ch for ch in str(phone_raw) if ch.isdigit())
+                        if not phone_digits:
+                            continue  # sem telefone — pula
+                        # Pula se já disparado hoje
+                        already = await r.get(f"cs:mutex:listas_sent:{phone_digits}")
+                        if already:
+                            continue
+                        candidato = c
+                        break
+                    if candidato or len(batch) < 50:
+                        break
+                    offset += 50
+                if candidato:
+                    logger.debug("Fila Listas: candidato Listas encontrado após offset=%d", offset)
+                    return candidato, stage_id
             except FaroError as e:
                 logger.warning("Fila Listas: erro ao buscar etapa Listas: %s", e)
-                continue
-            cards = filter_test_cards(cards) if TEST_MODE else cards
-            # Filtra apenas cards sem telefone (inúteis para disparo)
-            cards = [c for c in cards if c.get("Telefone") or c.get("Telefone alternativo")]
-            if cards:
-                logger.debug("Fila Listas: candidato encontrado em Listas (%d disponíveis)", len(cards))
-                return cards[0], stage_id
             continue
 
         # Etapas de follow-up — respeita dias de espera
