@@ -240,18 +240,34 @@ class WhapiClient:
         """
         Verifica se o canal está respondendo e conectado.
         Retorna (online, status_text).
-        - online=True apenas se HTTP 200 E status não indica desconexão (QR, unpaired, loading)
+
+        Schema Whapi /health (confirmado com suporte 2026-07-13):
+          status.code: 1=CONNECTED, 2=CONNECTING, 3=LOADING, 4=AUTH, 5=BANNED
+          status.text: string descritiva
+
+          IMPORTANTE: code 4 (AUTH) = autenticado/online (confirmado pelo suporte Whapi)
+          Apenas code 5 (BANNED) é definitivamente offline.
+          HTTP 200 com qualquer code exceto 5 → considera online.
         """
-        _OFFLINE_STATUSES = {"qr", "unpaired", "loading", "unknown", "init"}
+        _OFFLINE_CODES = {5}  # apenas BANNED = offline definitivo
         try:
             r = await self._client.get("/health", timeout=10.0)
-            data = r.json()
-            status_text = (data.get("status", {}).get("text") or "UNKNOWN").lower()
             if r.status_code != 200:
-                return False, status_text.upper()
-            # Canal conectado = não está em estado de desconexão
-            online = status_text not in _OFFLINE_STATUSES
-            return online, status_text.upper()
+                return False, f"HTTP_{r.status_code}"
+            data = r.json()
+            status_obj = data.get("status") or {}
+            if isinstance(status_obj, dict):
+                code = status_obj.get("code")
+                text = str(status_obj.get("text") or "").upper()
+                if code is not None:
+                    online = code not in _OFFLINE_CODES
+                    return online, text or str(code)
+                # Sem code — só "banned" é offline
+                if text:
+                    online = "banned" not in text.lower()
+                    return online, text
+            # HTTP 200 sem status estruturado → assume online
+            return True, "OK"
         except Exception as e:
             return False, f"ERRO: {e}"
 
