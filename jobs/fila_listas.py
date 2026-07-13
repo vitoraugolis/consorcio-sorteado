@@ -303,17 +303,6 @@ async def _pick_lista_token_with_gap() -> tuple[str, int] | None:
             "Verifique os canais no painel Whapi.",
             len(pool),
         )
-        # Alerta no grupo (fora do asyncio.gather para não bloquear o monitor)
-        try:
-            from services.whapi import notify_team as _notify_team
-            asyncio.create_task(_notify_team(
-                f"🚨 *Fila Listas PARADA*\n\n"
-                f"Todos os {len(pool)} tokens Whapi estão offline.\n"
-                f"Nenhum disparo será feito até que pelo menos 1 canal reconecte.\n\n"
-                f"Verifique o painel Whapi e reconecte os canais."
-            ))
-        except Exception:
-            pass
         return None
 
     offline_count = len(pool) - len(tokens_online)
