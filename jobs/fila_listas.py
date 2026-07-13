@@ -642,9 +642,9 @@ async def run_ciclo_fila_listas() -> bool:
 
     try:
         async with FaroClient() as faro:
-            # Tenta até 10 candidatos por ciclo — pula cards sem WA sem esperar próximo ciclo
+            # Tenta até 30 candidatos por ciclo — pula cards sem WA sem esperar próximo ciclo
             _cards_tentados: set[str] = set()
-            for _tentativa in range(10):
+            for _tentativa in range(30):
                 result = await _fetch_candidate(faro, skip_ids=_cards_tentados)
 
                 if result is None:
@@ -683,7 +683,7 @@ async def run_ciclo_fila_listas() -> bool:
                 finally:
                     await release_mutex(card_mutex_key)
 
-            logger.debug("Fila Listas: 10 tentativas sem disparo — encerrando ciclo")
+            logger.debug("Fila Listas: 30 tentativas sem disparo — encerrando ciclo")
             return False
 
     except Exception as e:
