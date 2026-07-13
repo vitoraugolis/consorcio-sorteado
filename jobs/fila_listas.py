@@ -352,14 +352,12 @@ async def _pick_lista_token_with_gap() -> tuple[str, int] | None:
 # Busca de card candidato por prioridade de stage
 # ---------------------------------------------------------------------------
 
-async def _fetch_candidate(faro: FaroClient) -> tuple[dict, str] | None:
+async def _fetch_candidate(faro: FaroClient, skip_ids: set[str] | None = None) -> tuple[dict, str] | None:
     """
     Busca 1 card candidato percorrendo PRIORITY_STAGES em ordem.
-    Para etapas de follow-up: usa check_stage_time com limiar de dias.
-    Para etapa Listas: usa get_cards_all_pages.
-
-    Retorna (card, stage_id) ou None se nada elegível.
+    skip_ids: set de card IDs a ignorar nesta chamada (já tentados no ciclo atual).
     """
+    skip_ids = skip_ids or set()
     for stage_id in PRIORITY_STAGES:
 
         if stage_id == Stage.LISTAS:
@@ -376,6 +374,8 @@ async def _fetch_candidate(faro: FaroClient) -> tuple[dict, str] | None:
                         break
                     batch = filter_test_cards(batch) if TEST_MODE else batch
                     for c in batch:
+                        if c.get("id") in skip_ids:
+                            continue
                         phone_raw = c.get("Telefone") or c.get("Telefone alternativo") or ""
                         phone_digits = "".join(ch for ch in str(phone_raw) if ch.isdigit())
                         if not phone_digits:
@@ -429,7 +429,7 @@ async def _fetch_candidate(faro: FaroClient) -> tuple[dict, str] | None:
         # NOTA: bazar continua sendo tratado pelo reativador original para não misturar canais
         elegíveis = [
             c for c in full_cards
-            if _passou_cutoff(c) and not _is_bazar(c)
+            if _passou_cutoff(c) and not _is_bazar(c) and c.get("id") not in skip_ids
         ]
 
         if elegíveis:
@@ -642,41 +642,49 @@ async def run_ciclo_fila_listas() -> bool:
 
     try:
         async with FaroClient() as faro:
-            result = await _fetch_candidate(faro)
+            # Tenta até 10 candidatos por ciclo — pula cards sem WA sem esperar próximo ciclo
+            _cards_tentados: set[str] = set()
+            for _tentativa in range(10):
+                result = await _fetch_candidate(faro, skip_ids=_cards_tentados)
 
-        if result is None:
-            logger.debug("Fila Listas: nenhum candidato elegível em nenhuma etapa")
-            return False
+                if result is None:
+                    logger.debug("Fila Listas: nenhum candidato elegível em nenhuma etapa")
+                    return False
 
-        card, stage_id = result
-        card_id = card["id"]
+                card, stage_id = result
+                card_id = card["id"]
+                _cards_tentados.add(card_id)
 
-        # Mutex por card — evita disparo duplo após restart
-        card_mutex_key = f"ativacao:{card_id}"
-        card_acquired = await acquire_mutex(card_mutex_key)
-        if not card_acquired:
-            logger.debug("Fila Listas: card %s já em processamento — pulando", card_id[:8])
-            return False
+                # Mutex por card — evita disparo duplo após restart
+                card_mutex_key = f"ativacao:{card_id}"
+                card_acquired = await acquire_mutex(card_mutex_key)
+                if not card_acquired:
+                    logger.debug("Fila Listas: card %s já em processamento — pulando", card_id[:8])
+                    continue
 
-        try:
-            if stage_id == Stage.LISTAS:
-                success = await _send_listas(card, token)
-            else:
-                success = await _send_followup(card, stage_id, token)
-
-            if success:
-                await _set_token_last_used(token[-8:])
-                # Confirma token online no cache de health (evita check desnecessário
-                # na próxima execução quando o token acabou de disparar com sucesso)
                 try:
-                    r = await get_redis()
-                    await r.set(f"cs:fila_listas:health:{token[-8:]}", "1", ex=180)
-                except Exception:
-                    pass
+                    if stage_id == Stage.LISTAS:
+                        success = await _send_listas(card, token)
+                    else:
+                        success = await _send_followup(card, stage_id, token)
 
-            return success
-        finally:
-            await release_mutex(card_mutex_key)
+                    if success:
+                        await _set_token_last_used(token[-8:])
+                        try:
+                            r = await get_redis()
+                            await r.set(f"cs:fila_listas:health:{token[-8:]}", "1", ex=180)
+                        except Exception:
+                            pass
+                        return True
+
+                    # Falhou (sem WA, bloqueado, etc.) — tenta próximo candidato
+                    logger.debug("Fila Listas: card %s não disparou — tentando próximo (%d/10)",
+                                 card_id[:8], _tentativa + 1)
+                finally:
+                    await release_mutex(card_mutex_key)
+
+            logger.debug("Fila Listas: 10 tentativas sem disparo — encerrando ciclo")
+            return False
 
     except Exception as e:
         logger.exception("Fila Listas: erro inesperado no ciclo: %s", e)
