@@ -112,8 +112,6 @@ def _build_html(stats: dict, data_fmt: str) -> str:
               {row("2ª Ativação (follow-up)", stats.get("ativacao_2", 0))}
               {row("3ª Ativação (follow-up)", stats.get("ativacao_3", 0))}
               {row("4ª Ativação (follow-up)", stats.get("ativacao_4", 0))}
-              {row("Bazar", stats.get("bazar", 0))}
-              {row("LP (Landing Page)", stats.get("lp", 0))}
               <tr style="background:#f8fafc">
                 <td style="padding:12px 16px;font-weight:700;color:#0f172a;font-size:15px">Total de Disparos</td>
                 <td style="padding:12px 16px;text-align:right;font-weight:800;color:#0f172a;font-size:17px">{total}</td>
@@ -179,8 +177,6 @@ async def run_relatorio_disparos() -> dict:
         {"name": "2ª Ativação",            "cards_count": stats.get("ativacao_2", 0), "total_installment_value": 0},
         {"name": "3ª Ativação",            "cards_count": stats.get("ativacao_3", 0), "total_installment_value": 0},
         {"name": "4ª Ativação",            "cards_count": stats.get("ativacao_4", 0), "total_installment_value": 0},
-        {"name": "Bazar",                  "cards_count": stats.get("bazar", 0),      "total_installment_value": 0},
-        {"name": "LP",                     "cards_count": stats.get("lp", 0),         "total_installment_value": 0},
         {"name": "Propostas",              "cards_count": stats.get("propostas", 0),  "total_installment_value": 0},
     ]
 
@@ -195,7 +191,7 @@ async def run_relatorio_disparos() -> dict:
         "data": data_iso,
         "stats_raw": {k: stats.get(k, 0) for k in [
             "listas", "ativacao_1", "ativacao_2", "ativacao_3",
-            "ativacao_4", "bazar", "lp", "propostas", "total_disparos"
+            "ativacao_4", "propostas", "total_disparos"
         ]},
     }
 
