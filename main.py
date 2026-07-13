@@ -281,8 +281,8 @@ def setup_scheduler():
     scheduler.add_job(run_relatorio_disparos, CronTrigger(hour=10, minute=0, timezone="UTC"),
                       id="relatorio_disparos", name="Relatório Diário de Disparos",
                       max_instances=1, misfire_grace_time=600)
-    # Relatório fim de dia no Slack #log-cs — 20h BRT (23h UTC)
-    scheduler.add_job(_relatorio_slack_fim_dia, CronTrigger(hour=23, minute=0, timezone="UTC"),
+    # Relatório fim de dia no Slack #log-cs — 23h BRT (02h UTC dia seguinte)
+    scheduler.add_job(_relatorio_slack_fim_dia, CronTrigger(hour=2, minute=0, timezone="UTC"),
                       id="relatorio_slack_fim_dia", name="Relatório Slack Fim de Dia",
                       max_instances=1, misfire_grace_time=600)
     # Safety Car — monitor de pipeline a cada 15min
