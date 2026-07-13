@@ -44,8 +44,14 @@ _CLUSTER_C = [0.20, 0.23, 0.27]
 
 # Admins aceitas
 _ADMS_ACEITAS = {
-    "porto seguro", "itaú", "itau", "bradesco", "santander",
+    "porto seguro", "porto vale", "itaú", "itau", "bradesco", "santander",
     "sicoob", "mycon", "caixa", "embracon", "ademicon",
+}
+
+# Aliases: ADMs tratadas como equivalentes para fins de cluster/precificação
+# Porto Vale → mesmo Cluster A de Porto Seguro (Cluster padrão 20/23/27/30%)
+_ADM_ALIASES: dict[str, str] = {
+    "porto vale": "porto seguro",
 }
 
 # Adms com cluster especial (80-110 meses)
@@ -92,6 +98,15 @@ def _validar_proposta_contra_teto(
 
     return True, teto_val, ""
 
+def _normalize_adm(adm: str) -> str:
+    """Normaliza ADM aplicando aliases (ex: Porto Vale → Porto Seguro)."""
+    adm_lower = adm.lower().strip()
+    for alias, canonical in _ADM_ALIASES.items():
+        if alias in adm_lower:
+            return canonical
+    return adm_lower
+
+
 def _get_cluster(adm: str, meses_a_pagar: int) -> list:
     """
     Retorna o cluster correto baseado na adm e meses a pagar.
@@ -100,7 +115,7 @@ def _get_cluster(adm: str, meses_a_pagar: int) -> list:
     Cluster B (Ademicon/Embracon, 80-110 meses): 17%, 20%, 23%, 27%, 30%
     Cluster C (Caixa): 20%, 23%, 27% — teto máximo 27%
     """
-    adm_lower = adm.lower().strip()
+    adm_lower = _normalize_adm(adm)
 
     # Cluster B: Ademicon/Embracon com meses específicos
     if any(a in adm_lower for a in _ADMS_CLUSTER_B) and 80 <= meses_a_pagar <= 110:
@@ -805,28 +820,17 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             # ── Notificação no grupo Alarmes Sistemas CS ──────────────────────
             try:
                 from services.whapi import notify_team as _notify_team
-                _adm_notif   = get_adm(card)
-                _nome_notif  = nome
-                _phone_notif = phone
-                _prop_notif  = _fmt_currency(card.get("Proposta Realizada", ""))
-                _cred_notif  = _fmt_currency(str(card.get("Crédito", "")))
-                _canal_notif = "Listas" if is_lista(card) else "Bazar/LP"
-                _notif_msg = (
-                    f"🎯 *Nova proposta enviada!*\n\n"
-                    f"👤 *Nome:* {_nome_notif}\n"
-                    f"📱 *Telefone:* {_phone_notif}\n"
-                    f"🏦 *Administradora:* {_adm_notif}\n"
-                    f"💰 *Proposta:* {_prop_notif}\n"
-                    f"📊 *Crédito:* {_cred_notif}\n"
-                    f"🔀 *Canal:* {_canal_notif}\n"
-                    f"🆔 *Card:* `{card_id[:8]}`"
-                )
-                await _notify_team(_notif_msg)
+                from datetime import datetime
+                from config import TZ_BRASILIA
+                _dia = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y")
+                await _notify_team(f"{nome} entrou em negociação no dia {_dia}")
                 logger.info("Precificação: grupo notificado para card %s", card_id[:8])
             except Exception as e:
                 logger.warning("Precificação: falha ao notificar grupo para %s: %s", card_id[:8], e)
 
             logger.info("Precificação: proposta enviada para card %s", card_id[:8])
+            from services.stats import increment_stat
+            await increment_stat("propostas")
         else:
             # Rollback — devolve para PRECIFICACAO
             try:

@@ -285,6 +285,8 @@ async def _activate_card(card: dict, message_template: str,
         })
         logger.info("Whapi OK: card=%s phone=%s canal=%s", card_id[:8], phone[-4:], canal_card)
         await register_activation(phone)
+        from services.stats import increment_stat
+        await increment_stat(canal_card)  # "bazar" ou "lp"
         return True
 
     except WhapiError as e:

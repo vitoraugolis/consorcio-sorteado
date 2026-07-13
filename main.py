@@ -26,6 +26,7 @@ from jobs.ativacao_bazar_site import run_ativacao_bazar, run_ativacao_site
 from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_leads_safe
 from jobs.precificacao import run_precificacao_safe
 from jobs.relatorio_funil import run_relatorio_funil, run_relatorio_retroativo
+from jobs.relatorio_disparos import run_relatorio_disparos
 from jobs.watchdog_extratos import run_watchdog_extratos
 from jobs.escalador_bazar_lp import run_escalador_bazar_lp_safe
 from webhooks.router import handle_whapi_webhook
@@ -136,14 +137,8 @@ async def _whapi_monitor():
                     algum_offline = True
 
             # NÃO pausa/retoma scheduler automaticamente — controle manual via JOBS_PAUSED
-            # O monitor só notifica, não interfere nos jobs
-            if mensagens:
-                # Todos os canais são Listas agora — notifica qualquer transição
-                alerta = "\n".join(mensagens)
-                try:
-                    await notify_team(alerta)
-                except Exception:
-                    pass
+            # Notificações de canal offline/online desativadas por solicitação (2026-07-08)
+            # O monitor continua rastreando estado internamente mas não envia alertas no grupo
 
         except Exception as e:
             logger.error("Whapi monitor: erro inesperado: %s", e)
@@ -210,6 +205,10 @@ def setup_scheduler():
     # Relatório diário de funil — 08h BRT (11h UTC)
     scheduler.add_job(run_relatorio_funil, CronTrigger(hour=3, minute=0, timezone="UTC"),
                       id="relatorio_funil", name="Relatório Diário de Funil",
+                      max_instances=1, misfire_grace_time=600)
+    # Relatório diário de disparos — 07h BRT (10h UTC)
+    scheduler.add_job(run_relatorio_disparos, CronTrigger(hour=10, minute=0, timezone="UTC"),
+                      id="relatorio_disparos", name="Relatório Diário de Disparos",
                       max_instances=1, misfire_grace_time=600)
     # Safety Car — monitor de pipeline a cada 15min
     scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
@@ -752,6 +751,15 @@ async def trigger_relatorio_funil(key: str = ""):
     import asyncio
     asyncio.create_task(run_relatorio_funil())
     return {"status": "started", "message": "Relatório de funil disparado em background"}
+
+
+@app.post("/jobs/relatorio-disparos/run")
+async def trigger_relatorio_disparos(key: str = ""):
+    if key != SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Chave inválida")
+    import asyncio
+    asyncio.create_task(_guarded_task(run_relatorio_disparos(), "relatorio_disparos manual"))
+    return {"status": "started", "message": "Relatório de disparos disparado em background"}
 
 
 @app.post("/jobs/relatorio-funil/retroativo")

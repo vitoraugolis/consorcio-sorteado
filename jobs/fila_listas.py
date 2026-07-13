@@ -479,6 +479,8 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
                 "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
             })
         logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s", card_id[:8], phone[-4:])
+        from services.stats import increment_stat
+        await increment_stat("listas")
 
     return sent
 
@@ -559,6 +561,17 @@ async def _send_followup(card: dict, from_stage: str, whapi_token: str) -> bool:
             "✅ Fila Listas [FOLLOW-UP]: card=%s %s→%s phone=...%s",
             card_id[:8], from_stage[:8], to_stage[:8], phone[-4:]
         )
+        # Contador de ativação: determina qual número é pelo stage de origem
+        from services.stats import increment_stat
+        _STAGE_STAT = {
+            Stage.LISTAS:           "ativacao_1",
+            Stage.LP:               "ativacao_1",
+            Stage.PRIMEIRA_ATIVACAO: "ativacao_2",
+            Stage.SEGUNDA_ATIVACAO:  "ativacao_3",
+            Stage.TERCEIRA_ATIVACAO: "ativacao_4",
+        }
+        _stat_key = _STAGE_STAT.get(from_stage, "ativacao_1")
+        await increment_stat(_stat_key)
 
     return sent
 
