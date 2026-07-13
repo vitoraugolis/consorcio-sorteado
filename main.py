@@ -137,8 +137,33 @@ async def _whapi_monitor():
                     algum_offline = True
 
             # NÃO pausa/retoma scheduler automaticamente — controle manual via JOBS_PAUSED
-            # Notificações de canal offline/online desativadas por solicitação (2026-07-08)
-            # O monitor continua rastreando estado internamente mas não envia alertas no grupo
+            # Notificações de canal offline/online desativadas para o grupo WhatsApp (2026-07-08)
+            # Slack #log-cs notifica quando disparos retomam após downtime
+
+            # Detecta transição: todos offline → pelo menos 1 online (disparos retomados)
+            canais_com_token = [label for label, token in canais_check if token]
+            todos_offline_agora = all(
+                not _whapi_canal_status.get(label, True) for label in canais_com_token
+            )
+            algum_voltou = any(msg.startswith("🟢") for msg in mensagens)
+
+            if algum_voltou and not todos_offline_agora:
+                canais_online = [l for l in canais_com_token if _whapi_canal_status.get(l, True)]
+                canais_offline = [l for l in canais_com_token if not _whapi_canal_status.get(l, True)]
+                resumo_online  = ", ".join(canais_online)
+                resumo_offline = f" | ainda offline: {', '.join(canais_offline)}" if canais_offline else ""
+                msg_slack = (
+                    f"✅ *Disparos retomados* — canais Whapi online\n"
+                    f"*Online:* {resumo_online}{resumo_offline}\n"
+                    f"*Fila Listas:* retomando automaticamente no próximo ciclo (≤5 min)"
+                )
+                from services.slack import slack_log_cs_raw
+                asyncio.create_task(_guarded_task(
+                    slack_log_cs_raw(msg_slack),
+                    "whapi_monitor slack retomada",
+                    critical=False,
+                ))
+                logger.info("Whapi monitor: disparos retomados — notificando Slack #log-cs")
 
         except Exception as e:
             logger.error("Whapi monitor: erro inesperado: %s", e)

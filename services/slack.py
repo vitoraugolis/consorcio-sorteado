@@ -200,3 +200,19 @@ async def log_cs(
     except Exception as e:
         logger.warning("Slack log-cs: falha de conexão: %s", e)
         return False
+
+
+async def slack_log_cs_raw(message: str) -> bool:
+    """Envia mensagem de texto livre para o canal #log-cs."""
+    if not SLACK_LOG_CS_URL:
+        logger.debug("Slack log-cs: SLACK_LOG_CS_URL não configurado, mensagem ignorada.")
+        return False
+    payload = {"text": message}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(SLACK_LOG_CS_URL, json=payload)
+            r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.warning("Slack log-cs raw: falha: %s", e)
+        return False
