@@ -831,6 +831,13 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             logger.info("Precificação: proposta enviada para card %s", card_id[:8])
             from services.stats import increment_stat
             await increment_stat("propostas")
+            canal_card = "lista" if is_lista(card) else "bazar"
+            from services.slack import log_cs
+            import asyncio as _asyncio
+            _asyncio.create_task(log_cs(
+                direcao="enviado", canal=canal_card, phone=phone,
+                nome=nome, card_id=card_id[:8], mensagem="🎯 Proposta enviada",
+            ))
         else:
             # Rollback — devolve para PRECIFICACAO
             try:

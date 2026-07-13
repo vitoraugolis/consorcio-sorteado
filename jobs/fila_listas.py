@@ -481,6 +481,11 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
         logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s", card_id[:8], phone[-4:])
         from services.stats import increment_stat
         await increment_stat("listas")
+        from services.slack import log_cs
+        asyncio.create_task(log_cs(
+            direcao="enviado", canal="lista", phone=phone,
+            nome=get_name(card), card_id=card_id[:8], mensagem="1ª ativação (novo lead)",
+        ))
 
     return sent
 
@@ -572,6 +577,13 @@ async def _send_followup(card: dict, from_stage: str, whapi_token: str) -> bool:
         }
         _stat_key = _STAGE_STAT.get(from_stage, "ativacao_1")
         await increment_stat(_stat_key)
+        _num_ativacao = {"ativacao_1":"1ª","ativacao_2":"2ª","ativacao_3":"3ª","ativacao_4":"4ª"}.get(_stat_key, "")
+        from services.slack import log_cs
+        asyncio.create_task(log_cs(
+            direcao="enviado", canal="lista", phone=phone,
+            nome=get_name(card), card_id=card_id[:8],
+            mensagem=f"{_num_ativacao} ativação (follow-up)",
+        ))
 
     return sent
 
