@@ -27,6 +27,38 @@ from jobs.fila_ativacao import run_fila_ativacao, build_queue, run_watch_novos_l
 from jobs.precificacao import run_precificacao_safe
 from jobs.relatorio_funil import run_relatorio_funil, run_relatorio_retroativo
 from jobs.relatorio_disparos import run_relatorio_disparos
+
+
+async def _relatorio_slack_fim_dia():
+    """
+    Envia resumo diário de disparos para o #log-cs às 20h BRT (23h UTC).
+    Coleta os contadores Redis do dia atual e formata mensagem Slack.
+    """
+    from services.stats import get_daily_stats
+    from services.slack import slack_log_cs_raw
+    from datetime import datetime
+
+    stats = await get_daily_stats()  # dia atual
+    data_fmt = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y")
+
+    total = stats.get("total_disparos", 0)
+    propostas = stats.get("propostas", 0)
+    status_emoji = "✅" if total > 0 else "⚠️"
+
+    msg = (
+        f"📊 *Relatório de disparos — {data_fmt}*\n\n"
+        f"{'─' * 30}\n"
+        f"📋 *Listas (nova ativação):*  {stats.get('listas', 0)}\n"
+        f"1️⃣  *1ª Ativação:*  {stats.get('ativacao_1', 0)}\n"
+        f"2️⃣  *2ª Ativação:*  {stats.get('ativacao_2', 0)}\n"
+        f"3️⃣  *3ª Ativação:*  {stats.get('ativacao_3', 0)}\n"
+        f"4️⃣  *4ª Ativação:*  {stats.get('ativacao_4', 0)}\n"
+        f"{'─' * 30}\n"
+        f"{status_emoji} *Total disparos:*  *{total}*\n"
+        f"🎯 *Propostas enviadas:*  *{propostas}*"
+    )
+    await slack_log_cs_raw(msg)
+    logger.info("Relatório fim de dia enviado para #log-cs — total=%d propostas=%d", total, propostas)
 from jobs.watchdog_extratos import run_watchdog_extratos
 from jobs.escalador_bazar_lp import run_escalador_bazar_lp_safe
 from webhooks.router import handle_whapi_webhook
@@ -124,11 +156,11 @@ async def _whapi_monitor():
 
                 if not online and era_online:
                     _whapi_canal_status[label] = False
-                    mensagens.append(f"🔴 *{label}* OFFLINE (status: {status_text})")
+                    mensagens.append(f"🔴 {label} OFFLINE (status: {status_text})")
                     logger.warning("Whapi monitor: %s OFFLINE — %s", label, status_text)
                 elif online and not era_online:
                     _whapi_canal_status[label] = True
-                    mensagens.append(f"🟢 *{label}* voltou online (status: {status_text})")
+                    mensagens.append(f"🟢 {label} voltou ONLINE")
                     logger.info("Whapi monitor: %s voltou ONLINE", label)
                 else:
                     _whapi_canal_status[label] = online
@@ -136,30 +168,44 @@ async def _whapi_monitor():
                 if not online:
                     algum_offline = True
 
-            # NÃO pausa/retoma scheduler automaticamente — controle manual via JOBS_PAUSED
-            # Notificações de canal offline/online desativadas para o grupo WhatsApp (2026-07-08)
-            # Slack #log-cs notifica quando disparos retomam após downtime
-
-            # Detecta transição: todos offline → pelo menos 1 online (disparos retomados)
+            from services.slack import slack_log_cs_raw
             canais_com_token = [label for label, token in canais_check if token]
             todos_offline_agora = all(
                 not _whapi_canal_status.get(label, True) for label in canais_com_token
             )
+            algum_caiu  = any(msg.startswith("🔴") for msg in mensagens)
             algum_voltou = any(msg.startswith("🟢") for msg in mensagens)
 
+            # Notifica queda no #log-cs
+            if algum_caiu:
+                canais_offline = [l for l in canais_com_token if not _whapi_canal_status.get(l, True)]
+                canais_online  = [l for l in canais_com_token if _whapi_canal_status.get(l, True)]
+                linhas_offline = "\n".join(f"  • {l}" for l in canais_offline)
+                sufixo = f"\n✅ *Ainda online:* {', '.join(canais_online)}" if canais_online else "\n⛔ *Todos os canais offline — disparos paralisados*"
+                msg_queda = (
+                    f"🔴 *Canal(is) Whapi offline*\n"
+                    f"{linhas_offline}{sufixo}"
+                )
+                asyncio.create_task(_guarded_task(
+                    slack_log_cs_raw(msg_queda),
+                    "whapi_monitor slack queda",
+                    critical=False,
+                ))
+                logger.info("Whapi monitor: queda detectada — notificando Slack #log-cs")
+
+            # Notifica retomada no #log-cs
             if algum_voltou and not todos_offline_agora:
-                canais_online = [l for l in canais_com_token if _whapi_canal_status.get(l, True)]
+                canais_online  = [l for l in canais_com_token if _whapi_canal_status.get(l, True)]
                 canais_offline = [l for l in canais_com_token if not _whapi_canal_status.get(l, True)]
                 resumo_online  = ", ".join(canais_online)
-                resumo_offline = f" | ainda offline: {', '.join(canais_offline)}" if canais_offline else ""
-                msg_slack = (
+                sufixo_offline = f"\n⚠️ *Ainda offline:* {', '.join(canais_offline)}" if canais_offline else ""
+                msg_retomada = (
                     f"✅ *Disparos retomados* — canais Whapi online\n"
-                    f"*Online:* {resumo_online}{resumo_offline}\n"
-                    f"*Fila Listas:* retomando automaticamente no próximo ciclo (≤5 min)"
+                    f"*Online:* {resumo_online}{sufixo_offline}\n"
+                    f"_Fila Listas retoma no próximo ciclo (≤5 min)_"
                 )
-                from services.slack import slack_log_cs_raw
                 asyncio.create_task(_guarded_task(
-                    slack_log_cs_raw(msg_slack),
+                    slack_log_cs_raw(msg_retomada),
                     "whapi_monitor slack retomada",
                     critical=False,
                 ))
@@ -234,6 +280,10 @@ def setup_scheduler():
     # Relatório diário de disparos — 07h BRT (10h UTC)
     scheduler.add_job(run_relatorio_disparos, CronTrigger(hour=10, minute=0, timezone="UTC"),
                       id="relatorio_disparos", name="Relatório Diário de Disparos",
+                      max_instances=1, misfire_grace_time=600)
+    # Relatório fim de dia no Slack #log-cs — 20h BRT (23h UTC)
+    scheduler.add_job(_relatorio_slack_fim_dia, CronTrigger(hour=23, minute=0, timezone="UTC"),
+                      id="relatorio_slack_fim_dia", name="Relatório Slack Fim de Dia",
                       max_instances=1, misfire_grace_time=600)
     # Safety Car — monitor de pipeline a cada 15min
     scheduler.add_job(run_pipeline_monitor, IntervalTrigger(minutes=15),
