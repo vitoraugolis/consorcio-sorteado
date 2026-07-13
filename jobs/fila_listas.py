@@ -363,13 +363,16 @@ async def _fetch_candidate(faro: FaroClient) -> tuple[dict, str] | None:
     for stage_id in PRIORITY_STAGES:
 
         if stage_id == Stage.LISTAS:
-            # Etapa inicial — pega primeiro card disponível
+            # Etapa inicial — pega primeiro card disponível sem filtro de cutoff
+            # Campo "Data de primeira ativação" ignorado para este estágio (07/2026)
             try:
                 cards = await faro.get_cards_all_pages(stage_id=stage_id, page_size=50)
             except FaroError as e:
                 logger.warning("Fila Listas: erro ao buscar etapa Listas: %s", e)
                 continue
             cards = filter_test_cards(cards) if TEST_MODE else cards
+            # Filtra apenas cards sem telefone (inúteis para disparo)
+            cards = [c for c in cards if c.get("Telefone") or c.get("Telefone alternativo")]
             if cards:
                 logger.debug("Fila Listas: candidato encontrado em Listas (%d disponíveis)", len(cards))
                 return cards[0], stage_id
