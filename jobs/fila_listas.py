@@ -443,6 +443,74 @@ async def _fetch_candidate(faro: FaroClient, skip_ids: set[str] | None = None) -
 
 
 # ---------------------------------------------------------------------------
+# Retry com token alternativo em caso de 401 de canal offline
+# ---------------------------------------------------------------------------
+
+async def _try_send_buttons(phone: str, message: str, buttons: list, header: str | None,
+                            primary_token: str) -> tuple[bool, str]:
+    """
+    Tenta enviar botões com o token primário. Se falhar com 401 de canal
+    (token offline/QR), invalida o cache desse token e tenta com outro
+    token online do pool. Retorna (sucesso, token_usado).
+    """
+    _HEALTH_CACHE_PREFIX = "cs:fila_listas:health:"
+
+    async def _invalidate_cache(token: str):
+        try:
+            r = await get_redis()
+            await r.delete(f"{_HEALTH_CACHE_PREFIX}{token[-8:]}")
+        except Exception:
+            pass
+
+    async def _do_send(token: str) -> bool:
+        async with WhapiClient(token=token) as w:
+            if header:
+                await w.send_buttons(to=phone, message=message, buttons=buttons, header=header)
+            else:
+                await w.send_buttons(phone, message, buttons)
+        return True
+
+    def _is_channel_offline_error(e: WhapiError) -> bool:
+        return e.status_code == 401 and "channel authorization" in str(e).lower()
+
+    # Tentativa 1: token primário
+    try:
+        await _do_send(primary_token)
+        return True, primary_token
+    except WhapiError as e:
+        if not _is_channel_offline_error(e):
+            raise  # erro diferente (ex: número sem WA) — propagar normalmente
+        logger.warning(
+            "Fila Listas: token ...%s offline (401) — invalidando cache e tentando fallback",
+            primary_token[-8:],
+        )
+        await _invalidate_cache(primary_token)
+
+    # Tentativa 2: qualquer outro token online do pool
+    fallback_tokens = [t for t in WHAPI_LISTA_TOKENS if t != primary_token]
+    for token in fallback_tokens:
+        try:
+            async with WhapiClient(token=token) as w:
+                ok, status = await w.health_check()
+            if not ok:
+                continue
+        except Exception:
+            continue
+        try:
+            await _do_send(token)
+            logger.info("Fila Listas: fallback OK com token ...%s", token[-8:])
+            return True, token
+        except WhapiError as e2:
+            if _is_channel_offline_error(e2):
+                await _invalidate_cache(token)
+                continue
+            raise
+
+    logger.error("Fila Listas: todos os tokens falharam com 401 — nenhum canal disponível")
+    return False, primary_token
+
+
+# ---------------------------------------------------------------------------
 # Envio por etapa
 # ---------------------------------------------------------------------------
 
@@ -470,25 +538,25 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
             return False
 
     sent = False
-    async with WhapiClient(token=whapi_token) as w:
-        try:
-            await w.send_buttons(
-                to=phone,
-                message=message,
-                buttons=_ACTIVATION_BUTTONS,
-                header=_ACTIVATION_HEADER,
-            )
-            sent = True
-        except WhapiError as e:
-            if "not found" in str(e).lower() and e.status_code == 404:
-                logger.warning("Fila Listas: botões indisponíveis para %s — fallback texto", card_id[:8])
-                try:
+    try:
+        sent, _ = await _try_send_buttons(
+            phone=phone,
+            message=message,
+            buttons=_ACTIVATION_BUTTONS,
+            header=_ACTIVATION_HEADER,
+            primary_token=whapi_token,
+        )
+    except WhapiError as e:
+        if "not found" in str(e).lower() and e.status_code == 404:
+            logger.warning("Fila Listas: botões indisponíveis para %s — fallback texto", card_id[:8])
+            try:
+                async with WhapiClient(token=whapi_token) as w:
                     await w.send_text(phone, message)
-                    sent = True
-                except WhapiError as e2:
-                    logger.error("Fila Listas: fallback texto falhou %s: %s", card_id[:8], e2)
-            else:
-                logger.error("Fila Listas: WhapiError %s: %s", card_id[:8], e)
+                sent = True
+            except WhapiError as e2:
+                logger.error("Fila Listas: fallback texto falhou %s: %s", card_id[:8], e2)
+        else:
+            logger.error("Fila Listas: WhapiError %s: %s", card_id[:8], e)
 
     if sent:
         if phone_digits:
@@ -551,30 +619,29 @@ async def _send_followup(card: dict, from_stage: str, whapi_token: str) -> bool:
     text = msg_data["text"].format(nome=nome, adm=adm)
 
     sent = False
-    async with WhapiClient(token=whapi_token) as w:
-        try:
-            await w.send_buttons(phone, text, msg_data["buttons"])
-            sent = True
-        except WhapiError as e:
-            # Fallback para texto simples quando botões retornam 401 ou 404
-            # 401 = "need channel authorization" (número não aceita interativos)
-            # 404 = endpoint de botões indisponível no plano/canal
-            is_fallback_error = (
-                (e.status_code == 401 and "channel authorization" in str(e).lower()) or
-                (e.status_code == 404 and "not found" in str(e).lower())
+    try:
+        sent, _ = await _try_send_buttons(
+            phone=phone,
+            message=text,
+            buttons=msg_data["buttons"],
+            header=None,
+            primary_token=whapi_token,
+        )
+    except WhapiError as e:
+        # Fallback para texto simples quando botões retornam 404 (plano não suporta)
+        if e.status_code == 404 and "not found" in str(e).lower():
+            logger.warning(
+                "Fila Listas: botões recusados (HTTP %s) para follow-up %s — fallback texto simples",
+                e.status_code, card_id[:8],
             )
-            if is_fallback_error:
-                logger.warning(
-                    "Fila Listas: botões recusados (HTTP %s) para follow-up %s — fallback texto simples",
-                    e.status_code, card_id[:8],
-                )
-                try:
+            try:
+                async with WhapiClient(token=whapi_token) as w:
                     await w.send_text(phone, text)
-                    sent = True
-                except WhapiError as e2:
-                    logger.error("Fila Listas: fallback texto follow-up falhou %s: %s", card_id[:8], e2)
-            else:
-                logger.error("Fila Listas: WhapiError follow-up %s: %s", card_id[:8], e)
+                sent = True
+            except WhapiError as e2:
+                logger.error("Fila Listas: fallback texto follow-up falhou %s: %s", card_id[:8], e2)
+        else:
+            logger.error("Fila Listas: WhapiError follow-up %s: %s", card_id[:8], e)
 
     if sent:
         async with FaroClient() as faro:
