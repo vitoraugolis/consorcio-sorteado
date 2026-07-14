@@ -34,6 +34,7 @@ _STAT_KEYS = [
     "ativacao_4",
     "bazar",
     "lp",
+    "interesse",
     "propostas",
 ]
 

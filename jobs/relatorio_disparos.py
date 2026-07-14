@@ -123,11 +123,15 @@ def _build_html(stats: dict, data_fmt: str) -> str:
           <td style="padding:20px 40px 0">
             <table width="100%" cellpadding="0" cellspacing="0" style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
               <tr style="background:#064e3b">
-                <th colspan="2" style="padding:12px 16px;text-align:left;color:#6ee7b7;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Propostas</th>
+                <th colspan="2" style="padding:12px 16px;text-align:left;color:#6ee7b7;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Conversões</th>
               </tr>
               <tr>
-                <td style="padding:12px 16px;color:#1e293b;font-weight:500">Propostas enviadas</td>
-                <td style="padding:12px 16px;text-align:right;font-weight:800;color:#059669;font-size:17px">{propostas}</td>
+                <td style="padding:12px 16px;color:#1e293b;font-weight:500">Leads com interesse (→ Precificação)</td>
+                <td style="padding:12px 16px;text-align:right;font-weight:800;color:#0891b2;font-size:17px">{stats.get("interesse", 0)}</td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;border-top:1px solid #e2e8f0;color:#1e293b;font-weight:500">Propostas enviadas</td>
+                <td style="padding:12px 16px;border-top:1px solid #e2e8f0;text-align:right;font-weight:800;color:#059669;font-size:17px">{propostas}</td>
               </tr>
             </table>
           </td>
@@ -175,6 +179,7 @@ async def run_relatorio_disparos() -> dict:
         {"name": "2ª Ativação",            "cards_count": stats.get("ativacao_2", 0), "total_installment_value": 0},
         {"name": "3ª Ativação",            "cards_count": stats.get("ativacao_3", 0), "total_installment_value": 0},
         {"name": "4ª Ativação",            "cards_count": stats.get("ativacao_4", 0), "total_installment_value": 0},
+        {"name": "Interesse",              "cards_count": stats.get("interesse", 0),  "total_installment_value": 0},
         {"name": "Propostas",              "cards_count": stats.get("propostas", 0),  "total_installment_value": 0},
     ]
 
@@ -189,7 +194,7 @@ async def run_relatorio_disparos() -> dict:
         "data": data_iso,
         "stats_raw": {k: stats.get(k, 0) for k in [
             "listas", "ativacao_1", "ativacao_2", "ativacao_3",
-            "ativacao_4", "propostas", "total_disparos"
+            "ativacao_4", "interesse", "propostas", "total_disparos"
         ]},
     }
 

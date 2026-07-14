@@ -23,6 +23,7 @@ from services.slack import slack_error
 from services.session_store import load_history_smart, save_history_smart
 from services.safety_car import audit_response
 from services.agent_knowledge import get_knowledge_for_agent
+from services.stats import increment_stat
 
 logger = logging.getLogger(__name__)
 
@@ -135,11 +136,9 @@ async def _handle_intent(
                 return
 
         logger.info("Agente Listas: card %s → PRECIFICACAO — disparando proposta automática", card_id[:8])
-
-        # Dispara proposta imediatamente (calcula, envia imagem + texto, move para EM_NEGOCIACAO)
-        # send_proposal_now() busca o card fresco do FARO antes de enviar
         import asyncio as _asyncio
         from jobs.precificacao import send_proposal_now as _send_proposal_now
+        _asyncio.create_task(increment_stat("interesse"))
         _asyncio.create_task(_send_proposal_now(card))
     elif intent in ("RECUSA_COTA_VENDIDA", "RECUSA_SEM_INTERESSE"):
         motivo = (
