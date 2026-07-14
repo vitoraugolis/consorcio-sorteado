@@ -189,32 +189,36 @@ async def _respond_lp(card: dict, texto: str) -> None:
     audit = await audit_response(texto_resposta, card_fresh, historico_txt, agente="agente_lp")
     texto_resposta = audit.mensagem_final
 
+    # ── Executa a mudança de stage ANTES de tentar enviar a mensagem ────────
+    # Garante que mudanças de stage críticas aconteçam mesmo se o Whapi falhar.
+    await _handle_intent(intent, card_fresh, history=history, mensagem_original=texto)
+
     # Envia via Whapi canal LP
+    whapi_ok = False
     try:
         async with get_whapi_for_card(card_fresh) as w:
             await w.send_text(phone, texto_resposta)
+        whapi_ok = True
     except WhapiError as e:
         logger.error("Agente LP: Whapi falhou para %s: %s", phone, e)
-        return
 
-    history = history_append(history, "assistant", texto_resposta)
-    agora = datetime.now(timezone.utc).isoformat()
+    if whapi_ok:
+        history = history_append(history, "assistant", texto_resposta)
+        agora = datetime.now(timezone.utc).isoformat()
 
-    # Persiste historico e atividade
-    async with FaroClient() as faro:
-        await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
-        try:
-            await faro.update_card(card_id, {
-                "Ultima atividade": agora,
-                "Ultima resposta lead": texto[:500],
-            })
-        except FaroError:
-            pass
+        # Persiste historico e atividade
+        async with FaroClient() as faro:
+            await save_history_smart(phone, history, faro_client=faro, card_id=card_id)
+            try:
+                await faro.update_card(card_id, {
+                    "Ultima atividade": agora,
+                    "Ultima resposta lead": texto[:500],
+                })
+            except FaroError:
+                pass
 
-    await _handle_intent(intent, card_fresh, history=history, mensagem_original=texto)
-
-    logger.info("Agente LP: card=%s | intent=%s | turns=%d",
-                card_id[:8], intent, len(history) // 2)
+    logger.info("Agente LP: card=%s | intent=%s | turns=%d | whapi_ok=%s",
+                card_id[:8], intent, len(history) // 2, whapi_ok)
 
 
 async def handle_message(card: dict, text: str) -> None:
