@@ -820,9 +820,9 @@ async def _process_card_locked(faro: FaroClient, card_id: str) -> bool:
             # ── Notificação no grupo Alarmes Sistemas CS ──────────────────────
             try:
                 from services.whapi import notify_team as _notify_team
-                from datetime import datetime
+                from datetime import datetime as _datetime_local
                 from config import TZ_BRASILIA
-                _dia = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y")
+                _dia = _datetime_local.now(TZ_BRASILIA).strftime("%d/%m/%Y")
                 await _notify_team(f"{nome} entrou em negociação no dia {_dia}")
                 logger.info("Precificação: grupo notificado para card %s", card_id[:8])
             except Exception as e:
