@@ -246,10 +246,10 @@ class WhapiClient:
           status.text: string descritiva
 
           IMPORTANTE: code 4 (AUTH) = autenticado/online (confirmado pelo suporte Whapi)
-          Apenas code 5 (BANNED) é definitivamente offline.
-          HTTP 200 com qualquer code exceto 5 → considera online.
+          code 3 (QR) = celular desconectado, não consegue enviar mensagens.
+          Apenas codes 3 e 5 são considerados offline para fins de disparo.
         """
-        _OFFLINE_CODES = {5}  # apenas BANNED = offline definitivo
+        _OFFLINE_CODES = {3, 5}  # QR (3) = celular desconectado; BANNED (5) = banido
         try:
             r = await self._client.get("/health", timeout=10.0)
             if r.status_code != 200:
