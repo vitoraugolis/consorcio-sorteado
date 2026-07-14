@@ -141,6 +141,7 @@ QUALIFICADOR_MODEL = os.getenv("QUALIFICADOR_MODEL",  "gpt-4o-mini")
 # ---------------------------------------------------------------------------
 LISTAS_DELAY_MIN_S    = int(os.getenv("LISTAS_DELAY_MIN_S", "30"))
 LISTAS_DELAY_MAX_S    = int(os.getenv("LISTAS_DELAY_MAX_S", "90"))
+LISTAS_DAILY_MAX      = int(os.getenv("LISTAS_DAILY_MAX", "0"))   # 0 = sem limite
 REATIVADOR_DELAY_MIN_S = int(os.getenv("REATIVADOR_DELAY_MIN_S", "60"))
 REATIVADOR_DELAY_MAX_S = int(os.getenv("REATIVADOR_DELAY_MAX_S", "900"))
 JOB_BATCH_LIMIT       = int(os.getenv("JOB_BATCH_LIMIT", "50"))

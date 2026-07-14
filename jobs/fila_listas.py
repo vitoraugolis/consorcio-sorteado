@@ -30,6 +30,7 @@ from config import (
     Stage, ACTIVATION_SEQUENCE, REATIVACAO_DIAS,
     SEND_WINDOW_START, SEND_WINDOW_END,
     TEST_MODE, TZ_BRASILIA, filter_test_cards,
+    LISTAS_DAILY_MAX,
 )
 from services.faro import FaroClient, FaroError, get_name, get_adm, get_phone
 from services.whapi import WhapiClient, WhapiError, resolve_phone, WHAPI_LISTA_TOKENS
@@ -570,6 +571,16 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
         logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s", card_id[:8], phone[-4:])
         from services.stats import increment_stat
         await increment_stat("listas")
+        # Incrementa contador diário
+        if LISTAS_DAILY_MAX > 0:
+            try:
+                r = await get_redis()
+                hoje_brt = datetime.now(TZ_BRASILIA).strftime("%Y-%m-%d")
+                _dk = f"cs:fila_listas:daily_count:{hoje_brt}"
+                await r.incr(_dk)
+                await r.expireat(_dk, int((datetime.now(TZ_BRASILIA).replace(hour=23, minute=59, second=59)).timestamp()) + 1)
+            except Exception:
+                pass
         from services.slack import log_cs
         asyncio.create_task(log_cs(
             direcao="enviado", canal="lista", phone=phone,
@@ -665,6 +676,16 @@ async def _send_followup(card: dict, from_stage: str, whapi_token: str) -> bool:
         }
         _stat_key = _STAGE_STAT.get(from_stage, "ativacao_1")
         await increment_stat(_stat_key)
+        # Incrementa contador diário
+        if LISTAS_DAILY_MAX > 0:
+            try:
+                r = await get_redis()
+                hoje_brt = datetime.now(TZ_BRASILIA).strftime("%Y-%m-%d")
+                _dk = f"cs:fila_listas:daily_count:{hoje_brt}"
+                await r.incr(_dk)
+                await r.expireat(_dk, int((datetime.now(TZ_BRASILIA).replace(hour=23, minute=59, second=59)).timestamp()) + 1)
+            except Exception:
+                pass
         _num_ativacao = {"ativacao_1":"1ª","ativacao_2":"2ª","ativacao_3":"3ª","ativacao_4":"4ª"}.get(_stat_key, "")
         from services.slack import log_cs
         asyncio.create_task(log_cs(
@@ -688,6 +709,22 @@ async def run_ciclo_fila_listas() -> bool:
     if not _is_within_send_window():
         logger.debug("Fila Listas: fora da janela de envio — pulando ciclo")
         return False
+
+    # ── Limite diário de disparos (LISTAS_DAILY_MAX) ─────────────────────────
+    if LISTAS_DAILY_MAX > 0:
+        hoje_brt = datetime.now(TZ_BRASILIA).strftime("%Y-%m-%d")
+        _daily_key = f"cs:fila_listas:daily_count:{hoje_brt}"
+        try:
+            r = await get_redis()
+            _count_hoje = int(await r.get(_daily_key) or 0)
+            if _count_hoje >= LISTAS_DAILY_MAX:
+                logger.info(
+                    "Fila Listas: limite diário atingido (%d/%d) — aguardando amanhã",
+                    _count_hoje, LISTAS_DAILY_MAX,
+                )
+                return False
+        except Exception:
+            pass  # Redis indisponível → não bloqueia
 
     if os.getenv("LISTAS_ATIVACAO_ENABLED", "true").lower() != "true":
         logger.info("Fila Listas: LISTAS_ATIVACAO_ENABLED=false — pulando ciclo")
