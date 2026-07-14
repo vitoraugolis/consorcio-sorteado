@@ -146,9 +146,20 @@ REATIVADOR_DELAY_MIN_S = int(os.getenv("REATIVADOR_DELAY_MIN_S", "60"))
 REATIVADOR_DELAY_MAX_S = int(os.getenv("REATIVADOR_DELAY_MAX_S", "900"))
 JOB_BATCH_LIMIT       = int(os.getenv("JOB_BATCH_LIMIT", "50"))
 
-# Janelas de envio por fluxo (hora BRT)
-SEND_WINDOW_START     = int(os.getenv("SEND_WINDOW_START", "8"))   # Listas
-SEND_WINDOW_END       = int(os.getenv("SEND_WINDOW_END", "21"))
+# Janelas de envio por fluxo (BRT) — formato "HH" ou "HH:MM"
+def _parse_window_time(val: str, default_hour: int) -> tuple[int, int]:
+    """Converte 'HH' ou 'HH:MM' para (hour, minute). Retrocompatível com inteiros."""
+    s = val.strip()
+    if ":" in s:
+        h, m = s.split(":", 1)
+        return int(h), int(m)
+    return int(s), 0
+
+SEND_WINDOW_START_RAW = os.getenv("SEND_WINDOW_START", "8")
+SEND_WINDOW_END_RAW   = os.getenv("SEND_WINDOW_END", "21")
+SEND_WINDOW_START     = _parse_window_time(SEND_WINDOW_START_RAW, 8)   # (h, m)
+SEND_WINDOW_END       = _parse_window_time(SEND_WINDOW_END_RAW, 21)    # (h, m)
+
 BAZAR_WINDOW_START    = int(os.getenv("BAZAR_WINDOW_START", "6"))  # Bazar/LP
 BAZAR_WINDOW_END      = int(os.getenv("BAZAR_WINDOW_END", "20"))
 

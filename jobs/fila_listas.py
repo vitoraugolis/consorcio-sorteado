@@ -212,7 +212,11 @@ def _is_bazar(card: dict) -> bool:
 
 
 def _is_within_send_window() -> bool:
-    return SEND_WINDOW_START <= datetime.now(TZ_BRASILIA).hour < SEND_WINDOW_END
+    now = datetime.now(TZ_BRASILIA)
+    now_minutes = now.hour * 60 + now.minute
+    start_minutes = SEND_WINDOW_START[0] * 60 + SEND_WINDOW_START[1]
+    end_minutes   = SEND_WINDOW_END[0]   * 60 + SEND_WINDOW_END[1]
+    return start_minutes <= now_minutes < end_minutes
 
 
 def _passou_cutoff(card: dict) -> bool:
