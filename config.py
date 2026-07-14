@@ -148,7 +148,7 @@ JOB_BATCH_LIMIT       = int(os.getenv("JOB_BATCH_LIMIT", "50"))
 
 # Janelas de envio por fluxo (hora BRT)
 SEND_WINDOW_START     = int(os.getenv("SEND_WINDOW_START", "8"))   # Listas
-SEND_WINDOW_END       = int(os.getenv("SEND_WINDOW_END", "20"))
+SEND_WINDOW_END       = int(os.getenv("SEND_WINDOW_END", "21"))
 BAZAR_WINDOW_START    = int(os.getenv("BAZAR_WINDOW_START", "6"))  # Bazar/LP
 BAZAR_WINDOW_END      = int(os.getenv("BAZAR_WINDOW_END", "20"))
 
