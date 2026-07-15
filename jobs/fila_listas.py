@@ -452,11 +452,11 @@ async def _fetch_candidate(faro: FaroClient, skip_ids: set[str] | None = None) -
 # ---------------------------------------------------------------------------
 
 async def _try_send_buttons(phone: str, message: str, buttons: list, header: str | None,
-                            primary_token: str) -> tuple[bool, str]:
+                            primary_token: str) -> tuple[bool, str, dict]:
     """
     Tenta enviar botões com o token primário. Se falhar com 401 de canal
     (token offline/QR), invalida o cache desse token e tenta com outro
-    token online do pool. Retorna (sucesso, token_usado).
+    token online do pool. Retorna (sucesso, token_usado, api_response).
     """
     _HEALTH_CACHE_PREFIX = "cs:fila_listas:health:"
 
@@ -467,21 +467,20 @@ async def _try_send_buttons(phone: str, message: str, buttons: list, header: str
         except Exception:
             pass
 
-    async def _do_send(token: str) -> bool:
+    async def _do_send(token: str) -> dict:
         async with WhapiClient(token=token) as w:
             if header:
-                await w.send_buttons(to=phone, message=message, buttons=buttons, header=header)
+                return await w.send_buttons(to=phone, message=message, buttons=buttons, header=header)
             else:
-                await w.send_buttons(phone, message, buttons)
-        return True
+                return await w.send_buttons(phone, message, buttons)
 
     def _is_channel_offline_error(e: WhapiError) -> bool:
         return e.status_code == 401 and "channel authorization" in str(e).lower()
 
     # Tentativa 1: token primário
     try:
-        await _do_send(primary_token)
-        return True, primary_token
+        resp = await _do_send(primary_token)
+        return True, primary_token, resp
     except WhapiError as e:
         if not _is_channel_offline_error(e):
             raise  # erro diferente (ex: número sem WA) — propagar normalmente
@@ -502,9 +501,9 @@ async def _try_send_buttons(phone: str, message: str, buttons: list, header: str
         except Exception:
             continue
         try:
-            await _do_send(token)
+            resp = await _do_send(token)
             logger.info("Fila Listas: fallback OK com token ...%s", token[-8:])
-            return True, token
+            return True, token, resp
         except WhapiError as e2:
             if _is_channel_offline_error(e2):
                 await _invalidate_cache(token)
@@ -512,7 +511,7 @@ async def _try_send_buttons(phone: str, message: str, buttons: list, header: str
             raise
 
     logger.error("Fila Listas: todos os tokens falharam com 401 — nenhum canal disponível")
-    return False, primary_token
+    return False, primary_token, {}
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +542,10 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
             return False
 
     sent = False
+    api_response: dict = {}
+    token_usado = whapi_token
     try:
-        sent, _ = await _try_send_buttons(
+        sent, token_usado, api_response = await _try_send_buttons(
             phone=phone,
             message=message,
             buttons=_ACTIVATION_BUTTONS,
@@ -556,8 +557,9 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
             logger.warning("Fila Listas: botões indisponíveis para %s — fallback texto", card_id[:8])
             try:
                 async with WhapiClient(token=whapi_token) as w:
-                    await w.send_text(phone, message)
+                    api_response = await w.send_text(phone, message)
                 sent = True
+                token_usado = whapi_token
             except WhapiError as e2:
                 logger.error("Fila Listas: fallback texto falhou %s: %s", card_id[:8], e2)
         else:
@@ -572,7 +574,44 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
                 "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
                 "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
             })
-        logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s token=...%s", card_id[:8], phone[-4:], whapi_token[-8:])
+        logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s token=...%s msg_id=%s",
+                    card_id[:8], phone[-4:], token_usado[-8:],
+                    api_response.get("id") or api_response.get("message", {}).get("id") or "n/a")
+        # Persiste retorno da API no arquivo de registros do dia
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _hoje = datetime.now(TZ_BRASILIA).strftime("%Y-%m-%d")
+            _report_path = _Path("reports") / f"disparos_{_hoje}.json"
+            _Path("reports").mkdir(exist_ok=True)
+            _records = []
+            if _report_path.exists():
+                try:
+                    _records = _json.loads(_report_path.read_text()).get("disparos", [])
+                except Exception:
+                    _records = []
+            _records.append({
+                "n": len(_records) + 1,
+                "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "card_id": card_id[:8],
+                "telefone": phone,
+                "token_suffix": token_usado[-8:],
+                "channel_id": next(
+                    (os.getenv(f"WHAPI_CHANNEL_ID_LISTA_{i}") for i, t in enumerate(WHAPI_LISTA_TOKENS, 1) if t == token_usado),
+                    "unknown"
+                ),
+                "message_id": api_response.get("id") or (api_response.get("message") or {}).get("id") or "",
+                "status": api_response.get("sent") or bool(api_response.get("id")),
+                "api_response": api_response,
+            })
+            _report_path.write_text(_json.dumps({
+                "data": _hoje,
+                "meta_diaria": LISTAS_DAILY_MAX or 0,
+                "total_disparos": len(_records),
+                "disparos": _records,
+            }, ensure_ascii=False, indent=2))
+        except Exception as _e:
+            logger.warning("Fila Listas: falha ao persistir registro de disparo: %s", _e)
         from services.stats import increment_stat
         await increment_stat("listas")
         # Incrementa contador diário
