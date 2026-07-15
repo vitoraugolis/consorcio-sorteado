@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-15 16:27 BRT** / 2026-07-15 19:27 UTC
+> Última atualização: **2026-07-15 16:57 BRT** / 2026-07-15 19:57 UTC
 
 ---
 
@@ -74,7 +74,7 @@
 
 | Slot | Status |
 |------|--------|
-| LISTA-1 | ❌ OFFLINE (FALCON) ERRO: |
+| LISTA-1 | ❌ OFFLINE (FALCON) ERROR |
 | LISTA-2 | ❌ OFFLINE (GROOTT) ERRO: |
 | LISTA-3 | ❌ OFFLINE (WOLVRN) ERRO: |
 | LISTA-4 | ❌ OFFLINE (DEADPL) ERRO: |
@@ -87,7 +87,6 @@
 
 | Horário (UTC) | Evento |
 |---------------|--------|
-| 2026-07-15 00:28:12 | ⚠️ Job precificacao falhou |
 | 2026-07-15 00:28:12 | ⚠️ Job escalador_bazar_lp falhou |
 | 2026-07-15 00:44:42 | ▶️ Disparos retomados |
 | 2026-07-15 01:28:12 | ⚠️ Job precificacao falhou |
@@ -127,6 +126,7 @@
 | 2026-07-15 17:03:32 | 🔑 Token selecionado para disparo |
 | 2026-07-15 18:00:32 | 🔑 Token selecionado para disparo |
 | 2026-07-15 19:12:16 | 🔑 Token selecionado para disparo |
+| 2026-07-15 19:29:32 | 🔴 Todos tokens offline |
 
 
 ---
