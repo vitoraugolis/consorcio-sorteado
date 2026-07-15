@@ -1,64 +1,72 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
-> Atualizado automaticamente a cada disparo. Gerado por Zeca (OpenClaw).
+> ⏱️ Atualizado automaticamente a cada 30 minutos.  
+> Última atualização: **2026-07-15 13:52 BRT** / 2026-07-15 16:52 UTC
 
 ---
 
-## 📅 2026-07-15 (Quarta-feira)
+## 📅 2026-07-15
 
-### 🚀 Disparos (Ativações — Fluxo Listas)
+### 🚀 Disparos — Ativações (Fluxo Listas)
 
-| # | Horário (UTC) | Card ID | Telefone | Token (suffix) | Channel ID | Message ID | Status |
-|---|---------------|---------|----------|---------------|------------|------------|--------|
-| 1 | 10:03:13 | 93f85e0d | 559299817781 | rotação | — | — | ✅ |
-| 2 | 10:08:51 | 3662ab44 | 553197499371 | rotação | — | — | ✅ |
-| 3 | 10:19:10 | f3ef80de | 557187656405 | rotação | — | — | ✅ |
-| 4 | 10:25:28 | d4e67eb7 | 5511998442430 | rotação | — | — | ✅ |
-| 5 | 10:29:43 | 01e6c0cc | 554199485294 | rotação | — | — | ✅ |
-| 6 | 10:36:29 | 52727765 | 559191123388 | rotação | — | — | ✅ |
-| 7 | 10:40:59 | f4aadb17 | 5527981762800 | rotação | — | — | ✅ |
-| 8 | 10:53:08 | 3435c525 | 5521999990143 | rotação | — | — | ✅ |
-| 9 | 10:58:35 | 36cc27a5 | 5511941562887 | rotação | — | — | ✅ |
-| 10 | 11:05:24 | 151bfbde | 5527998443109 | rotação | — | — | ✅ |
-| 11 | 11:10:14 | 4c69eb06 | 556298009845 | rotação | — | — | ✅ |
-| 12 | 11:21:25 | c4d06db3 | 558181572045 | rotação | — | — | ✅ |
-| 13 | 11:26:10 | 9342d083 | 553799817261 | rotação | — | — | ✅ |
-| 14 | 11:31:57 | f46aeed1 | 553193272008 | rotação | — | — | ✅ |
-| 15 | 11:37:19 | a093ec38 | 5519981222000 | rotação | — | — | ✅ |
-| 16 | 11:42:56 | 081d1dfd | 5519991856514 | rotação | — | — | ✅ |
-| 17 | 11:48:13 | b6a54d87 | 5521980351716 | rotação | — | — | ✅ |
-| 18 | 11:54:12 | 3eaa5d5f | 558184933213 | rotação | — | — | ✅ |
-| 19 | 12:00:22 | 8af2da8b | 5521964239321 | rotação | — | — | ✅ |
-| 20 | 12:12:55 | 33cdee1b | 5511998196061 | rotação | — | — | ✅ |
-| 21 | 16:33:54 | c5b29b96 | — | rotação | — | — | ✅ |
+**Meta:** 38 | **Realizados:** 21 | **Faltam:** 17 | **Janela:** 06:15 → 22:30 BRT
 
-> ⚠️ Disparos 1–21: token não logado individualmente (antes do fix de rastreio).  
-> ✅ A partir do disparo 22, token + channel_id + message_id são registrados por disparo.
+| # | Horário (UTC) | Card ID | Telefone | Token | Channel ID | Message ID | Status |
+|---|---------------|---------|----------|-------|------------|------------|--------|
+| 1 | 2026-07-15 10:03:13 | `93f85e0d` | ???7781 | `—` | — | `—` | ✅ |
+| 2 | 2026-07-15 10:08:51 | `3662ab44` | ???9371 | `—` | — | `—` | ✅ |
+| 3 | 2026-07-15 10:19:10 | `f3ef80de` | ???6405 | `—` | — | `—` | ✅ |
+| 4 | 2026-07-15 10:25:28 | `d4e67eb7` | ???2430 | `—` | — | `—` | ✅ |
+| 5 | 2026-07-15 10:29:43 | `01e6c0cc` | ???5294 | `—` | — | `—` | ✅ |
+| 6 | 2026-07-15 10:36:29 | `52727765` | ???3388 | `—` | — | `—` | ✅ |
+| 7 | 2026-07-15 10:40:59 | `f4aadb17` | ???2800 | `—` | — | `—` | ✅ |
+| 8 | 2026-07-15 10:53:08 | `3435c525` | ???0143 | `—` | — | `—` | ✅ |
+| 9 | 2026-07-15 10:58:35 | `36cc27a5` | ???2887 | `—` | — | `—` | ✅ |
+| 10 | 2026-07-15 11:05:24 | `151bfbde` | ???3109 | `—` | — | `—` | ✅ |
+| 11 | 2026-07-15 11:10:14 | `4c69eb06` | ???9845 | `—` | — | `—` | ✅ |
+| 12 | 2026-07-15 11:21:25 | `c4d06db3` | ???2045 | `—` | — | `—` | ✅ |
+| 13 | 2026-07-15 11:26:10 | `9342d083` | ???7261 | `—` | — | `—` | ✅ |
+| 14 | 2026-07-15 11:31:57 | `f46aeed1` | ???2008 | `—` | — | `—` | ✅ |
+| 15 | 2026-07-15 11:37:19 | `a093ec38` | ???2000 | `—` | — | `—` | ✅ |
+| 16 | 2026-07-15 11:42:56 | `081d1dfd` | ???6514 | `—` | — | `—` | ✅ |
+| 17 | 2026-07-15 11:48:13 | `b6a54d87` | ???1716 | `—` | — | `—` | ✅ |
+| 18 | 2026-07-15 11:54:12 | `3eaa5d5f` | ???3213 | `—` | — | `—` | ✅ |
+| 19 | 2026-07-15 12:00:22 | `8af2da8b` | ???9321 | `—` | — | `—` | ✅ |
+| 20 | 2026-07-15 12:12:55 | `33cdee1b` | ???6061 | `—` | — | `—` | ✅ |
+| 21 | 2026-07-15 16:33:54 | `c5b29b96` | ???4848 | `—` | — | `—` | ✅ |
 
-**Resumo do dia:**
-- 🎯 Meta: **38 disparos**
-- ✅ Realizados: **21**
-- ⏳ Faltam: **17**
-- 🕐 Janela ativa: 06:15 → 22:30 BRT
+> 📁 Dados completos: [`reports/disparos_2026-07-15.json`](./disparos_2026-07-15.json)
 
 ---
 
-### 💬 Mensagens Recebidas (Webhooks)
+### 💰 Propostas Enviadas
 
-| # | Horário (UTC) | Tipo | Detalhe |
-|---|---------------|------|---------|
-| 1–21 | 10:03 → 16:33 | `from_me` (echo) | Confirmação de envio dos próprios disparos |
-| 22 | 16:35:11 | Desconhecido | Número 5513135555657 — não encontrado no CRM |
+| Horário (UTC) | Card ID | Telefone | Status |
+|---------------|---------|----------|--------|
+| — | — | — | Nenhuma ainda |
 
-> ℹ️ Não houve respostas de leads registradas hoje até o momento.
 
 ---
 
-### 📋 Propostas Enviadas
+### 💬 Respostas de Leads Recebidas
 
-| # | Horário (UTC) | Card ID | Lead | Proposta | Status |
-|---|---------------|---------|------|----------|--------|
-| — | — | — | — | — | Nenhuma hoje |
+| Horário (UTC) | Detalhe |
+|---------------|---------|
+| — | Nenhuma resposta de lead registrada |
+
+
+---
+
+### 🔌 Pool de Tokens — Último Status Conhecido
+
+| Slot | Status |
+|------|--------|
+| LISTA-1 | ❌ OFFLINE (FALCON) ERRO: |
+| LISTA-2 | ❌ OFFLINE (GROOTT) ERRO: |
+| LISTA-3 | ❌ OFFLINE (WOLVRN) ERRO: |
+| LISTA-4 | ❌ OFFLINE (DEADPL) ERRO: |
+| LISTA-5 | ❌ OFFLINE (DAREDL) ERRO: |
+
 
 ---
 
@@ -66,28 +74,44 @@
 
 | Horário (UTC) | Evento |
 |---------------|--------|
-| 02:28 → 12:00 | ⚠️ Job `precificacao` falhando a cada 30 min — `TypeError: '<=' not supported between instances of 'tuple' and 'int'` |
-| 02:28 → 12:00 | ⚠️ Job `escalador_bazar_lp` falhando a cada 30 min — mesmo erro |
-| 12:06 | 🔄 Servidor reiniciado — fix do `_is_within_send_window()` aplicado |
-| 12:14 | ⏸️ Meta reduzida: 85 → **38** disparos (1 número ativo) |
-| 12:22 | ⏸️ Sistema **pausado** por Vitor |
-| 16:24 | ▶️ Sistema **retomado** — slot 6 adicionado (IRONMN-36DRW) |
-| 16:26 | ✅ Webhook IRONMN configurado — `https://44.192.41.202/webhook/whapi` |
-| 16:33 | ✅ Apache configurado — proxy `/webhook/` → FastAPI porta 8000 |
-| 16:35 | ▶️ Disparos retomados |
+| 2026-07-15 00:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 00:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 00:44:42 | ▶️ Disparos retomados |
+| 2026-07-15 01:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 01:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 02:05:09 | ▶️ Disparos retomados |
+| 2026-07-15 02:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 02:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 03:15:33 | ▶️ Disparos retomados |
+| 2026-07-15 03:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 03:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 04:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 04:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 04:35:59 | ▶️ Disparos retomados |
+| 2026-07-15 05:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 05:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 05:46:25 | ▶️ Disparos retomados |
+| 2026-07-15 06:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 06:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 07:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 07:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 07:52:11 | ▶️ Disparos retomados |
+| 2026-07-15 08:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 08:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 09:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 09:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 09:57:54 | ▶️ Disparos retomados |
+| 2026-07-15 10:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 10:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 11:18:20 | ▶️ Disparos retomados |
+| 2026-07-15 11:28:12 | ⚠️ Job precificacao falhou |
+| 2026-07-15 11:28:12 | ⚠️ Job escalador_bazar_lp falhou |
+| 2026-07-15 12:06:10 | ▶️ Scheduler iniciado |
+| 2026-07-15 12:06:10 | ▶️ Sistema iniciado/reiniciado |
+| 2026-07-15 16:24:31 | ▶️ Scheduler iniciado |
+| 2026-07-15 16:24:32 | ▶️ Sistema iniciado/reiniciado |
+| 2026-07-15 16:51:15 | 🔑 Token selecionado para disparo |
 
----
-
-### 🔌 Pool de Tokens Ativos (2026-07-15)
-
-| Slot | Channel ID | Status às 16:24 |
-|------|------------|-----------------|
-| LISTA-1 | FALCON-9TE4X | ❌ OFFLINE (ERRO) |
-| LISTA-2 | GROOTT-PUH8G | ❌ OFFLINE (ERRO) |
-| LISTA-3 | WOLVRN-WEMHU | ❌ OFFLINE (ERRO) |
-| LISTA-4 | DEADPL-V592K | ❌ OFFLINE (ERROR) |
-| LISTA-5 | DAREDL-F4375 | ✅ ONLINE (AUTH) |
-| LISTA-6 | IRONMN-36DRW | ✅ ONLINE (AUTH) — adicionado hoje |
 
 ---
 
@@ -95,19 +119,23 @@
 
 | Arquivo | Descrição |
 |---------|-----------|
-| `reports/disparos_2026-07-15.json` | Registro JSON completo dos disparos do dia com retorno da API |
+| [`reports/disparos_2026-07-15.json`](./disparos_2026-07-15.json) | Registro JSON completo dos disparos com retorno da API |
 
 ---
 
 ## 📌 Legenda
 
-- ✅ Enviado com sucesso
-- ❌ Falha / Offline
-- ⏸️ Pausado
-- ▶️ Retomado / Ativo
-- ⚠️ Alerta / Erro
-- 🔄 Reiniciado
+| Ícone | Significado |
+|-------|-------------|
+| ✅ | Sucesso / Online |
+| ❌ | Falha / Offline |
+| ⏸️ | Pausado |
+| ▶️ | Retomado / Ativo |
+| ⚠️ | Alerta |
+| 🚨 | Erro crítico / Bloqueio |
+| 💰 | Proposta |
+| 🔑 | Token selecionado |
 
 ---
 
-*Próximos dias serão adicionados abaixo em ordem cronológica.*
+*Histórico de dias anteriores será adicionado abaixo conforme acumulado.*
