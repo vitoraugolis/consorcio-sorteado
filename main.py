@@ -37,6 +37,7 @@ async def _relatorio_slack_fim_dia():
     from services.stats import get_daily_stats
     from services.slack import slack_log_cs_raw
     from datetime import datetime
+    from config import TZ_BRASILIA
 
     stats = await get_daily_stats()  # dia atual
     data_fmt = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y")
@@ -61,6 +62,7 @@ async def _relatorio_slack_fim_dia():
     logger.info("Relatório fim de dia enviado para #log-cs — total=%d propostas=%d", total, propostas)
 from jobs.watchdog_extratos import run_watchdog_extratos
 from jobs.escalador_bazar_lp import run_escalador_bazar_lp_safe
+from jobs.readme_operacoes import run_readme_operacoes_safe
 from webhooks.router import handle_whapi_webhook
 from services.safety_car import run_pipeline_monitor
 
@@ -135,6 +137,7 @@ async def _whapi_monitor():
                 os.getenv("WHAPI_CHANNEL_ID_LISTA_3", "WOLVRN"),
                 os.getenv("WHAPI_CHANNEL_ID_LISTA_4", "DEADPL"),
                 os.getenv("WHAPI_CHANNEL_ID_LISTA_5", "DAREDL"),
+                os.getenv("WHAPI_CHANNEL_ID_LISTA_6", "IRONMN"),
             ]
             canais_check: list[tuple[str, str]] = []  # (label, token)
             for i, tok in enumerate(WHAPI_LISTA_TOKENS, 1):
@@ -294,6 +297,10 @@ def setup_scheduler():
                       max_instances=1, misfire_grace_time=60)
     scheduler.add_job(run_escalador_bazar_lp_safe, IntervalTrigger(minutes=30),
                       id="escalador_bazar_lp", name="Escalador 3h — Bazar/LP sem resposta",
+                      max_instances=1, misfire_grace_time=120)
+    # README de operações — atualiza a cada 30 min e faz commit/push
+    scheduler.add_job(run_readme_operacoes_safe, IntervalTrigger(minutes=30),
+                      id="readme_operacoes", name="README Operações — Auto-update",
                       max_instances=1, misfire_grace_time=120)
     # auditoria_propostas DESATIVADA — sem negociação não há propostas a auditar
     logger.info("Scheduler configurado com %d jobs.", len(scheduler.get_jobs()))
