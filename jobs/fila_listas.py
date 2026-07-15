@@ -572,7 +572,7 @@ async def _send_listas(card: dict, whapi_token: str) -> bool:
                 "Data de primeira ativação": datetime.now(timezone.utc).strftime("%d/%m/%Y"),
                 "Ultima atividade": str(int(datetime.now(timezone.utc).timestamp())),
             })
-        logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s", card_id[:8], phone[-4:])
+        logger.info("✅ Fila Listas [NOVO]: card=%s phone=...%s token=...%s", card_id[:8], phone[-4:], whapi_token[-8:])
         from services.stats import increment_stat
         await increment_stat("listas")
         # Incrementa contador diário
@@ -740,6 +740,13 @@ async def run_ciclo_fila_listas() -> bool:
     if token_result is None:
         return False
     token, token_idx = token_result
+
+    # Log explícito do token selecionado para rastreio por disparo
+    _channel_id = os.getenv(f"WHAPI_CHANNEL_ID_LISTA_{token_idx}", f"SLOT-{token_idx}")
+    logger.info(
+        "Fila Listas: token selecionado → slot=%d channel_id=%s token=...%s",
+        token_idx, _channel_id, token[-8:],
+    )
 
     # Mutex por token — evita disparo duplo se job for chamado em paralelo
     token_mutex_key = f"fila_listas:token_lock:{token[-8:]}"
