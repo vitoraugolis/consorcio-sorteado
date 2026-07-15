@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-15 19:57 BRT** / 2026-07-15 22:57 UTC
+> Última atualização: **2026-07-15 20:27 BRT** / 2026-07-15 23:27 UTC
 
 ---
 
@@ -87,7 +87,6 @@
 
 | Horário (UTC) | Evento |
 |---------------|--------|
-| 2026-07-15 02:05:09 | ▶️ Disparos retomados |
 | 2026-07-15 02:28:12 | ⚠️ Job precificacao falhou |
 | 2026-07-15 02:28:12 | ⚠️ Job escalador_bazar_lp falhou |
 | 2026-07-15 03:15:33 | ▶️ Disparos retomados |
@@ -127,6 +126,7 @@
 | 2026-07-15 20:53:22 | ▶️ Disparos retomados |
 | 2026-07-15 21:01:45 | 🔴 Todos tokens offline |
 | 2026-07-15 22:04:36 | 🔴 Todos tokens offline |
+| 2026-07-15 23:04:00 | 🔴 Todos tokens offline |
 
 
 ---
