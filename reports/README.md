@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-15 15:57 BRT** / 2026-07-15 18:57 UTC
+> Última atualização: **2026-07-15 16:27 BRT** / 2026-07-15 19:27 UTC
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 🚀 Disparos — Ativações (Fluxo Listas)
 
-**Meta:** 38 | **Realizados:** 31 | **Faltam:** 7 | **Janela:** 06:15 → 22:30 BRT
+**Meta:** 38 | **Realizados:** 34 | **Faltam:** 4 | **Janela:** 06:15 → 22:30 BRT
 
 | # | Horário (UTC) | Card ID | Telefone | Token | Channel ID | Message ID | Status |
 |---|---------------|---------|----------|-------|------------|------------|--------|
@@ -44,6 +44,9 @@
 | 29 | 2026-07-15 18:24:30 | `c4a923cc` | 5511999943177 | `9xPlsN1x` | None | `PsrSaca2JN4PD0w-wHkFA1zMcgk` | ✅ |
 | 30 | 2026-07-15 18:36:06 | `eb18bdbf` | 5511973976180 | `9xPlsN1x` | None | `Psrt6zInovHjM.U-wKQFA1tAOHQ` | ✅ |
 | 31 | 2026-07-15 18:48:25 | `9f29bd7f` | 555199317379 | `9xPlsN1x` | None | `Pso9nPKWUQIs35g-wNyBRHVFgw` | ✅ |
+| 32 | 2026-07-15 19:00:08 | `7506d1f7` | 554195707934 | `9xPlsN1x` | None | `PsoCYVpcBowMHuA-wKKBCKNoHg` | ✅ |
+| 33 | 2026-07-15 19:12:32 | `be45081b` | 5511967108588 | `9xPlsN1x` | None | `PsoWP.zwWw3epDs-wE4FA1rXbew` | ✅ |
+| 34 | 2026-07-15 19:24:08 | `4e92d600` | 5521997814784 | `9xPlsN1x` | None | `Psp6YT1DTlzuakc-wCgFBbC33AA` | ✅ |
 
 > 📁 Dados completos: [`reports/disparos_2026-07-15.json`](./disparos_2026-07-15.json)
 
@@ -123,6 +126,7 @@
 | 2026-07-15 16:51:15 | 🔑 Token selecionado para disparo |
 | 2026-07-15 17:03:32 | 🔑 Token selecionado para disparo |
 | 2026-07-15 18:00:32 | 🔑 Token selecionado para disparo |
+| 2026-07-15 19:12:16 | 🔑 Token selecionado para disparo |
 
 
 ---

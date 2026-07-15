@@ -1,7 +1,7 @@
 {
   "data": "2026-07-15",
   "meta_diaria": 38,
-  "total_disparos": 31,
+  "total_disparos": 34,
   "disparos": [
     {
       "n": 1,
@@ -518,6 +518,129 @@
           "device_id": 3,
           "starred": false,
           "chat_id": "555199317379@s.whatsapp.net",
+          "from": "551151941503",
+          "status": "pending",
+          "interactive": {
+            "header": "Meu nome é Manuela, da Consórcio Sorteado, empresa que está há 30 anos no mercado de cotas contempladas.",
+            "body": "⚡️ Gabriel, identificamos em um dos grupos em que somos consorciados que você tem uma cota contemplada Bradesco! E por isso, gostaríamos de lembrar que sua cota pode ser vendida com ótima valorização. 🎉\n\nPor isso, gostaria de saber: você teria interesse em receber uma proposta personalizada pela sua cota, sem compromisso?",
+            "buttons": [
+              {
+                "type": "quick_reply",
+                "text": "Quero receber proposta",
+                "id": "ButtonsV3:quero_proposta"
+              },
+              {
+                "type": "quick_reply",
+                "text": "Não tenho interesse",
+                "id": "ButtonsV3:nao_tenho_interesse"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "n": 32,
+      "timestamp_utc": "2026-07-15 19:00:08",
+      "card_id": "7506d1f7",
+      "telefone": "554195707934",
+      "token_suffix": "9xPlsN1x",
+      "channel_id": null,
+      "message_id": "PsoCYVpcBowMHuA-wKKBCKNoHg",
+      "status": true,
+      "api_response": {
+        "sent": true,
+        "message": {
+          "id": "PsoCYVpcBowMHuA-wKKBCKNoHg",
+          "from_me": true,
+          "type": "interactive",
+          "timestamp": 1784142004,
+          "source": "api",
+          "device_id": 3,
+          "starred": false,
+          "chat_id": "554195707934@s.whatsapp.net",
+          "from": "551151941503",
+          "status": "pending",
+          "interactive": {
+            "header": "Meu nome é Manuela, da Consórcio Sorteado, empresa que está há 30 anos no mercado de cotas contempladas.",
+            "body": "⚡️ Perola, identificamos em um dos grupos em que somos consorciados que você tem uma cota contemplada Bradesco! E por isso, gostaríamos de lembrar que sua cota pode ser vendida com ótima valorização. 🎉\n\nPor isso, gostaria de saber: você teria interesse em receber uma proposta personalizada pela sua cota, sem compromisso?",
+            "buttons": [
+              {
+                "type": "quick_reply",
+                "text": "Quero receber proposta",
+                "id": "ButtonsV3:quero_proposta"
+              },
+              {
+                "type": "quick_reply",
+                "text": "Não tenho interesse",
+                "id": "ButtonsV3:nao_tenho_interesse"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "n": 33,
+      "timestamp_utc": "2026-07-15 19:12:32",
+      "card_id": "be45081b",
+      "telefone": "5511967108588",
+      "token_suffix": "9xPlsN1x",
+      "channel_id": null,
+      "message_id": "PsoWP.zwWw3epDs-wE4FA1rXbew",
+      "status": true,
+      "api_response": {
+        "sent": true,
+        "message": {
+          "id": "PsoWP.zwWw3epDs-wE4FA1rXbew",
+          "from_me": true,
+          "type": "interactive",
+          "timestamp": 1784142748,
+          "source": "api",
+          "device_id": 3,
+          "starred": false,
+          "chat_id": "5511967108588@s.whatsapp.net",
+          "from": "551151941503",
+          "status": "pending",
+          "interactive": {
+            "header": "Meu nome é Manuela, da Consórcio Sorteado, empresa que está há 30 anos no mercado de cotas contempladas.",
+            "body": "⚡️ Tatiana, identificamos em um dos grupos em que somos consorciados que você tem uma cota contemplada Bradesco! E por isso, gostaríamos de lembrar que sua cota pode ser vendida com ótima valorização. 🎉\n\nPor isso, gostaria de saber: você teria interesse em receber uma proposta personalizada pela sua cota, sem compromisso?",
+            "buttons": [
+              {
+                "type": "quick_reply",
+                "text": "Quero receber proposta",
+                "id": "ButtonsV3:quero_proposta"
+              },
+              {
+                "type": "quick_reply",
+                "text": "Não tenho interesse",
+                "id": "ButtonsV3:nao_tenho_interesse"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "n": 34,
+      "timestamp_utc": "2026-07-15 19:24:08",
+      "card_id": "4e92d600",
+      "telefone": "5521997814784",
+      "token_suffix": "9xPlsN1x",
+      "channel_id": null,
+      "message_id": "Psp6YT1DTlzuakc-wCgFBbC33AA",
+      "status": true,
+      "api_response": {
+        "sent": true,
+        "message": {
+          "id": "Psp6YT1DTlzuakc-wCgFBbC33AA",
+          "from_me": true,
+          "type": "interactive",
+          "timestamp": 1784143444,
+          "source": "api",
+          "device_id": 3,
+          "starred": false,
+          "chat_id": "5521997814784@s.whatsapp.net",
           "from": "551151941503",
           "status": "pending",
           "interactive": {
