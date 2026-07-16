@@ -1,7 +1,7 @@
 {
   "data": "2026-07-16",
   "meta_diaria": 18,
-  "total_disparos": 4,
+  "total_disparos": 6,
   "disparos": [
     {
       "n": 1,
@@ -151,6 +151,88 @@
           "interactive": {
             "header": "Meu nome é Manuela, da Consórcio Sorteado, empresa que está há 30 anos no mercado de cotas contempladas.",
             "body": "⚡️ Uriel, identificamos em um dos grupos em que somos consorciados que você tem uma cota contemplada Bradesco! E por isso, gostaríamos de lembrar que sua cota pode ser vendida com ótima valorização. 🎉\n\nPor isso, gostaria de saber: você teria interesse em receber uma proposta personalizada pela sua cota, sem compromisso?",
+            "buttons": [
+              {
+                "type": "quick_reply",
+                "text": "Quero receber proposta",
+                "id": "ButtonsV3:quero_proposta"
+              },
+              {
+                "type": "quick_reply",
+                "text": "Não tenho interesse",
+                "id": "ButtonsV3:nao_tenho_interesse"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "n": 5,
+      "timestamp_utc": "2026-07-16 13:56:33",
+      "card_id": "6be9ef77",
+      "telefone": "557791362407",
+      "token_suffix": "9xPlsN1x",
+      "channel_id": "IRONMN-36DRW",
+      "message_id": "PsqxtRngSOehH.8-wIiB3vS9Zw",
+      "status": true,
+      "api_response": {
+        "sent": true,
+        "message": {
+          "id": "PsqxtRngSOehH.8-wIiB3vS9Zw",
+          "from_me": true,
+          "type": "interactive",
+          "timestamp": 1784210186,
+          "source": "api",
+          "device_id": 4,
+          "starred": false,
+          "chat_id": "557791362407@s.whatsapp.net",
+          "from": "551151941503",
+          "status": "pending",
+          "interactive": {
+            "header": "Meu nome é Manuela, da Consórcio Sorteado, empresa que está há 30 anos no mercado de cotas contempladas.",
+            "body": "⚡️ Construnorte, identificamos em um dos grupos em que somos consorciados que você tem uma cota contemplada Bradesco! E por isso, gostaríamos de lembrar que sua cota pode ser vendida com ótima valorização. 🎉\n\nPor isso, gostaria de saber: você teria interesse em receber uma proposta personalizada pela sua cota, sem compromisso?",
+            "buttons": [
+              {
+                "type": "quick_reply",
+                "text": "Quero receber proposta",
+                "id": "ButtonsV3:quero_proposta"
+              },
+              {
+                "type": "quick_reply",
+                "text": "Não tenho interesse",
+                "id": "ButtonsV3:nao_tenho_interesse"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "n": 6,
+      "timestamp_utc": "2026-07-16 14:08:13",
+      "card_id": "57f8a4d1",
+      "telefone": "558191740313",
+      "token_suffix": "9xPlsN1x",
+      "channel_id": "IRONMN-36DRW",
+      "message_id": "Pspv1OX.g_e7cpM-wK.B9tIFmQ",
+      "status": true,
+      "api_response": {
+        "sent": true,
+        "message": {
+          "id": "Pspv1OX.g_e7cpM-wK.B9tIFmQ",
+          "from_me": true,
+          "type": "interactive",
+          "timestamp": 1784210889,
+          "source": "api",
+          "device_id": 4,
+          "starred": false,
+          "chat_id": "558191740313@s.whatsapp.net",
+          "from": "551151941503",
+          "status": "pending",
+          "interactive": {
+            "header": "Meu nome é Manuela, da Consórcio Sorteado, empresa que está há 30 anos no mercado de cotas contempladas.",
+            "body": "⚡️ Gabriel, identificamos em um dos grupos em que somos consorciados que você tem uma cota contemplada Bradesco! E por isso, gostaríamos de lembrar que sua cota pode ser vendida com ótima valorização. 🎉\n\nPor isso, gostaria de saber: você teria interesse em receber uma proposta personalizada pela sua cota, sem compromisso?",
             "buttons": [
               {
                 "type": "quick_reply",
