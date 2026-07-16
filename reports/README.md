@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-16 18:46 BRT** / 2026-07-16 21:46 UTC
+> Última atualização: **2026-07-16 19:16 BRT** / 2026-07-16 22:16 UTC
 
 ---
 
@@ -88,6 +88,7 @@
 | 2026-07-16 19:04:29 | 🔴 Todos tokens offline |
 | 2026-07-16 20:02:22 | 🔴 Todos tokens offline |
 | 2026-07-16 21:04:13 | 🔴 Todos tokens offline |
+| 2026-07-16 22:03:00 | 🔴 Todos tokens offline |
 
 
 ---
