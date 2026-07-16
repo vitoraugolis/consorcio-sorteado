@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-16 09:27 BRT** / 2026-07-16 12:27 UTC
+> Última atualização: **2026-07-16 10:00 BRT** / 2026-07-16 13:00 UTC
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 🚀 Disparos — Ativações (Fluxo Listas)
 
-**Meta:** 38 | **Realizados:** 1 | **Faltam:** 37 | **Janela:** 06:15 → 22:30 BRT
+**Meta:** 35 | **Realizados:** 1 | **Faltam:** 34 | **Janela:** 06:15 → 22:30 BRT
 
 | # | Horário (UTC) | Card ID | Telefone | Token | Channel ID | Message ID | Status |
 |---|---------------|---------|----------|-------|------------|------------|--------|
@@ -41,7 +41,7 @@
 
 | Slot | Status |
 |------|--------|
-| — | Status não disponível |
+| LISTA-1 | ❌ OFFLINE (IRONMN) ERROR |
 
 
 ---
@@ -60,6 +60,8 @@
 | 2026-07-16 12:02:46 | 🔴 Todos tokens offline |
 | 2026-07-16 12:26:06 | ▶️ Disparos retomados |
 | 2026-07-16 12:26:23 | 🔑 Token selecionado para disparo |
+| 2026-07-16 12:30:37 | ▶️ Scheduler iniciado |
+| 2026-07-16 12:30:40 | ▶️ Sistema iniciado/reiniciado |
 
 
 ---
