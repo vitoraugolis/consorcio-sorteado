@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-16 15:16 BRT** / 2026-07-16 18:16 UTC
+> Última atualização: **2026-07-16 15:46 BRT** / 2026-07-16 18:46 UTC
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 🚀 Disparos — Ativações (Fluxo Listas)
 
-**Meta:** 18 | **Realizados:** 9 | **Faltam:** 9 | **Janela:** 06:15 → 22:30 BRT
+**Meta:** 18 | **Realizados:** 10 | **Faltam:** 8 | **Janela:** 06:15 → 22:30 BRT
 
 | # | Horário (UTC) | Card ID | Telefone | Token | Channel ID | Message ID | Status |
 |---|---------------|---------|----------|-------|------------|------------|--------|
@@ -22,6 +22,7 @@
 | 7 | 2026-07-16 14:19:15 | `0b736a79` | 557499738654 | `9xPlsN1x` | IRONMN-36DRW | `PspZxZPRjXZf_GY-wCqBzZLqHg` | ✅ |
 | 8 | 2026-07-16 14:30:27 | `74fb1279` | 5513997123080 | `9xPlsN1x` | IRONMN-36DRW | `PsolROqGvnXCU0U-wEQFA9PW_gg` | ✅ |
 | 9 | 2026-07-16 18:13:19 | `37845783` | 558398319533 | `9xPlsN1x` | IRONMN-36DRW | `Psrhhz5Jaxh18ls-wKWCAyIrrQ` | ✅ |
+| 10 | 2026-07-16 18:24:28 | `84e015a6` | 5511947246780 | `9xPlsN1x` | IRONMN-36DRW | `PspYWuylssUP0es-wH0FA1moXLw` | ✅ |
 
 > 📁 Dados completos: [`reports/disparos_2026-07-16.json`](./disparos_2026-07-16.json)
 
@@ -49,7 +50,7 @@
 
 | Slot | Status |
 |------|--------|
-| LISTA-1 | ❌ OFFLINE (IRONMN) ERROR |
+| LISTA-1 | ❌ OFFLINE (IRONMN) QR |
 
 
 ---
