@@ -1,7 +1,7 @@
 # 📊 Registro de Operações — Consórcio Sorteado
 
 > ⏱️ Atualizado automaticamente a cada 30 minutos.  
-> Última atualização: **2026-07-16 23:16 BRT** / 2026-07-17 02:16 UTC
+> Última atualização: **2026-07-16 23:46 BRT** / 2026-07-17 02:46 UTC
 
 ---
 
